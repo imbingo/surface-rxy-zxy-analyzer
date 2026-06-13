@@ -1,5 +1,7 @@
 matplotlib
 numpy
+openpyxl
 pandas
 PyQt6
 scipy
+xlrd
