@@ -26,6 +26,7 @@
 注意：Rx/Ry 符号约定 (Rx≈+dZ/dY, Ry≈-dZ/dX) 需用已知倾角标准件实测校准一次。
 """
 import sys
+import re
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
@@ -56,6 +57,8 @@ class MultiViewCanvas(FigureCanvas):
 
 
 class SurfaceAnalyzerPro(QMainWindow):
+    DISPLAY_POINT_LIMIT = 80000
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("面型及Rxy分析ZXY版 V3.3")
@@ -588,6 +591,37 @@ class SurfaceAnalyzerPro(QMainWindow):
             df = pd.read_excel(path)
         elif suffix in self.TEXT_SUFFIXES or suffix == '':
             df, last_err = None, None
+            for enc in ('utf-8-sig', 'gbk', 'utf-16', 'latin-1'):
+                try:
+                    with open(path, 'r', encoding=enc) as fh:
+                        first_data_line = None
+                        for line in fh:
+                            stripped = line.strip()
+                            if stripped and not stripped.startswith('#'):
+                                first_data_line = stripped
+                                break
+                    if not first_data_line:
+                        continue
+
+                    if '\t' in first_data_line:
+                        sep = '\t'
+                    elif ',' in first_data_line:
+                        sep = ','
+                    elif ';' in first_data_line:
+                        sep = ';'
+                    else:
+                        sep = r'\s+'
+
+                    tokens = [t for t in re.split(sep if sep == r'\s+' else re.escape(sep), first_data_line) if t]
+                    if len(tokens) >= 2 and all(self._is_float_token(t) for t in tokens):
+                        df = pd.read_csv(path, sep=sep, engine='c', encoding=enc,
+                                         comment='#', skip_blank_lines=True,
+                                         on_bad_lines='skip', header=None)
+                        df.columns = [f'Col{i+1}' for i in range(df.shape[1])]
+                        return df
+                except Exception as e:
+                    last_err = e
+
             # sep=None 自动嗅探优先；嗅探失败(如被#注释头干扰)时回退到常见分隔符
             for enc in ('utf-8-sig', 'gbk', 'utf-16', 'latin-1'):
                 for sep in (None, ',', '\t', ';', r'\s+'):
@@ -629,6 +663,14 @@ class SurfaceAnalyzerPro(QMainWindow):
             raise ValueError("文件内容为空或有效列少于 2 列，请检查文件。")
         return df
 
+    @staticmethod
+    def _is_float_token(value):
+        try:
+            float(str(value))
+            return True
+        except (TypeError, ValueError):
+            return False
+
     def load_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "载入数据", "",
@@ -649,9 +691,14 @@ class SurfaceAnalyzerPro(QMainWindow):
                     if tc.lower() in col.lower(): return i
                 return di if di < len(cols) else 0
 
-            self.cb_x_col.setCurrentIndex(guess_index('x', 1))
-            self.cb_y_col.setCurrentIndex(guess_index('y', 2))
-            self.cb_z_col.setCurrentIndex(guess_index('z', 0))
+            if len(cols) >= 3 and all(re.fullmatch(r'Col\d+', c) for c in cols):
+                self.cb_x_col.setCurrentIndex(0)
+                self.cb_y_col.setCurrentIndex(1)
+                self.cb_z_col.setCurrentIndex(2)
+            else:
+                self.cb_x_col.setCurrentIndex(guess_index('x', 1))
+                self.cb_y_col.setCurrentIndex(guess_index('y', 2))
+                self.cb_z_col.setCurrentIndex(guess_index('z', 0))
             self.apply_mapping()
 
             # 寄存器保留提示（多层流程需要跨文件保留，故不自动清空）
@@ -839,9 +886,16 @@ class SurfaceAnalyzerPro(QMainWindow):
 
     # ================= 绘图与交互 =================
     def draw_plots(self, tx, ty, tz):
-        dx, dy = tx[self.active_idx], ty[self.active_idx]
+        plot_idx = self.active_idx
+        if len(plot_idx) > self.DISPLAY_POINT_LIMIT:
+            pick = np.linspace(0, len(plot_idx) - 1, self.DISPLAY_POINT_LIMIT, dtype=int)
+            plot_idx = plot_idx[pick]
+            self.statusBar().showMessage(
+                f"数据共 {len(self.active_idx)} 点；绘图抽样显示 {len(plot_idx)} 点，指标仍按全量计算。", 5000)
+
+        dx, dy = tx[plot_idx], ty[plot_idx]
         plot_z_all, z_axis_label, z_short_label = self._get_plot_z(tx, ty, tz)
-        dz = plot_z_all[self.active_idx]
+        dz = plot_z_all[plot_idx]
 
         axes = [self.canvas.ax3d, self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz]
         lbs = [("X (mm)", "Y (mm)", z_axis_label),
@@ -883,7 +937,11 @@ class SurfaceAnalyzerPro(QMainWindow):
             self.canvas.ax3d.plot_surface(xx, yy, zz, color='#3498db', alpha=0.3, edgecolor='none')
 
         if self.temp_selected_mask is not None and self.temp_selected_mask.sum() > 0:
-            txs, tys, tzs = tx[self.temp_selected_mask], ty[self.temp_selected_mask], plot_z_all[self.temp_selected_mask]
+            selected_idx = np.where(self.temp_selected_mask)[0]
+            if len(selected_idx) > self.DISPLAY_POINT_LIMIT:
+                pick = np.linspace(0, len(selected_idx) - 1, self.DISPLAY_POINT_LIMIT, dtype=int)
+                selected_idx = selected_idx[pick]
+            txs, tys, tzs = tx[selected_idx], ty[selected_idx], plot_z_all[selected_idx]
             for ax in [self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz]:
                 sx, sy = (txs, tys) if ax == self.canvas.ax_xy else (txs, tzs) if ax == self.canvas.ax_xz else (tys, tzs)
                 ax.scatter(sx, sy, c='red', s=50, marker='x', linewidth=2)
