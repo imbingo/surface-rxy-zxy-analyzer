@@ -27,6 +27,7 @@
 """
 import sys
 import re
+import mmap
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
@@ -58,6 +59,9 @@ class MultiViewCanvas(FigureCanvas):
 
 class SurfaceAnalyzerPro(QMainWindow):
     DISPLAY_POINT_LIMIT = 80000
+    LARGE_TEXT_FILE_BYTES = 512 * 1024 * 1024
+    LARGE_TEXT_IMPORT_LIMIT = 500000
+    MISSING_TEXT_TOKENS = {'***', '--', 'NA', 'N/A', 'NaN', 'nan', 'null', 'NULL'}
 
     def __init__(self):
         super().__init__()
@@ -76,6 +80,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.n_filtered = 0               # 最近一次滤波剔除点数
         self.last_metrics = None          # 最近一次分析指标（导出元数据用）
         self.display_detrended = False    # 去倾斜显示：只影响绘图/框选，不改变数据与指标
+        self.last_import_note = ""
 
         # 变换缓存：避免每次框选都全量重算
         self._df_version = 0
@@ -578,6 +583,89 @@ class SurfaceAnalyzerPro(QMainWindow):
     TEXT_SUFFIXES = ('.csv', '.txt', '.tsv', '.dat', '.asc', '.xyz')
     EXCEL_SUFFIXES = ('.xlsx', '.xls', '.xlsm')
 
+    @staticmethod
+    def _split_text_line(line, sep):
+        if sep == r'\s+':
+            return [t for t in re.split(r'\s+', line.strip()) if t]
+        return [t for t in line.strip().split(sep) if t]
+
+    @classmethod
+    def _is_missing_token(cls, value):
+        return str(value).strip() in cls.MISSING_TEXT_TOKENS
+
+    @classmethod
+    def _is_float_or_missing_token(cls, value):
+        if cls._is_missing_token(value):
+            return True
+        return cls._is_float_token(value)
+
+    @classmethod
+    def _looks_like_numeric_text_row(cls, tokens):
+        if len(tokens) < 2:
+            return False
+        numeric_count = sum(cls._is_float_token(t) for t in tokens)
+        return numeric_count >= 2 and all(cls._is_float_or_missing_token(t) for t in tokens)
+
+    @classmethod
+    def _token_to_float(cls, value):
+        if cls._is_missing_token(value):
+            return np.nan
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return np.nan
+
+    def _sample_large_headerless_text(self, path, enc, sep, ncols):
+        file_size = Path(path).stat().st_size
+        max_rows = self.LARGE_TEXT_IMPORT_LIMIT
+        rows = []
+
+        with open(path, 'rb') as fh:
+            mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+            try:
+                offsets = np.linspace(0, max(0, file_size - 1), max_rows, dtype=np.int64)
+                for i, offset in enumerate(offsets):
+                    offset = int(offset)
+                    if offset <= 0:
+                        start = 0
+                    else:
+                        start = mm.find(b'\n', offset)
+                        if start < 0:
+                            continue
+                        start += 1
+                    end = mm.find(b'\n', start)
+                    if end < 0:
+                        end = file_size
+                    raw = mm[start:end].strip()
+                    if not raw:
+                        continue
+                    line = raw.decode(enc, errors='ignore').strip().lstrip('\ufeff')
+                    if not line or line.startswith('#'):
+                        continue
+                    tokens = self._split_text_line(line, sep)
+                    if not self._looks_like_numeric_text_row(tokens):
+                        continue
+                    values = [self._token_to_float(t) for t in tokens[:ncols]]
+                    if len(values) < ncols:
+                        values.extend([np.nan] * (ncols - len(values)))
+                    rows.append(values)
+                    if i % 5000 == 0:
+                        self.statusBar().showMessage(
+                            f"正在抽样导入超大TXT: {i + 1:,}/{max_rows:,}", 1000)
+                        QApplication.processEvents()
+            finally:
+                mm.close()
+
+        df = pd.DataFrame(rows, columns=[f'Col{i+1}' for i in range(ncols)])
+        self.last_import_note = (
+            f"超大文本已抽样导入，避免全量读入导致卡死。\n"
+            f"文件大小: {file_size / (1024 * 1024):.1f} MB\n"
+            f"抽样上限: {max_rows:,} 行\n"
+            f"实际导入行数: {len(df):,} 行\n"
+            f"缺测值标记({', '.join(sorted(self.MISSING_TEXT_TOKENS))})已按空值处理。"
+        )
+        return df
+
     def _read_table(self, path):
         """鲁棒读取表格文件：
         - 文本类(.csv/.txt/.tsv/.dat/.asc/.xyz): 自动嗅探分隔符(逗号/制表符/分号/空格)，
@@ -585,6 +673,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         - Excel类(.xlsx/.xls/.xlsm): pd.read_excel
         - 列名统一清理 BOM 与首尾空白（修复 utf-8-sig 文件列名带 \\ufeff 导致的解析失败）
         - 自动识别无表头文件（首行即数据时列名命名为 Col1..ColN）"""
+        self.last_import_note = ""
         suffix = Path(path).suffix.lower()
         used_enc, used_sep = None, None
         if suffix in self.EXCEL_SUFFIXES:
@@ -612,11 +701,16 @@ class SurfaceAnalyzerPro(QMainWindow):
                     else:
                         sep = r'\s+'
 
-                    tokens = [t for t in re.split(sep if sep == r'\s+' else re.escape(sep), first_data_line) if t]
-                    if len(tokens) >= 2 and all(self._is_float_token(t) for t in tokens):
+                    tokens = self._split_text_line(first_data_line, sep)
+                    if self._looks_like_numeric_text_row(tokens):
+                        file_size = Path(path).stat().st_size
+                        if file_size >= self.LARGE_TEXT_FILE_BYTES:
+                            return self._sample_large_headerless_text(path, enc, sep, len(tokens))
                         df = pd.read_csv(path, sep=sep, engine='c', encoding=enc,
                                          comment='#', skip_blank_lines=True,
-                                         on_bad_lines='skip', header=None)
+                                         on_bad_lines='skip', header=None,
+                                         na_values=list(self.MISSING_TEXT_TOKENS),
+                                         keep_default_na=True)
                         df.columns = [f'Col{i+1}' for i in range(df.shape[1])]
                         return df
                 except Exception as e:
@@ -627,7 +721,9 @@ class SurfaceAnalyzerPro(QMainWindow):
                 for sep in (None, ',', '\t', ';', r'\s+'):
                     try:
                         df_try = pd.read_csv(path, sep=sep, engine='python', encoding=enc,
-                                             comment='#', skip_blank_lines=True, on_bad_lines='skip')
+                                             comment='#', skip_blank_lines=True, on_bad_lines='skip',
+                                             na_values=list(self.MISSING_TEXT_TOKENS),
+                                             keep_default_na=True)
                         if df_try.shape[1] >= 2:
                             df, used_enc, used_sep = df_try, enc, sep
                             break
@@ -656,7 +752,9 @@ class SurfaceAnalyzerPro(QMainWindow):
             else:
                 df = pd.read_csv(path, sep=used_sep, engine='python', encoding=used_enc,
                                  comment='#', skip_blank_lines=True, on_bad_lines='skip',
-                                 header=None)
+                                 header=None,
+                                 na_values=list(self.MISSING_TEXT_TOKENS),
+                                 keep_default_na=True)
             df.columns = [f'Col{i+1}' for i in range(df.shape[1])]
 
         if df.empty or df.shape[1] < 2:
@@ -700,6 +798,9 @@ class SurfaceAnalyzerPro(QMainWindow):
                 self.cb_y_col.setCurrentIndex(guess_index('y', 2))
                 self.cb_z_col.setCurrentIndex(guess_index('z', 0))
             self.apply_mapping()
+            if self.last_import_note:
+                self.statusBar().showMessage(self.last_import_note.replace('\n', ' | '), 15000)
+                QMessageBox.information(self, "超大文件导入说明", self.last_import_note)
 
             # 寄存器保留提示（多层流程需要跨文件保留，故不自动清空）
             if any(s is not None for s in (self.data_stack, self.data_base1, self.data_base2)):
