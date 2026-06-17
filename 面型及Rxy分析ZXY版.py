@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-面型及Rxy分析工具 V3.3
+面型及Rxy分析工具 V3.5.2
 基于 V1 的修复与增强：
   [修复] 导出 Z_um 单位错误（原版导出的是 mm 值，列名却是 µm）
   [修复] 旋转/翻转改为基于包围盒(min/max)，坐标不从0开始也不会产生偏移
@@ -16,6 +16,8 @@
          自动嗅探分隔符，自动尝试 utf-8/gbk/utf-16/latin-1 编码，
          自动跳过#注释行/空行/坏行，自动识别无表头文件
   [增强] 滤波三模式：关闭 / MAD全局鲁棒 / 局部中位数(邻域比较，阈值=已知面型上限)
+  [增强] V3.4: 局部中位数滤波增加【全局残差兜底阈值】，防止成簇/边缘大离群点漏判
+  [增强] V3.4: 邻域比较邻居数 k 上限从 50 提高到 200
   [增强] 拟合改为中心化 np.linalg.lstsq，对绝对stage大坐标更稳
   [增强] 有效点<3 禁止拟合；滤波后点数不足自动退回未滤波
   [增强] 多层寄存器记录数据来源文件名；计算前弹窗确认；新增一键清空全部寄存器
@@ -23,11 +25,19 @@
   [增强] Gap 计算后锁定旧文件映射，防止误点"应用映射"覆盖结果
   [增强] 导出 CSV 带元数据头(变换路径/滤波/删点/拟合系数/Rx/Ry/PV/TTV) + 残差列
   [增强] 变换结果缓存，避免框选时全量重算；选择器重建前断开旧回调
+  [增强] V3.5: 大文件导入策略显式化，支持超大TXT/ASC/XYZ按文件位置预抽样导入
+  [增强] V3.5: 支持Zeiss类文本中常见缺测值(***、--、NA等)按空值处理
+  [增强] V3.5: 导入状态显示文件大小/导入方式/导入点数/显示点数，避免误以为抽样数据是全量数据
+  [增强] V3.5: 绘图显示抽样上限可配置，默认最多显示80000点，指标仍按导入后的分析数据计算
+  [优化] V3.5.1: 大文件导入/显示策略从左侧移到右侧工具条按钮，弹窗设置，避免左侧拥挤
+  [增强] V3.5.1: 新增Recipe导出/导入，保存单位、列映射、物料旋转组合、滤波参数、显示/大文件/Gap设置
+  [优化] V3.5.2: Recipe导出/导入按钮移至左侧主控页“导出最终CSV”上方，减轻多层页底部拥挤
 注意：Rx/Ry 符号约定 (Rx≈+dZ/dY, Ry≈-dZ/dX) 需用已知倾角标准件实测校准一次。
 """
 import sys
 import re
 import mmap
+import json
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
@@ -39,7 +49,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QFileDialog, QLabel,
                              QSplitter, QGroupBox, QGridLayout, QMessageBox,
                              QScrollArea, QComboBox, QTabWidget, QDoubleSpinBox,
-                             QSpinBox, QCheckBox)
+                             QSpinBox, QCheckBox, QDialog, QDialogButtonBox)
 from PyQt6.QtCore import Qt
 from scipy.spatial import cKDTree
 
@@ -65,7 +75,7 @@ class SurfaceAnalyzerPro(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("面型及Rxy分析ZXY版 V3.3")
+        self.setWindowTitle("面型及Rxy分析ZXY版 V3.5.2")
         self.resize(1750, 950)
 
         # 数据流
@@ -80,7 +90,24 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.n_filtered = 0               # 最近一次滤波剔除点数
         self.last_metrics = None          # 最近一次分析指标（导出元数据用）
         self.display_detrended = False    # 去倾斜显示：只影响绘图/框选，不改变数据与指标
-        self.last_import_note = ""
+        self.last_import_note = ""        # 最近一次导入说明
+        self.last_displayed_points = 0     # 最近一次绘图实际显示点数
+        self.import_info = {               # 导入状态：用于UI与导出元数据
+            'file_size_bytes': 0,
+            'file_size_mb': 0.0,
+            'strategy': '--',
+            'sampled': False,
+            'import_rows': 0,
+            'display_limit': self.DISPLAY_POINT_LIMIT,
+            'notes': ''
+        }
+        # V3.5.1: 大文件策略不再占用左侧UI，改为右侧工具条按钮弹窗设置
+        self.auto_sample_large_text = True
+        self.large_text_threshold_mb = self.LARGE_TEXT_FILE_BYTES // (1024 * 1024)
+        self.large_text_import_limit = self.LARGE_TEXT_IMPORT_LIMIT
+        self.display_point_limit = self.DISPLAY_POINT_LIMIT
+        # Recipe 可在未载入数据前导入；载入文件并完成列填充后自动应用
+        self.pending_recipe = None
 
         # 变换缓存：避免每次框选都全量重算
         self._df_version = 0
@@ -136,6 +163,17 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.lbl_detrend_info = QLabel("当前显示：原始Z高度 mm")
         self.lbl_detrend_info.setStyleSheet("color: #7f8c8d; font-size: 11px;")
         view_layout.addWidget(self.lbl_detrend_info)
+
+        self.btn_bigfile_settings = QPushButton("⚙ 大文件策略")
+        self.btn_bigfile_settings.setFixedHeight(28)
+        self.btn_bigfile_settings.setToolTip("设置超大TXT预抽样、导入上限、绘图显示上限。")
+        self.btn_bigfile_settings.clicked.connect(self.show_bigfile_settings_dialog)
+        view_layout.addWidget(self.btn_bigfile_settings)
+
+        # 保留状态标签对象用于内部更新；正常不占UI空间，状态写入按钮tooltip和状态栏
+        self.lbl_import_status = QLabel("导入状态: --")
+        self.lbl_import_status.setVisible(False)
+        view_layout.addWidget(self.lbl_import_status)
         view_layout.addStretch()
 
         self.canvas = MultiViewCanvas(self)
@@ -249,18 +287,19 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.cb_filter.setToolTip(
             "MAD全局: 对拟合残差做鲁棒3.5σ判定，适合零散毛刺。\n"
             "局部中位数: 每个点与其 k 个最近邻的残差中位数比较，偏离超过阈值判为异常。\n"
+            "  同时启用全局残差兜底：点相对全局残差中位数超过同一阈值也会被剔除。\n"
             "  适合已知面型上限的场景（如已知面型≤5µm 则阈值设5）。\n"
-            "  单个离群点不会误杀周围正常点（中位数对少数坏邻居不敏感）。")
+            "  单个离群点不会误杀周围正常点；成簇/边缘大离群点由全局兜底拦截。")
         fl.addWidget(self.cb_filter, 0, 1, 1, 3)
         fl.addWidget(QLabel("邻居数 k:"), 1, 0)
-        self.spin_k = QSpinBox(); self.spin_k.setRange(3, 50); self.spin_k.setValue(12)
-        self.spin_k.setToolTip("k 应大于可能成簇坏点数的 2 倍；坏点成片时调大 k")
+        self.spin_k = QSpinBox(); self.spin_k.setRange(3, 200); self.spin_k.setValue(12)
+        self.spin_k.setToolTip("邻域比较的最近邻数量，范围 3~200；常用 8~20，点云很密或坏点成片时可适当调大")
         fl.addWidget(self.spin_k, 1, 1)
         fl.addWidget(QLabel("阈值 (µm):"), 1, 2)
         self.spin_thresh = QDoubleSpinBox()
         self.spin_thresh.setDecimals(2); self.spin_thresh.setRange(0.01, 10000.0)
         self.spin_thresh.setValue(5.00); self.spin_thresh.setSingleStep(0.5)
-        self.spin_thresh.setToolTip("局部中位数模式的判异阈值，建议设为已知面型/噪声上限")
+        self.spin_thresh.setToolTip("局部中位数模式的判异阈值，同时作为全局残差兜底阈值；建议设为已知面型/噪声上限")
         fl.addWidget(self.spin_thresh, 1, 3)
         self.lbl_filter_info = QLabel("滤波剔除: 0 点 | 手动删除: 0 点")
         self.lbl_filter_info.setStyleSheet("color: #7f8c8d; font-size: 11px;")
@@ -276,6 +315,20 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.btn_del.setFixedHeight(45); self.btn_del.setStyleSheet("background-color: #c62828; color: white; font-weight: bold;")
         self.btn_del.clicked.connect(self.apply_manual_deletion)
         ll.addWidget(self.btn_del)
+
+        recipe_row = QHBoxLayout()
+        self.btn_export_recipe = QPushButton("📤 导出Recipe")
+        self.btn_export_recipe.setFixedHeight(34)
+        self.btn_export_recipe.setToolTip("保存当前单位、列映射、物料旋转组合、滤波、大文件显示和Gap参数。")
+        self.btn_export_recipe.clicked.connect(self.export_recipe)
+        self.btn_import_recipe = QPushButton("📥 导入Recipe")
+        self.btn_import_recipe.setFixedHeight(34)
+        self.btn_import_recipe.setToolTip("读取Recipe并自动写入当前UI参数；若尚未载入数据，列映射会在下次载入后自动应用。")
+        self.btn_import_recipe.clicked.connect(self.import_recipe)
+        recipe_row.addWidget(self.btn_export_recipe)
+        recipe_row.addWidget(self.btn_import_recipe)
+        ll.addLayout(recipe_row)
+
         self.btn_save = QPushButton("💾 导出最终 CSV 数据 (含元数据头)")
         self.btn_save.setFixedHeight(40); self.btn_save.clicked.connect(self.save_file)
         ll.addWidget(self.btn_save)
@@ -355,16 +408,125 @@ class SurfaceAnalyzerPro(QMainWindow):
         hl_tol.addWidget(self.spin_tol)
         ll.addLayout(hl_tol)
 
+        action_row = QHBoxLayout()
         self.btn_calc_gap = QPushButton("📐 容差匹配点云并计算胶厚")
         self.btn_calc_gap.setFixedHeight(60)
         self.btn_calc_gap.setStyleSheet("background-color: #8e44ad; color: white; font-weight: bold; font-size: 14px; border-radius: 6px;")
         self.btn_calc_gap.clicked.connect(self.calculate_gap)
-        ll.addWidget(self.btn_calc_gap)
+        action_row.addWidget(self.btn_calc_gap, 1)
+        ll.addLayout(action_row)
 
         scroll.setWidget(w)
         parent_widget.setLayout(QVBoxLayout())
         parent_widget.layout().addWidget(scroll)
         parent_widget.layout().setContentsMargins(0, 0, 0, 0)
+
+    # ================= Recipe 导入 / 导出 =================
+    def _current_recipe_dict(self):
+        """导出当前界面参数，不包含测量数据本身。"""
+        return {
+            'recipe_type': 'SurfaceRxyZxyAnalyzerRecipe',
+            'app_version': 'V3.5.2',
+            'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'column_mapping': {
+                'x_col': self.cb_x_col.currentText() if hasattr(self, 'cb_x_col') else '',
+                'y_col': self.cb_y_col.currentText() if hasattr(self, 'cb_y_col') else '',
+                'z_col': self.cb_z_col.currentText() if hasattr(self, 'cb_z_col') else '',
+            },
+            'units': {'x_unit': self.cb_x_unit.currentText(), 'y_unit': self.cb_y_unit.currentText(), 'z_unit': self.cb_z_unit.currentText()},
+            'transform_pipeline': list(self.transform_pipeline),
+            'filter': {'mode_index': int(self.cb_filter.currentIndex()), 'mode_text': self.cb_filter.currentText(), 'neighbor_k': int(self.spin_k.value()), 'threshold_um': float(self.spin_thresh.value())},
+            'display': {'detrended': bool(self.display_detrended)},
+            'large_file': {'auto_sample': bool(self.auto_sample_large_text), 'threshold_mb': int(self.large_text_threshold_mb), 'import_limit': int(self.large_text_import_limit), 'display_limit': int(self.display_point_limit)},
+            'gap': {'tolerance_mm': float(self.spin_tol.value()) if hasattr(self, 'spin_tol') else 0.05},
+        }
+
+    @staticmethod
+    def _safe_set_combo_text(combo, text):
+        if combo is None or text in (None, ''):
+            return False
+        idx = combo.findText(str(text))
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+            return True
+        return False
+
+    def export_recipe(self):
+        path, _ = QFileDialog.getSaveFileName(self, "导出Recipe", "Surface_Rxy_ZXY.recipe.json", "Recipe JSON (*.json);;All Files (*)")
+        if not path:
+            return
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(self._current_recipe_dict(), f, ensure_ascii=False, indent=2)
+            self.statusBar().showMessage(f"Recipe已导出: {path}", 5000)
+            QMessageBox.information(self, "Recipe导出成功", "已保存当前单位、列映射、物料旋转组合、滤波参数、大文件显示策略和Gap容差。")
+        except Exception as e:
+            QMessageBox.critical(self, "Recipe导出失败", str(e))
+
+    def import_recipe(self):
+        path, _ = QFileDialog.getOpenFileName(self, "导入Recipe", "", "Recipe JSON (*.json);;All Files (*)")
+        if not path:
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                recipe = json.load(f)
+            if recipe.get('recipe_type') not in (None, 'SurfaceRxyZxyAnalyzerRecipe'):
+                ret = QMessageBox.question(self, "Recipe类型不一致", "该JSON不一定是Surface Rxy ZXY Analyzer Recipe，是否仍尝试导入？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+                if ret != QMessageBox.StandardButton.Yes:
+                    return
+            self.apply_recipe(recipe, path_hint=Path(path).name)
+        except Exception as e:
+            QMessageBox.critical(self, "Recipe导入失败", str(e))
+
+    def apply_recipe(self, recipe, path_hint='', remap_current_data=True):
+        """将Recipe写入UI；若尚未载入数据，列映射名称会暂存，下一次载入文件后自动匹配。"""
+        self.pending_recipe = recipe
+        units = recipe.get('units', {}) or {}
+        self._safe_set_combo_text(self.cb_x_unit, units.get('x_unit'))
+        self._safe_set_combo_text(self.cb_y_unit, units.get('y_unit'))
+        self._safe_set_combo_text(self.cb_z_unit, units.get('z_unit'))
+        mapping = recipe.get('column_mapping', {}) or {}
+        applied_cols = []
+        if self.cb_x_col.count() > 0 and self._safe_set_combo_text(self.cb_x_col, mapping.get('x_col')):
+            applied_cols.append('X')
+        if self.cb_y_col.count() > 0 and self._safe_set_combo_text(self.cb_y_col, mapping.get('y_col')):
+            applied_cols.append('Y')
+        if self.cb_z_col.count() > 0 and self._safe_set_combo_text(self.cb_z_col, mapping.get('z_col')):
+            applied_cols.append('Z')
+        lf = recipe.get('large_file', {}) or {}
+        self.auto_sample_large_text = bool(lf.get('auto_sample', self.auto_sample_large_text))
+        self.large_text_threshold_mb = int(lf.get('threshold_mb', self.large_text_threshold_mb))
+        self.large_text_import_limit = int(lf.get('import_limit', self.large_text_import_limit))
+        self.display_point_limit = int(lf.get('display_limit', self.display_point_limit))
+        self.import_info['display_limit'] = self.display_point_limit
+        gap = recipe.get('gap', {}) or {}
+        if hasattr(self, 'spin_tol'):
+            self.spin_tol.setValue(float(gap.get('tolerance_mm', self.spin_tol.value())))
+        if remap_current_data and self.absolute_raw_df is not None:
+            self.apply_mapping(preserve_analysis_settings=True)
+        valid_actions = {'CW90', 'CCW90', 'ROT180', 'SWAP', 'FLIPX', 'FLIPY', 'ORIGIN(0,0)'}
+        self.transform_pipeline = [a for a in (recipe.get('transform_pipeline', []) or []) if a in valid_actions]
+        self._update_pipeline_label()
+        flt = recipe.get('filter', {}) or {}
+        mode_index = max(0, min(int(flt.get('mode_index', 0)), self.cb_filter.count() - 1))
+        self.cb_filter.blockSignals(True); self.cb_filter.setCurrentIndex(mode_index); self.cb_filter.blockSignals(False)
+        self.spin_k.setValue(int(flt.get('neighbor_k', self.spin_k.value())))
+        self.spin_thresh.setValue(float(flt.get('threshold_um', self.spin_thresh.value())))
+        detrended = bool((recipe.get('display', {}) or {}).get('detrended', False))
+        self.chk_detrend_display.blockSignals(True); self.chk_detrend_display.setChecked(detrended); self.chk_detrend_display.blockSignals(False)
+        self.display_detrended = detrended
+        self.lbl_detrend_info.setText("当前显示：去倾斜残差 µm（指标不变）" if detrended else "当前显示：原始Z高度 mm")
+        self._update_import_status_label()
+        if self.df_raw is not None:
+            self.update_analysis()
+            self.pending_recipe = None
+        msg = f"Recipe已导入{f'：{path_hint}' if path_hint else ''}。"
+        if self.absolute_raw_df is None:
+            msg += " 当前尚未载入数据，列映射将在下一次载入文件后自动尝试匹配。"
+        elif applied_cols:
+            msg += f" 已匹配列映射: {', '.join(applied_cols)}。"
+        self.statusBar().showMessage(msg, 8000)
+        QMessageBox.information(self, "Recipe导入完成", msg)
 
     # ================= 滤波算法 =================
     @staticmethod
@@ -377,23 +539,45 @@ class SurfaceAnalyzerPro(QMainWindow):
         return np.abs(resids - med) <= k * 1.4826 * mad
 
     @staticmethod
-    def local_median_filter(x, y, resids, k=12, threshold_mm=0.005):
-        """局部中位数滤波（邻域比较）。
-        每个点与其 k 个最近邻（不含自身）的残差中位数比较，
-        偏离超过 threshold 判为异常。
-        中位数要被拉偏需要超过一半邻居都是坏点，
-        因此单个离群点既会被自己的正常邻居揪出来，
-        也不会污染相邻正常点的判定 —— 不存在连锁误杀。"""
+    def local_median_filter(x, y, resids, k=12, threshold_mm=0.005, global_threshold_mm=None):
+        """局部中位数滤波（邻域比较）+ 全局残差兜底。
+
+        判定逻辑：
+        1) 局部条件：每个点与其 k 个最近邻（不含自身）的残差中位数比较，
+           偏离超过 threshold_mm 判为局部异常。
+        2) 全局兜底：每个点与全局残差中位数比较，
+           偏离超过 global_threshold_mm 判为全局大离群。
+
+        最终保留条件 = 局部条件通过 AND 全局兜底通过。
+
+        这样既能保留“邻域比较”对孤立坏点的识别能力，
+        也能避免边缘点/小簇异常点因为局部自洽而漏判。
+        默认 global_threshold_mm 与 threshold_mm 相同，
+        即 UI 中的“阈值(µm)”同时作为局部阈值和全局残差硬阈值。
+        """
         n = len(resids)
         kk = min(k, n - 1)
         if kk < 1:
             return np.ones(n, dtype=bool)
+
+        if global_threshold_mm is None:
+            global_threshold_mm = threshold_mm
+
         tree = cKDTree(np.column_stack([x, y]))
         _, idx = tree.query(np.column_stack([x, y]), k=kk + 1)
         if idx.ndim == 1:
             idx = idx[:, None]
+
+        # 局部一致性：当前点与邻居残差中位数比较
         local_med = np.median(resids[idx[:, 1:]], axis=1)
-        return np.abs(resids - local_med) <= threshold_mm
+        local_ok = np.abs(resids - local_med) <= threshold_mm
+
+        # 全局兜底：当前点与全局残差中位数比较
+        # 用于拦截明显大离群点，尤其是边缘点或成簇坏点。
+        global_med = np.median(resids)
+        global_ok = np.abs(resids - global_med) <= global_threshold_mm
+
+        return local_ok & global_ok
 
     # ================= 拟合 =================
     @staticmethod
@@ -533,6 +717,17 @@ class SurfaceAnalyzerPro(QMainWindow):
             self.absolute_raw_df = None
             self.current_source_name = gap_name
             self.lbl_source.setText(f"当前数据: {gap_name}")
+            self.import_info = {
+                'file_size_bytes': 0,
+                'file_size_mb': 0.0,
+                'strategy': 'Gap计算结果',
+                'sampled': False,
+                'import_rows': len(self.df_raw),
+                'valid_rows': len(self.df_raw),
+                'display_limit': self._display_limit(),
+                'notes': '由多层点云匹配计算生成'
+            }
+            self._update_import_status_label()
             self.transform_pipeline = []
             self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
             self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
@@ -583,15 +778,159 @@ class SurfaceAnalyzerPro(QMainWindow):
     TEXT_SUFFIXES = ('.csv', '.txt', '.tsv', '.dat', '.asc', '.xyz')
     EXCEL_SUFFIXES = ('.xlsx', '.xls', '.xlsm')
 
+    def _large_text_threshold_bytes(self):
+        return int(getattr(self, 'large_text_threshold_mb', self.LARGE_TEXT_FILE_BYTES // (1024 * 1024))) * 1024 * 1024
+
+    def _large_text_import_limit(self):
+        return int(getattr(self, 'large_text_import_limit', self.LARGE_TEXT_IMPORT_LIMIT))
+
+    def _display_limit(self):
+        return int(getattr(self, 'display_point_limit', self.DISPLAY_POINT_LIMIT))
+
+    def _reset_import_info(self, path=None):
+        size = 0
+        if path:
+            try:
+                size = Path(path).stat().st_size
+            except Exception:
+                size = 0
+        self.import_info = {
+            'file_size_bytes': size,
+            'file_size_mb': size / (1024 * 1024) if size else 0.0,
+            'strategy': '--',
+            'sampled': False,
+            'import_rows': 0,
+            'display_limit': self._display_limit(),
+            'notes': ''
+        }
+
+    def _update_import_status_label(self):
+        info = getattr(self, 'import_info', {}) or {}
+        strategy = info.get('strategy', '--')
+        file_size_mb = info.get('file_size_mb', 0.0)
+        import_rows = info.get('import_rows', 0)
+        display_limit = self._display_limit()
+        shown = self.last_displayed_points if self.last_displayed_points else min(import_rows or 0, display_limit)
+        sampled_text = '抽样' if info.get('sampled') else '全量/未抽样'
+        notes = info.get('notes') or ''
+        valid_rows = info.get('valid_rows', None)
+        valid_text = f" | 有效 {int(valid_rows):,} 点" if valid_rows is not None else ""
+        text = (f"导入状态: {strategy} | {sampled_text} | 文件 {file_size_mb:.1f} MB | "
+                f"读入 {int(import_rows):,} 行{valid_text} | 显示 {int(shown):,}/{int(display_limit):,} 点")
+        if notes:
+            text += f" | {notes}"
+        if hasattr(self, 'lbl_import_status'):
+            self.lbl_import_status.setText(text)
+        if hasattr(self, 'btn_bigfile_settings'):
+            cfg = (f"大文件策略\n"
+                   f"自动抽样: {'开启' if self.auto_sample_large_text else '关闭'}\n"
+                   f"触发阈值: {self.large_text_threshold_mb} MB\n"
+                   f"导入上限: {self.large_text_import_limit:,} 行\n"
+                   f"显示上限: {self.display_point_limit:,} 点\n\n{text}")
+            self.btn_bigfile_settings.setToolTip(cfg)
+        if text and strategy != '--':
+            self.statusBar().showMessage(text, 5000)
+
+    def _on_display_limit_changed(self):
+        self.import_info['display_limit'] = self._display_limit()
+        self._update_import_status_label()
+        if self.df_raw is not None and self.active_idx is not None:
+            self.update_plots_only()
+
+    def show_bigfile_settings_dialog(self):
+        """V3.5.1: 大文件导入/显示策略弹窗。
+        正常界面只保留右侧工具条按钮，避免占用左侧主控区。"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("大文件导入 / 显示策略")
+        dlg.setMinimumWidth(520)
+        layout = QVBoxLayout(dlg)
+
+        group = QGroupBox("Zeiss / TXT / ASC / XYZ 大文件策略")
+        grid = QGridLayout(group)
+
+        chk_auto = QCheckBox("超大文本自动抽样")
+        chk_auto.setChecked(self.auto_sample_large_text)
+        chk_auto.setToolTip("开启后，超过阈值的TXT/CSV/ASC/XYZ等文本文件不会全量读入，而是先按文件位置均匀抽样，避免Zeiss大文件卡死。")
+        grid.addWidget(chk_auto, 0, 0, 1, 2)
+
+        grid.addWidget(QLabel("触发阈值(MB):"), 1, 0)
+        spin_mb = QSpinBox()
+        spin_mb.setRange(1, 4096)
+        spin_mb.setValue(int(self.large_text_threshold_mb))
+        spin_mb.setToolTip("文件大小达到该阈值时触发预抽样导入。默认512MB。")
+        grid.addWidget(spin_mb, 1, 1)
+
+        grid.addWidget(QLabel("导入上限(行):"), 2, 0)
+        spin_import = QSpinBox()
+        spin_import.setRange(10000, 5000000)
+        spin_import.setSingleStep(50000)
+        spin_import.setValue(int(self.large_text_import_limit))
+        spin_import.setToolTip("超大文本预抽样最多导入的行数。注意：该上限影响后续拟合/滤波指标。")
+        grid.addWidget(spin_import, 2, 1)
+
+        grid.addWidget(QLabel("显示上限(点):"), 3, 0)
+        spin_display = QSpinBox()
+        spin_display.setRange(5000, 1000000)
+        spin_display.setSingleStep(5000)
+        spin_display.setValue(int(self.display_point_limit))
+        spin_display.setToolTip("仅限制右侧绘图显示点数，不改变已导入数据和Rx/Ry/PV/TTV计算。")
+        grid.addWidget(spin_display, 3, 1)
+
+        note = QLabel("说明：导入抽样会影响参与分析的数据量；显示上限只影响绘图，不改变已导入数据。")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #7f8c8d; font-size: 11px;")
+        grid.addWidget(note, 4, 0, 1, 2)
+        layout.addWidget(group)
+
+        status = QLabel(self.lbl_import_status.text() if hasattr(self, 'lbl_import_status') else "导入状态: --")
+        status.setWordWrap(True)
+        status.setStyleSheet("color: #7f8c8d; font-size: 11px;")
+        layout.addWidget(status)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            old_display_limit = self.display_point_limit
+            self.auto_sample_large_text = chk_auto.isChecked()
+            self.large_text_threshold_mb = int(spin_mb.value())
+            self.large_text_import_limit = int(spin_import.value())
+            self.display_point_limit = int(spin_display.value())
+            self.import_info['display_limit'] = self.display_point_limit
+            self._update_import_status_label()
+            if old_display_limit != self.display_point_limit and self.df_raw is not None and self.active_idx is not None:
+                self.update_plots_only()
+            self.statusBar().showMessage("大文件导入/显示策略已更新", 5000)
+
+    @staticmethod
+    def _detect_sep_from_line(line):
+        if '\t' in line:
+            return '\t'
+        if ',' in line:
+            return ','
+        if ';' in line:
+            return ';'
+        return r'\s+'
+
     @staticmethod
     def _split_text_line(line, sep):
         if sep == r'\s+':
             return [t for t in re.split(r'\s+', line.strip()) if t]
-        return [t for t in line.strip().split(sep) if t]
+        return [t for t in line.strip().split(sep) if t != '']
 
     @classmethod
     def _is_missing_token(cls, value):
         return str(value).strip() in cls.MISSING_TEXT_TOKENS
+
+    @classmethod
+    def _is_float_token(cls, value):
+        try:
+            float(str(value))
+            return True
+        except (TypeError, ValueError):
+            return False
 
     @classmethod
     def _is_float_or_missing_token(cls, value):
@@ -615,10 +954,50 @@ class SurfaceAnalyzerPro(QMainWindow):
         except (TypeError, ValueError):
             return np.nan
 
-    def _sample_large_headerless_text(self, path, enc, sep, ncols):
+    @classmethod
+    def _detect_text_layout(cls, path, enc, max_scan_lines=5000):
+        """扫描文本开头，识别第一行有效数值数据、分隔符、列数和可选表头。
+        兼容 Zeiss 类导出：前面可能有仪器信息/单位信息，只要后面存在 X/Y/Z 数值行即可。"""
+        last_tokens = None
+        last_line_no = None
+        last_sep = None
+        with open(path, 'r', encoding=enc, errors='ignore') as fh:
+            for line_no, line in enumerate(fh):
+                if line_no >= max_scan_lines:
+                    break
+                stripped = line.strip().lstrip('\ufeff')
+                if not stripped or stripped.startswith('#'):
+                    continue
+                sep = cls._detect_sep_from_line(stripped)
+                tokens = cls._split_text_line(stripped, sep)
+                if cls._looks_like_numeric_text_row(tokens):
+                    header_tokens = None
+                    if last_tokens and len(last_tokens) == len(tokens) and not cls._looks_like_numeric_text_row(last_tokens):
+                        header_tokens = [str(t).replace('\ufeff', '').strip() or f'Col{i+1}'
+                                         for i, t in enumerate(last_tokens)]
+                    return {
+                        'encoding': enc,
+                        'sep': sep,
+                        'ncols': len(tokens),
+                        'data_line_no': line_no,
+                        'header_tokens': header_tokens,
+                        'first_numeric_line': stripped,
+                        'header_line_no': last_line_no,
+                        'header_sep': last_sep,
+                    }
+                last_tokens = tokens
+                last_line_no = line_no
+                last_sep = sep
+        return None
+
+    def _sample_large_text(self, path, enc, sep, ncols, column_names=None):
+        """超大文本预抽样：按文件字节位置均匀抽取数据行。
+        该步骤发生在 pandas 全量读入之前，目的是避免 Zeiss 大TXT一次性读爆内存。
+        注意：这是文件位置抽样，不是空间网格抽样。"""
         file_size = Path(path).stat().st_size
-        max_rows = self.LARGE_TEXT_IMPORT_LIMIT
+        max_rows = self._large_text_import_limit()
         rows = []
+        seen_starts = set()
 
         with open(path, 'rb') as fh:
             mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
@@ -633,6 +1012,9 @@ class SurfaceAnalyzerPro(QMainWindow):
                         if start < 0:
                             continue
                         start += 1
+                    if start in seen_starts:
+                        continue
+                    seen_starts.add(start)
                     end = mm.find(b'\n', start)
                     if end < 0:
                         end = file_size
@@ -651,123 +1033,144 @@ class SurfaceAnalyzerPro(QMainWindow):
                     rows.append(values)
                     if i % 5000 == 0:
                         self.statusBar().showMessage(
-                            f"正在抽样导入超大TXT: {i + 1:,}/{max_rows:,}", 1000)
+                            f"正在抽样导入超大TXT: {i + 1:,}/{max_rows:,} | 已取有效行 {len(rows):,}", 1000)
                         QApplication.processEvents()
             finally:
                 mm.close()
 
-        df = pd.DataFrame(rows, columns=[f'Col{i+1}' for i in range(ncols)])
+        if not rows:
+            raise ValueError("超大文本抽样未得到有效数值行，请检查文件格式或关闭自动抽样后重试。")
+
+        cols = column_names if column_names and len(column_names) == ncols else [f'Col{i+1}' for i in range(ncols)]
+        df = pd.DataFrame(rows, columns=cols)
         self.last_import_note = (
-            f"超大文本已抽样导入，避免全量读入导致卡死。\n"
+            f"超大文本已预抽样导入，避免全量读入导致卡死。\n"
             f"文件大小: {file_size / (1024 * 1024):.1f} MB\n"
+            f"触发阈值: {self.large_text_threshold_mb} MB\n"
             f"抽样上限: {max_rows:,} 行\n"
             f"实际导入行数: {len(df):,} 行\n"
+            f"抽样方式: 按文件位置均匀抽样，不是空间网格抽样。\n"
             f"缺测值标记({', '.join(sorted(self.MISSING_TEXT_TOKENS))})已按空值处理。"
         )
+        self.import_info.update({
+            'strategy': '超大文本预抽样导入',
+            'sampled': True,
+            'import_rows': len(df),
+            'notes': f"抽样上限 {max_rows:,} 行"
+        })
         return df
 
     def _read_table(self, path):
         """鲁棒读取表格文件：
-        - 文本类(.csv/.txt/.tsv/.dat/.asc/.xyz): 自动嗅探分隔符(逗号/制表符/分号/空格)，
-          依次尝试 utf-8-sig / gbk / utf-16 / latin-1 编码，自动跳过#注释行、空行、坏行
-        - Excel类(.xlsx/.xls/.xlsm): pd.read_excel
-        - 列名统一清理 BOM 与首尾空白（修复 utf-8-sig 文件列名带 \\ufeff 导致的解析失败）
-        - 自动识别无表头文件（首行即数据时列名命名为 Col1..ColN）"""
+        - 文本类(.csv/.txt/.tsv/.dat/.asc/.xyz): 自动尝试 utf-8-sig/gbk/utf-16/latin-1；自动识别分隔符；
+          自动跳过#注释行、空行、坏行；识别无表头/普通表头/Zeiss类复杂头。
+        - 超过设定阈值的文本文件可在 pandas 全量读入前预抽样，默认阈值512MB、最多50万行。
+        - Excel类(.xlsx/.xls/.xlsm): pd.read_excel，不做预抽样。
+        """
         self.last_import_note = ""
+        self._reset_import_info(path)
         suffix = Path(path).suffix.lower()
-        used_enc, used_sep = None, None
+        file_size = Path(path).stat().st_size
+
         if suffix in self.EXCEL_SUFFIXES:
             df = pd.read_excel(path)
+            self.import_info.update({
+                'strategy': 'Excel全量读取',
+                'sampled': False,
+                'import_rows': len(df),
+                'notes': 'Excel不做预抽样'
+            })
         elif suffix in self.TEXT_SUFFIXES or suffix == '':
-            df, last_err = None, None
+            last_err = None
+            df = None
+            layout = None
+
             for enc in ('utf-8-sig', 'gbk', 'utf-16', 'latin-1'):
                 try:
-                    with open(path, 'r', encoding=enc) as fh:
-                        first_data_line = None
-                        for line in fh:
-                            stripped = line.strip()
-                            if stripped and not stripped.startswith('#'):
-                                first_data_line = stripped
-                                break
-                    if not first_data_line:
-                        continue
-
-                    if '\t' in first_data_line:
-                        sep = '\t'
-                    elif ',' in first_data_line:
-                        sep = ','
-                    elif ';' in first_data_line:
-                        sep = ';'
-                    else:
-                        sep = r'\s+'
-
-                    tokens = self._split_text_line(first_data_line, sep)
-                    if self._looks_like_numeric_text_row(tokens):
-                        file_size = Path(path).stat().st_size
-                        if file_size >= self.LARGE_TEXT_FILE_BYTES:
-                            return self._sample_large_headerless_text(path, enc, sep, len(tokens))
-                        df = pd.read_csv(path, sep=sep, engine='c', encoding=enc,
-                                         comment='#', skip_blank_lines=True,
-                                         on_bad_lines='skip', header=None,
-                                         na_values=list(self.MISSING_TEXT_TOKENS),
-                                         keep_default_na=True)
-                        df.columns = [f'Col{i+1}' for i in range(df.shape[1])]
-                        return df
+                    layout = self._detect_text_layout(path, enc)
+                    if layout is not None:
+                        break
                 except Exception as e:
                     last_err = e
+                    layout = None
 
-            # sep=None 自动嗅探优先；嗅探失败(如被#注释头干扰)时回退到常见分隔符
-            for enc in ('utf-8-sig', 'gbk', 'utf-16', 'latin-1'):
-                for sep in (None, ',', '\t', ';', r'\s+'):
-                    try:
-                        df_try = pd.read_csv(path, sep=sep, engine='python', encoding=enc,
-                                             comment='#', skip_blank_lines=True, on_bad_lines='skip',
-                                             na_values=list(self.MISSING_TEXT_TOKENS),
-                                             keep_default_na=True)
-                        if df_try.shape[1] >= 2:
-                            df, used_enc, used_sep = df_try, enc, sep
-                            break
-                    except Exception as e:
-                        last_err = e
-                if df is not None:
-                    break
-            if df is None:
-                raise ValueError(f"文本解析失败（已尝试 utf-8/gbk/utf-16/latin-1 编码与常见分隔符）: {last_err}")
+            if layout is not None:
+                enc = layout['encoding']
+                sep = layout['sep']
+                ncols = layout['ncols']
+                col_names = layout['header_tokens'] if layout['header_tokens'] else [f'Col{i+1}' for i in range(ncols)]
+                auto_sample = bool(getattr(self, 'auto_sample_large_text', True))
+                if auto_sample and file_size >= self._large_text_threshold_bytes():
+                    df = self._sample_large_text(path, enc, sep, ncols, col_names)
+                else:
+                    df = pd.read_csv(path, sep=sep, engine='python', encoding=enc,
+                                     comment='#', skip_blank_lines=True,
+                                     on_bad_lines='skip', header=None,
+                                     skiprows=layout['data_line_no'],
+                                     na_values=list(self.MISSING_TEXT_TOKENS),
+                                     keep_default_na=True)
+                    if df.shape[1] >= len(col_names):
+                        df = df.iloc[:, :len(col_names)]
+                        df.columns = col_names
+                    else:
+                        df.columns = [f'Col{i+1}' for i in range(df.shape[1])]
+                    self.import_info.update({
+                        'strategy': '文本全量读取',
+                        'sampled': False,
+                        'import_rows': len(df),
+                        'notes': f"编码 {enc}"
+                    })
+            else:
+                # 回退到 pandas 嗅探；不建议用于超大未知格式文件，因此超过阈值时给出明确提示。
+                auto_sample = bool(getattr(self, 'auto_sample_large_text', True))
+                if auto_sample and file_size >= self._large_text_threshold_bytes():
+                    raise ValueError("文件超过超大文本阈值，但前5000行未识别到有效数值数据行；\n"
+                                     "为避免全量读入卡死，已停止导入。请检查Zeiss TXT头部格式，或关闭自动抽样后重试。")
+                for enc in ('utf-8-sig', 'gbk', 'utf-16', 'latin-1'):
+                    for sep in (None, ',', '\t', ';', r'\s+'):
+                        try:
+                            df_try = pd.read_csv(path, sep=sep, engine='python', encoding=enc,
+                                                 comment='#', skip_blank_lines=True, on_bad_lines='skip',
+                                                 na_values=list(self.MISSING_TEXT_TOKENS),
+                                                 keep_default_na=True)
+                            if df_try.shape[1] >= 2:
+                                df = df_try
+                                self.import_info.update({
+                                    'strategy': '文本全量读取(回退嗅探)',
+                                    'sampled': False,
+                                    'import_rows': len(df),
+                                    'notes': f"编码 {enc}"
+                                })
+                                break
+                        except Exception as e:
+                            last_err = e
+                    if df is not None:
+                        break
+                if df is None:
+                    raise ValueError(f"文本解析失败（已尝试 utf-8/gbk/utf-16/latin-1 编码与常见分隔符）: {last_err}")
         else:
             raise ValueError(f"不支持的文件格式: {suffix}\n"
                              f"支持: {', '.join(self.TEXT_SUFFIXES + self.EXCEL_SUFFIXES)}")
 
         # 清理列名: 去 BOM、去首尾空白
-        df.columns = [str(c).replace('﻿', '').strip() for c in df.columns]
+        df.columns = [str(c).replace('\ufeff', '').strip() for c in df.columns]
 
-        # 无表头检测: 如果所有列名都是数字，说明首行其实是数据，重读
+        # 如果列名仍像数字，说明第一行可能是数据；统一改为 Col1..ColN
         def _is_num(s):
             try:
                 float(str(s)); return True
             except (TypeError, ValueError):
                 return False
         if df.shape[1] >= 2 and all(_is_num(c) for c in df.columns):
-            if suffix in self.EXCEL_SUFFIXES:
-                df = pd.read_excel(path, header=None)
-            else:
-                df = pd.read_csv(path, sep=used_sep, engine='python', encoding=used_enc,
-                                 comment='#', skip_blank_lines=True, on_bad_lines='skip',
-                                 header=None,
-                                 na_values=list(self.MISSING_TEXT_TOKENS),
-                                 keep_default_na=True)
             df.columns = [f'Col{i+1}' for i in range(df.shape[1])]
 
         if df.empty or df.shape[1] < 2:
             raise ValueError("文件内容为空或有效列少于 2 列，请检查文件。")
-        return df
 
-    @staticmethod
-    def _is_float_token(value):
-        try:
-            float(str(value))
-            return True
-        except (TypeError, ValueError):
-            return False
+        self.import_info['import_rows'] = len(df)
+        self.import_info['display_limit'] = self._display_limit()
+        self._update_import_status_label()
+        return df
 
     def load_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -790,6 +1193,7 @@ class SurfaceAnalyzerPro(QMainWindow):
                 return di if di < len(cols) else 0
 
             if len(cols) >= 3 and all(re.fullmatch(r'Col\d+', c) for c in cols):
+                # 无表头 X/Y/Z 文本默认按 Col1/Col2/Col3 映射，适配 Zeiss/XYZ 常见导出
                 self.cb_x_col.setCurrentIndex(0)
                 self.cb_y_col.setCurrentIndex(1)
                 self.cb_z_col.setCurrentIndex(2)
@@ -797,7 +1201,20 @@ class SurfaceAnalyzerPro(QMainWindow):
                 self.cb_x_col.setCurrentIndex(guess_index('x', 1))
                 self.cb_y_col.setCurrentIndex(guess_index('y', 2))
                 self.cb_z_col.setCurrentIndex(guess_index('z', 0))
-            self.apply_mapping()
+            if self.pending_recipe is not None:
+                units = self.pending_recipe.get('units', {}) or {}
+                self._safe_set_combo_text(self.cb_x_unit, units.get('x_unit'))
+                self._safe_set_combo_text(self.cb_y_unit, units.get('y_unit'))
+                self._safe_set_combo_text(self.cb_z_unit, units.get('z_unit'))
+                mapping = self.pending_recipe.get('column_mapping', {}) or {}
+                self._safe_set_combo_text(self.cb_x_col, mapping.get('x_col'))
+                self._safe_set_combo_text(self.cb_y_col, mapping.get('y_col'))
+                self._safe_set_combo_text(self.cb_z_col, mapping.get('z_col'))
+                self.apply_mapping(preserve_analysis_settings=True)
+                self.apply_recipe(self.pending_recipe, path_hint='已随当前文件自动应用', remap_current_data=False)
+            else:
+                self.apply_mapping()
+            self._update_import_status_label()
             if self.last_import_note:
                 self.statusBar().showMessage(self.last_import_note.replace('\n', ' | '), 15000)
                 QMessageBox.information(self, "超大文件导入说明", self.last_import_note)
@@ -809,7 +1226,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "导入失败", str(e))
 
-    def apply_mapping(self):
+    def apply_mapping(self, preserve_analysis_settings=False):
         if self.absolute_raw_df is None:
             self.statusBar().showMessage("当前无原始文件可映射（Gap 结果状态下映射已锁定）", 5000)
             return
@@ -833,8 +1250,19 @@ class SurfaceAnalyzerPro(QMainWindow):
             temp_df['Z'] = temp_df['Z'] * unit_m[self.cb_z_unit.currentText()]
 
             self.df_raw = temp_df[['Z', 'X', 'Y']]
+            self.import_info['valid_rows'] = len(self.df_raw)
+            self.import_info['display_limit'] = self._display_limit()
+            self._update_import_status_label()
             self._df_version += 1
-            self.reset_all()
+            if preserve_analysis_settings:
+                self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
+                self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
+                self.current_coeffs = None
+                self._trans_cache_key = None
+                self._trans_cache_data = None
+                self.update_analysis()
+            else:
+                self.reset_all()
         except Exception as e:
             QMessageBox.critical(self, "解析失败", str(e))
 
@@ -901,8 +1329,7 @@ class SurfaceAnalyzerPro(QMainWindow):
             self.lbl_detrend_info.setText("当前显示：去倾斜残差 µm（指标不变）")
         else:
             self.lbl_detrend_info.setText("当前显示：原始Z高度 mm")
-        if self.df_raw is not None and self.active_idx is not None:
-            self.update_plots_only()
+        self.update_plots_only()
 
     def _get_plot_z(self, tx, ty, tz):
         """返回绘图/框选使用的Z值和轴标签。
@@ -940,10 +1367,12 @@ class SurfaceAnalyzerPro(QMainWindow):
                 if mode == 1:
                     keep = self.mad_filter(resids, k=3.5)
                 else:
+                    threshold_mm = self.spin_thresh.value() * 1e-3
                     keep = self.local_median_filter(
                         xb, yb, resids,
                         k=self.spin_k.value(),
-                        threshold_mm=self.spin_thresh.value() * 1e-3)
+                        threshold_mm=threshold_mm,
+                        global_threshold_mm=threshold_mm)
                 if keep.sum() < 3:
                     self.statusBar().showMessage("⚠ 滤波后点数不足 3 个，已自动退回未滤波状态。请调整阈值/k。", 10000)
                     self.active_idx = idx
@@ -988,11 +1417,15 @@ class SurfaceAnalyzerPro(QMainWindow):
     # ================= 绘图与交互 =================
     def draw_plots(self, tx, ty, tz):
         plot_idx = self.active_idx
-        if len(plot_idx) > self.DISPLAY_POINT_LIMIT:
-            pick = np.linspace(0, len(plot_idx) - 1, self.DISPLAY_POINT_LIMIT, dtype=int)
+        display_limit = self._display_limit()
+        if len(plot_idx) > display_limit:
+            pick = np.linspace(0, len(plot_idx) - 1, display_limit, dtype=int)
             plot_idx = plot_idx[pick]
             self.statusBar().showMessage(
-                f"数据共 {len(self.active_idx)} 点；绘图抽样显示 {len(plot_idx)} 点，指标仍按全量计算。", 5000)
+                f"数据共 {len(self.active_idx):,} 点；绘图抽样显示 {len(plot_idx):,} 点，指标仍按当前导入后的分析数据计算。", 5000)
+
+        self.last_displayed_points = len(plot_idx)
+        self._update_import_status_label()
 
         dx, dy = tx[plot_idx], ty[plot_idx]
         plot_z_all, z_axis_label, z_short_label = self._get_plot_z(tx, ty, tz)
@@ -1039,8 +1472,8 @@ class SurfaceAnalyzerPro(QMainWindow):
 
         if self.temp_selected_mask is not None and self.temp_selected_mask.sum() > 0:
             selected_idx = np.where(self.temp_selected_mask)[0]
-            if len(selected_idx) > self.DISPLAY_POINT_LIMIT:
-                pick = np.linspace(0, len(selected_idx) - 1, self.DISPLAY_POINT_LIMIT, dtype=int)
+            if len(selected_idx) > display_limit:
+                pick = np.linspace(0, len(selected_idx) - 1, display_limit, dtype=int)
                 selected_idx = selected_idx[pick]
             txs, tys, tzs = tx[selected_idx], ty[selected_idx], plot_z_all[selected_idx]
             for ax in [self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz]:
@@ -1066,8 +1499,6 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.update_plots_only()
 
     def update_plots_only(self):
-        if self.df_raw is None or self.active_idx is None:
-            return
         tx, ty, tz = self.get_final_transformed_data(self.df_raw)
         self.draw_plots(tx, ty, tz)
 
@@ -1115,15 +1546,18 @@ class SurfaceAnalyzerPro(QMainWindow):
             pipeline_text = " -> ".join(self.transform_pipeline) if self.transform_pipeline else "原始状态"
             filter_text = self.cb_filter.currentText()
             if self.cb_filter.currentIndex() == 2:
-                filter_text += f" (k={self.spin_k.value()}, 阈值={self.spin_thresh.value()}µm)"
+                filter_text += f" (k={self.spin_k.value()}, 局部阈值={self.spin_thresh.value()}µm, 全局兜底阈值={self.spin_thresh.value()}µm)"
             meta = [
-                "# ===== 面型及Rxy分析工具 V3.3 导出 =====",
+                "# ===== 面型及Rxy分析工具 V3.5.2 导出 =====",
                 f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
                 f"# 数据来源: {self.current_source_name}",
                 f"# 变换路径: {pipeline_text}",
                 f"# 滤波模式: {filter_text}",
                 f"# 滤波剔除点数: {self.n_filtered} | 手动删除点数: {int((~self.manual_mask).sum())} | 导出点数: {len(fz)}",
                 f"# 当前显示模式: {'去倾斜残差显示(仅显示/框选)' if self.display_detrended else '原始Z高度显示'}",
+                f"# 导入方式: {self.import_info.get('strategy', '--')} | 是否抽样: {self.import_info.get('sampled', False)}",
+                f"# 源文件大小: {self.import_info.get('file_size_mb', 0.0):.1f} MB | 读入行数: {self.import_info.get('import_rows', 0)} | 有效点数: {self.import_info.get('valid_rows', len(self.df_raw) if self.df_raw is not None else 0)}",
+                f"# 显示上限: {self._display_limit()} 点 | 最近一次绘图显示: {self.last_displayed_points} 点",
             ]
             if self.last_metrics is not None:
                 m = self.last_metrics
