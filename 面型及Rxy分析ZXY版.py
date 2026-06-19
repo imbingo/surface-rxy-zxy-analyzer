@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-面型及Rxy分析工具 V3.5.2
+面型及Rxy分析工具 V3.5.3
 基于 V1 的修复与增强：
   [修复] 导出 Z_um 单位错误（原版导出的是 mm 值，列名却是 µm）
   [修复] 旋转/翻转改为基于包围盒(min/max)，坐标不从0开始也不会产生偏移
@@ -32,6 +32,8 @@
   [优化] V3.5.1: 大文件导入/显示策略从左侧移到右侧工具条按钮，弹窗设置，避免左侧拥挤
   [增强] V3.5.1: 新增Recipe导出/导入，保存单位、列映射、物料旋转组合、滤波参数、显示/大文件/Gap设置
   [优化] V3.5.2: Recipe导出/导入按钮移至左侧主控页“导出最终CSV”上方，减轻多层页底部拥挤
+  [修复] V3.5.3: 未载入数据时切换去倾斜显示不再触发重绘异常
+  [优化] V3.5.3: 局部中位数滤波改为分块近邻查询，降低大点云内存峰值
 注意：Rx/Ry 符号约定 (Rx≈+dZ/dY, Ry≈-dZ/dX) 需用已知倾角标准件实测校准一次。
 """
 import sys
@@ -75,7 +77,7 @@ class SurfaceAnalyzerPro(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("面型及Rxy分析ZXY版 V3.5.2")
+        self.setWindowTitle("面型及Rxy分析ZXY版 V3.5.3")
         self.resize(1750, 950)
 
         # 数据流
@@ -426,7 +428,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         """导出当前界面参数，不包含测量数据本身。"""
         return {
             'recipe_type': 'SurfaceRxyZxyAnalyzerRecipe',
-            'app_version': 'V3.5.2',
+            'app_version': 'V3.5.3',
             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'column_mapping': {
                 'x_col': self.cb_x_col.currentText() if hasattr(self, 'cb_x_col') else '',
@@ -563,14 +565,20 @@ class SurfaceAnalyzerPro(QMainWindow):
         if global_threshold_mm is None:
             global_threshold_mm = threshold_mm
 
-        tree = cKDTree(np.column_stack([x, y]))
-        _, idx = tree.query(np.column_stack([x, y]), k=kk + 1)
-        if idx.ndim == 1:
-            idx = idx[:, None]
+        xy = np.column_stack([x, y])
+        tree = cKDTree(xy)
 
-        # 局部一致性：当前点与邻居残差中位数比较
-        local_med = np.median(resids[idx[:, 1:]], axis=1)
-        local_ok = np.abs(resids - local_med) <= threshold_mm
+        # 局部一致性：分块查询最近邻，避免一次性生成 n*(k+1) 的超大索引/距离矩阵。
+        local_ok = np.empty(n, dtype=bool)
+        max_query_values = 2_000_000
+        batch_size = max(1000, min(n, max_query_values // (kk + 1)))
+        for start in range(0, n, batch_size):
+            end = min(start + batch_size, n)
+            _, idx = tree.query(xy[start:end], k=kk + 1)
+            if idx.ndim == 1:
+                idx = idx[:, None]
+            local_med = np.median(resids[idx[:, 1:]], axis=1)
+            local_ok[start:end] = np.abs(resids[start:end] - local_med) <= threshold_mm
 
         # 全局兜底：当前点与全局残差中位数比较
         # 用于拦截明显大离群点，尤其是边缘点或成簇坏点。
@@ -1499,6 +1507,8 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.update_plots_only()
 
     def update_plots_only(self):
+        if self.df_raw is None or self.active_idx is None:
+            return
         tx, ty, tz = self.get_final_transformed_data(self.df_raw)
         self.draw_plots(tx, ty, tz)
 
@@ -1548,7 +1558,7 @@ class SurfaceAnalyzerPro(QMainWindow):
             if self.cb_filter.currentIndex() == 2:
                 filter_text += f" (k={self.spin_k.value()}, 局部阈值={self.spin_thresh.value()}µm, 全局兜底阈值={self.spin_thresh.value()}µm)"
             meta = [
-                "# ===== 面型及Rxy分析工具 V3.5.2 导出 =====",
+                "# ===== 面型及Rxy分析工具 V3.5.3 导出 =====",
                 f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
                 f"# 数据来源: {self.current_source_name}",
                 f"# 变换路径: {pipeline_text}",
