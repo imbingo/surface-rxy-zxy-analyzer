@@ -1832,7 +1832,7 @@ class SurfaceAnalyzerPro(QMainWindow):
                         params['pipeline_text'], params['filter_text'],
                         import_info_snap, params['display_detrended'])
                     out_png = out / f"result_{Path(path).stem}.png"
-                    fig.savefig(str(out_png), dpi=130)
+                    fig.savefig(str(out_png), dpi=150)
                     results.append({'status': 'ok', 'file': name, 'out': str(out_png)})
                     summary_rows.append({
                         '文件': name, '总点数': n_total, '参与拟合': int(len(active_idx)),
@@ -1863,7 +1863,11 @@ class SurfaceAnalyzerPro(QMainWindow):
         fig = Figure(figsize=(17, 9), constrained_layout=True)
         FigureCanvasAgg(fig)
         gs = fig.add_gridspec(2, 3, width_ratios=[1.15, 1.0, 1.0])
-        ax_text = fig.add_subplot(gs[:, 0]); ax_text.axis('off')
+        # 左栏再切成 元信息 / 结果卡片 / 脚注 三段，互不重叠
+        gs_left = gs[:, 0].subgridspec(20, 1)
+        ax_meta = fig.add_subplot(gs_left[0:8, 0]); ax_meta.axis('off')
+        ax_res = fig.add_subplot(gs_left[8:17, 0]); ax_res.axis('off')
+        ax_foot = fig.add_subplot(gs_left[18:20, 0]); ax_foot.axis('off')
         ax3d = fig.add_subplot(gs[0, 1], projection='3d')
         ax_xy = fig.add_subplot(gs[0, 2])
         ax_xz = fig.add_subplot(gs[1, 1])
@@ -1885,10 +1889,10 @@ class SurfaceAnalyzerPro(QMainWindow):
             zlab, ttl3d, txt, tyt = "Z (mm)", "3D 原始高度", "X-Z剖面", "Y-Z剖面"
         dz = plot_z_all[plot_idx]
 
-        sc = {'c': dz, 'cmap': 'turbo', 's': 12, 'alpha': 0.8}
+        sc = {'c': dz, 'cmap': 'turbo', 's': 14, 'alpha': 0.85, 'edgecolors': 'none'}
         ax3d.scatter(dx, dy, dz, **sc)
         ax3d.set_title(ttl3d); ax3d.set_xlabel("X (mm)"); ax3d.set_ylabel("Y (mm)"); ax3d.set_zlabel(zlab)
-        ax_xy.scatter(dx, dy, **sc); ax_xy.set_title("XY 俯视分布"); ax_xy.set_xlabel("X (mm)"); ax_xy.set_ylabel("Y (mm)")
+        m_xy = ax_xy.scatter(dx, dy, **sc); ax_xy.set_title("XY 俯视分布"); ax_xy.set_xlabel("X (mm)"); ax_xy.set_ylabel("Y (mm)")
         ax_xz.scatter(dx, dz, **sc); ax_xz.set_title(txt); ax_xz.set_xlabel("X (mm)"); ax_xz.set_ylabel(zlab)
         ax_yz.scatter(dy, dz, **sc); ax_yz.set_title(tyt); ax_yz.set_xlabel("Y (mm)"); ax_yz.set_ylabel(zlab)
         for ax in (ax_xy, ax_xz, ax_yz):
@@ -1898,32 +1902,48 @@ class SurfaceAnalyzerPro(QMainWindow):
             xx, yy = np.meshgrid(np.linspace(dx.min(), dx.max(), 10), np.linspace(dy.min(), dy.max(), 10))
             zz = np.zeros_like(xx) if display_detrended else coeffs[0] * xx + coeffs[1] * yy + coeffs[2]
             ax3d.plot_surface(xx, yy, zz, color='#3498db', alpha=0.3, edgecolor='none')
+            # 颜色条：标明散点配色对应的高度/残差量级
+            cbar = fig.colorbar(m_xy, ax=[ax_xz, ax_yz], location='bottom',
+                                shrink=0.65, aspect=40, pad=0.12)
+            cbar.set_label(zlab, fontsize=10)
+            cbar.ax.tick_params(labelsize=8)
 
-        info_lines = [
+        # 顶部：元信息（较小字号）
+        meta_lines = [
             f"报告时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
             f"数据来源: {source_name}",
             f"导入方式: {import_info.get('strategy', '--')} | 抽样: {import_info.get('sampled', False)}",
             f"源文件大小: {import_info.get('file_size_mb', 0.0):.1f} MB | 读入行: {import_info.get('import_rows', 0)}",
-            f"有效点数: {import_info.get('valid_rows', len(tz))} | 参与拟合: {len(active_idx)}",
-            f"滤波剔除: {n_filtered} 点 (批量无手动删点)",
+            f"有效点数: {import_info.get('valid_rows', len(tz))} | 参与拟合: {len(active_idx)} | 滤波剔除: {n_filtered}",
             f"变换路径: {pipeline_text}",
             f"滤波模式: {filter_text}",
-            f"显示模式: {'去倾斜残差(µm)' if display_detrended else '原始Z高度(mm)'}",
-            "─" * 28,
-            "【分析结果】",
-            f"平面方程: Z = {metrics['a']:.4f}·X + {metrics['b']:.4f}·Y + {metrics['c']:.4f}",
-            f"平均厚度 Z      = {metrics['mean_z']:.5f} mm",
-            f"面型 PV(法向)   = {metrics['pv']:.3f} µm",
-            f"TTV(原始Z极差)  = {metrics['ttv']:.3f} µm",
-            f"物料 Rx         = {metrics['rx']:.2f} µrad",
-            f"物料 Ry         = {metrics['ry']:.2f} µrad",
-            "─" * 28,
-            "注: Rx≈+dZ/dY, Ry≈-dZ/dX，符号约定需标准件校准。",
-            "PV 为相对最佳拟合平面的法向残差极差。",
+            f"显示模式: {'去倾斜残差 (µm)' if display_detrended else '原始Z高度 (mm)'}",
         ]
-        ax_text.text(0.0, 1.0, "\n".join(info_lines), va='top', ha='left',
-                     fontsize=11.5, linespacing=1.6, transform=ax_text.transAxes)
-        fig.suptitle(f"面型及Rxy分析报告 (V3.6.0) — {source_name}", fontsize=15, fontweight='bold')
+        ax_meta.text(0.02, 0.98, "\n".join(meta_lines), va='top', ha='left',
+                     fontsize=10.5, linespacing=1.7, color='#34495e', transform=ax_meta.transAxes)
+
+        # 中部：关键结果卡片（大字号 + 高亮底色，手机上一眼可读）
+        results_text = (
+            "【分析结果】\n\n"
+            f"平面方程   Z = {metrics['a']:.4f}·X + {metrics['b']:.4f}·Y + {metrics['c']:.4f}\n\n"
+            f"平均厚度 Z    = {metrics['mean_z']:.5f} mm\n"
+            f"面型 PV(法向) = {metrics['pv']:.3f} µm\n"
+            f"TTV(Z 极差)   = {metrics['ttv']:.3f} µm\n"
+            f"物料 Rx       = {metrics['rx']:.2f} µrad\n"
+            f"物料 Ry       = {metrics['ry']:.2f} µrad"
+        )
+        ax_res.text(0.02, 0.97, results_text, va='top', ha='left',
+                    fontsize=13.5, linespacing=1.6, color='#11447a', transform=ax_res.transAxes,
+                    bbox=dict(boxstyle='round,pad=0.7', facecolor='#eaf2fb', edgecolor='#3498db', linewidth=1.4))
+
+        # 底部：脚注
+        ax_foot.text(0.02, 0.9,
+                     "注: Rx≈+dZ/dY, Ry≈-dZ/dX，符号约定需标准件校准。\n"
+                     "PV 为相对最佳拟合平面的法向残差极差。批量无手动删点。",
+                     va='top', ha='left', fontsize=9, style='italic',
+                     color='#7f8c8d', transform=ax_foot.transAxes)
+
+        fig.suptitle(f"面型及Rxy分析报告 (V3.6.0) — {source_name}", fontsize=16, fontweight='bold')
         return fig
 
 
