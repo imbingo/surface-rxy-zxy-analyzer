@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-面型及Rxy分析工具 V3.5.3
+面型及Rxy分析工具 V3.6.0
 基于 V1 的修复与增强：
   [修复] 导出 Z_um 单位错误（原版导出的是 mm 值，列名却是 µm）
   [修复] 旋转/翻转改为基于包围盒(min/max)，坐标不从0开始也不会产生偏移
@@ -34,6 +34,14 @@
   [优化] V3.5.2: Recipe导出/导入按钮移至左侧主控页“导出最终CSV”上方，减轻多层页底部拥挤
   [修复] V3.5.3: 未载入数据时切换去倾斜显示不再触发重绘异常
   [优化] V3.5.3: 局部中位数滤波改为分块近邻查询，降低大点云内存峰值
+  [增强] V3.6.0: 新增第4档滤波【迭代σ裁剪】——反复用最佳拟合平面残差的标准差
+         裁掉 |残差-均值| > Nσ 的点并重拟合，σ倍数与迭代上限可配置(默认3σ/5次)。
+         单调裁剪(只剔不回收)，残差std收敛或无新增剔除即停止。适合“基本是平面+少量毛刺”的工件；
+         注意：本档对全局残差判异，面有真实弧度时会削减PV，弧形面建议优先用局部中位数滤波。
+  [增强] V3.6.0: 新增【批量处理】——导入时可多选文件，沿用当前界面(或已导入Recipe)的
+         列映射/单位/旋转/滤波设置逐个处理；每个文件输出一张包含主页面全部信息(指标+四视图)的
+         报告图 result_<原文件名>.png，并汇总生成 result_batch_summary.csv。
+         批量仅用自动滤波(无手动框选)，要求所有文件为同一设备、同样列格式。
 注意：Rx/Ry 符号约定 (Rx≈+dZ/dY, Ry≈-dZ/dX) 需用已知倾角标准件实测校准一次。
 """
 import sys
@@ -45,7 +53,9 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.widgets import RectangleSelector
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QFileDialog, QLabel,
@@ -58,7 +68,8 @@ from scipy.spatial import cKDTree
 
 class MultiViewCanvas(FigureCanvas):
     def __init__(self, parent=None):
-        plt.rcParams['font.sans-serif'] = ['SimHei']
+        # YaHei 同时含中文与 µ(U+00B5)，去倾斜显示的 µm 轴标签也不再出现缺字方块
+        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
         plt.rcParams['axes.unicode_minus'] = False
         self.fig = plt.figure(figsize=(10, 8), constrained_layout=True)
         self.ax3d = self.fig.add_subplot(221, projection='3d')
@@ -77,7 +88,7 @@ class SurfaceAnalyzerPro(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("面型及Rxy分析ZXY版 V3.5.3")
+        self.setWindowTitle("面型及Rxy分析ZXY版 V3.6.0")
         self.resize(1750, 950)
 
         # 数据流
@@ -285,30 +296,52 @@ class SurfaceAnalyzerPro(QMainWindow):
         fl = QGridLayout(flt_group)
         fl.addWidget(QLabel("模式:"), 0, 0)
         self.cb_filter = QComboBox()
-        self.cb_filter.addItems(["关闭", "MAD 全局鲁棒滤波", "局部中位数滤波 (邻域比较)"])
+        self.cb_filter.addItems(["关闭", "MAD 全局鲁棒滤波", "局部中位数滤波 (邻域比较)",
+                                 "迭代σ裁剪 (残差±Nσ重拟合)"])
         self.cb_filter.setToolTip(
             "MAD全局: 对拟合残差做鲁棒3.5σ判定，适合零散毛刺。\n"
             "局部中位数: 每个点与其 k 个最近邻的残差中位数比较，偏离超过阈值判为异常。\n"
             "  同时启用全局残差兜底：点相对全局残差中位数超过同一阈值也会被剔除。\n"
             "  适合已知面型上限的场景（如已知面型≤5µm 则阈值设5）。\n"
-            "  单个离群点不会误杀周围正常点；成簇/边缘大离群点由全局兜底拦截。")
+            "  单个离群点不会误杀周围正常点；成簇/边缘大离群点由全局兜底拦截。\n"
+            "迭代σ裁剪: 反复用最佳拟合平面残差的标准差σ裁掉 |残差-均值|>Nσ 的点并重拟合，\n"
+            "  直到残差std收敛或无新增剔除(单调裁剪，只剔不回收)。\n"
+            "  适合“基本是平面+少量毛刺”的工件；面有真实弧度时会削减PV，弧形面请优先用局部中位数。")
         fl.addWidget(self.cb_filter, 0, 1, 1, 3)
-        fl.addWidget(QLabel("邻居数 k:"), 1, 0)
+        self.lbl_k = QLabel("邻居数 k:")
+        fl.addWidget(self.lbl_k, 1, 0)
         self.spin_k = QSpinBox(); self.spin_k.setRange(3, 200); self.spin_k.setValue(12)
         self.spin_k.setToolTip("邻域比较的最近邻数量，范围 3~200；常用 8~20，点云很密或坏点成片时可适当调大")
         fl.addWidget(self.spin_k, 1, 1)
-        fl.addWidget(QLabel("阈值 (µm):"), 1, 2)
+        self.lbl_thresh = QLabel("阈值 (µm):")
+        fl.addWidget(self.lbl_thresh, 1, 2)
         self.spin_thresh = QDoubleSpinBox()
         self.spin_thresh.setDecimals(2); self.spin_thresh.setRange(0.01, 10000.0)
         self.spin_thresh.setValue(5.00); self.spin_thresh.setSingleStep(0.5)
         self.spin_thresh.setToolTip("局部中位数模式的判异阈值，同时作为全局残差兜底阈值；建议设为已知面型/噪声上限")
         fl.addWidget(self.spin_thresh, 1, 3)
+        self.lbl_sigma = QLabel("σ倍数 N:")
+        fl.addWidget(self.lbl_sigma, 2, 0)
+        self.spin_sigma = QDoubleSpinBox()
+        self.spin_sigma.setDecimals(1); self.spin_sigma.setRange(1.0, 6.0)
+        self.spin_sigma.setValue(3.0); self.spin_sigma.setSingleStep(0.5)
+        self.spin_sigma.setToolTip("迭代σ裁剪的σ倍数，常用 3.0；越小裁剪越激进")
+        fl.addWidget(self.spin_sigma, 2, 1)
+        self.lbl_sigma_iter = QLabel("迭代上限:")
+        fl.addWidget(self.lbl_sigma_iter, 2, 2)
+        self.spin_sigma_iter = QSpinBox()
+        self.spin_sigma_iter.setRange(1, 20); self.spin_sigma_iter.setValue(5)
+        self.spin_sigma_iter.setToolTip("迭代σ裁剪的最大轮数，达到收敛会提前停止；常用 3~8")
+        fl.addWidget(self.spin_sigma_iter, 2, 3)
         self.lbl_filter_info = QLabel("滤波剔除: 0 点 | 手动删除: 0 点")
         self.lbl_filter_info.setStyleSheet("color: #7f8c8d; font-size: 11px;")
-        fl.addWidget(self.lbl_filter_info, 2, 0, 1, 4)
-        self.cb_filter.currentIndexChanged.connect(self.update_analysis)
+        fl.addWidget(self.lbl_filter_info, 3, 0, 1, 4)
+        self.cb_filter.currentIndexChanged.connect(self._on_filter_mode_changed)
         self.spin_k.valueChanged.connect(self._on_filter_param_changed)
         self.spin_thresh.valueChanged.connect(self._on_filter_param_changed)
+        self.spin_sigma.valueChanged.connect(self._on_filter_param_changed)
+        self.spin_sigma_iter.valueChanged.connect(self._on_filter_param_changed)
+        self._sync_filter_enabled()
         ll.addWidget(flt_group)
 
         ll.addStretch()
@@ -330,6 +363,17 @@ class SurfaceAnalyzerPro(QMainWindow):
         recipe_row.addWidget(self.btn_export_recipe)
         recipe_row.addWidget(self.btn_import_recipe)
         ll.addLayout(recipe_row)
+
+        self.btn_batch = QPushButton("🗂 批量处理 (多选文件 → 每个出报告图)")
+        self.btn_batch.setFixedHeight(40)
+        self.btn_batch.setStyleSheet("background-color: #16a085; color: white; font-weight: bold; border-radius: 4px;")
+        self.btn_batch.setToolTip(
+            "导入时可多选文件，沿用当前界面(或已导入Recipe)的列映射/单位/旋转/滤波设置逐个处理。\n"
+            "每个文件输出一张含主页面全部信息(指标+四视图)的报告图 result_<原文件名>.png，\n"
+            "并汇总生成 result_batch_summary.csv。要求所有文件为同一设备、同样列格式。\n"
+            "建议先载入其中一个文件调好参数(或导入Recipe)，再点此批量处理。")
+        self.btn_batch.clicked.connect(self.batch_process)
+        ll.addWidget(self.btn_batch)
 
         self.btn_save = QPushButton("💾 导出最终 CSV 数据 (含元数据头)")
         self.btn_save.setFixedHeight(40); self.btn_save.clicked.connect(self.save_file)
@@ -437,7 +481,7 @@ class SurfaceAnalyzerPro(QMainWindow):
             },
             'units': {'x_unit': self.cb_x_unit.currentText(), 'y_unit': self.cb_y_unit.currentText(), 'z_unit': self.cb_z_unit.currentText()},
             'transform_pipeline': list(self.transform_pipeline),
-            'filter': {'mode_index': int(self.cb_filter.currentIndex()), 'mode_text': self.cb_filter.currentText(), 'neighbor_k': int(self.spin_k.value()), 'threshold_um': float(self.spin_thresh.value())},
+            'filter': {'mode_index': int(self.cb_filter.currentIndex()), 'mode_text': self.cb_filter.currentText(), 'neighbor_k': int(self.spin_k.value()), 'threshold_um': float(self.spin_thresh.value()), 'sigma_k': float(self.spin_sigma.value()), 'sigma_iters': int(self.spin_sigma_iter.value())},
             'display': {'detrended': bool(self.display_detrended)},
             'large_file': {'auto_sample': bool(self.auto_sample_large_text), 'threshold_mb': int(self.large_text_threshold_mb), 'import_limit': int(self.large_text_import_limit), 'display_limit': int(self.display_point_limit)},
             'gap': {'tolerance_mm': float(self.spin_tol.value()) if hasattr(self, 'spin_tol') else 0.05},
@@ -514,6 +558,9 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.cb_filter.blockSignals(True); self.cb_filter.setCurrentIndex(mode_index); self.cb_filter.blockSignals(False)
         self.spin_k.setValue(int(flt.get('neighbor_k', self.spin_k.value())))
         self.spin_thresh.setValue(float(flt.get('threshold_um', self.spin_thresh.value())))
+        self.spin_sigma.setValue(float(flt.get('sigma_k', self.spin_sigma.value())))
+        self.spin_sigma_iter.setValue(int(flt.get('sigma_iters', self.spin_sigma_iter.value())))
+        self._sync_filter_enabled()
         detrended = bool((recipe.get('display', {}) or {}).get('detrended', False))
         self.chk_detrend_display.blockSignals(True); self.chk_detrend_display.setChecked(detrended); self.chk_detrend_display.blockSignals(False)
         self.display_detrended = detrended
@@ -587,6 +634,61 @@ class SurfaceAnalyzerPro(QMainWindow):
 
         return local_ok & global_ok
 
+    @classmethod
+    def sigma_clip_filter(cls, x, y, z, sigma_k=3.0, max_iter=5):
+        """迭代σ裁剪（sigma-clipping）：
+        反复用最佳拟合平面残差的标准差σ裁掉 |残差-均值| > sigma_k·σ 的点并重拟合，
+        直到残差std收敛或本轮无新增剔除为止。
+
+        特性：
+        - 单调裁剪：每轮在上一轮保留集基础上继续剔除，只剔不回收，结果稳定可复现。
+        - 多次重拟合：弥补单遍滤波“重拟合后新暴露的离群点抓不到”的短板。
+
+        注意：σ来自全局残差，若工件面有真实弧度，残差里含真实信号，
+        本档会把面型真正的峰/谷当离群点剪掉，导致PV被人为缩小；弧形面请优先用局部中位数滤波。
+        """
+        n = len(z)
+        keep = np.ones(n, dtype=bool)
+        max_iter = max(1, int(max_iter))
+        for _ in range(max_iter):
+            if keep.sum() < 3:
+                break
+            c = cls.fit_plane(x[keep], y[keep], z[keep])
+            resid = z - (c[0] * x + c[1] * y + c[2])
+            kept = resid[keep]
+            sigma = np.std(kept)
+            if sigma < 1e-12:
+                break
+            mu = np.mean(kept)
+            new_keep = keep & (np.abs(resid - mu) <= sigma_k * sigma)
+            if new_keep.sum() < 3:
+                break
+            if int(new_keep.sum()) == int(keep.sum()):
+                break  # 本轮无新增剔除，已收敛
+            keep = new_keep
+        return keep
+
+    @classmethod
+    def filter_keep_mask(cls, xb, yb, zb, mode, k=12, threshold_mm=0.005,
+                         sigma_k=3.0, sigma_iters=5):
+        """按滤波模式返回保留布尔掩码（相对输入点集）。
+        mode: 0关闭 / 1 MAD全局 / 2 局部中位数 / 3 迭代σ裁剪。
+        主界面与批量处理共用此分发，保证两条路径算法一致。"""
+        n = len(zb)
+        if mode == 0 or n <= 10:
+            return np.ones(n, dtype=bool)
+        if mode == 3:
+            return cls.sigma_clip_filter(xb, yb, zb, sigma_k=sigma_k, max_iter=sigma_iters)
+        c0 = cls.fit_plane(xb, yb, zb)
+        resids = zb - (c0[0] * xb + c0[1] * yb + c0[2])
+        if mode == 1:
+            return cls.mad_filter(resids, k=3.5)
+        if mode == 2:
+            return cls.local_median_filter(xb, yb, resids, k=k,
+                                           threshold_mm=threshold_mm,
+                                           global_threshold_mm=threshold_mm)
+        return np.ones(n, dtype=bool)
+
     # ================= 拟合 =================
     @staticmethod
     def fit_plane(x, y, z):
@@ -597,6 +699,23 @@ class SurfaceAnalyzerPro(QMainWindow):
         sol, *_ = np.linalg.lstsq(A, z, rcond=None)
         a, b, c0 = sol
         return np.array([a, b, c0 - a * x0 - b * y0])
+
+    @classmethod
+    def compute_plane_metrics(cls, fx, fy, fz):
+        """对参与拟合的点拟合平面并计算指标。主界面与批量处理共用，口径一致。
+        返回 dict: a/b/c/coeffs/mean_z/pv/ttv/rx/ry。
+        PV 为相对最佳拟合平面的法向残差极差(µm)，TTV 为原始Z极差(µm)，Rx/Ry 单位 µrad。"""
+        c = cls.fit_plane(fx, fy, fz)
+        mean_z = float(np.mean(fz))
+        ttv = float((np.max(fz) - np.min(fz)) * 1000)
+        res_z = fz - (c[0] * fx + c[1] * fy + c[2])
+        normal_factor = np.sqrt(c[0] ** 2 + c[1] ** 2 + 1.0)
+        res_normal = res_z / normal_factor
+        pv = float((np.max(res_normal) - np.min(res_normal)) * 1000)
+        rx = float(np.arctan(c[1]) * 1e6)
+        ry = float(np.arctan(-c[0]) * 1e6)
+        return {'a': float(c[0]), 'b': float(c[1]), 'c': float(c[2]), 'coeffs': c,
+                'mean_z': mean_z, 'pv': pv, 'ttv': ttv, 'rx': rx, 'ry': ry}
 
     # ================= 撤销 =================
     def undo_transform(self):
@@ -1275,20 +1394,15 @@ class SurfaceAnalyzerPro(QMainWindow):
             QMessageBox.critical(self, "解析失败", str(e))
 
     # ================= 坐标变换（含缓存） =================
-    def get_final_transformed_data(self, df):
-        """基于包围盒的姿态变换。
+    @staticmethod
+    def _apply_transform_pipeline(x, y, z, pipeline):
+        """基于包围盒的姿态变换（无状态，供主界面缓存与批量处理共用）。
         旋转/翻转均以数据包围盒为参照，坐标不从0开始也不会产生偏移。
-        90°旋转采用【物料旋转】语义，而非坐标系/视图旋转：
-          - CW90：物料顺时针转90°，顶部点转到右侧
-          - CCW90：物料逆时针转90°，顶部点转到左侧
-        结果带缓存。"""
-        key = (self._df_version, tuple(self.transform_pipeline))
-        if self._trans_cache_key == key:
-            return self._trans_cache_data
-
-        x, y, z = df['X'].values.copy(), df['Y'].values.copy(), df['Z'].values.copy()
-
-        for action in self.transform_pipeline:
+        90°旋转采用【物料旋转】语义：CW90 顶部点->右侧；CCW90 顶部点->左侧。"""
+        x = np.asarray(x, dtype=float).copy()
+        y = np.asarray(y, dtype=float).copy()
+        z = np.asarray(z, dtype=float).copy()
+        for action in pipeline:
             xmin, xmax = np.min(x), np.max(x)
             ymin, ymax = np.min(y), np.max(y)
             if action == "ROT180":
@@ -1306,6 +1420,16 @@ class SurfaceAnalyzerPro(QMainWindow):
             elif action == "ORIGIN(0,0)":
                 x = x - xmin
                 y = y - ymin
+        return x, y, z
+
+    def get_final_transformed_data(self, df):
+        """对当前 df 应用 transform_pipeline，结果带缓存。"""
+        key = (self._df_version, tuple(self.transform_pipeline))
+        if self._trans_cache_key == key:
+            return self._trans_cache_data
+
+        x, y, z = self._apply_transform_pipeline(
+            df['X'].values, df['Y'].values, df['Z'].values, self.transform_pipeline)
 
         self._trans_cache_key = key
         self._trans_cache_data = (x, y, z)
@@ -1327,9 +1451,23 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.lbl_pipeline.setText(f"变换路径: {t}")
 
     def _on_filter_param_changed(self):
-        # 仅局部中位数模式下参数变化才需要重算
-        if self.cb_filter.currentIndex() == 2:
+        # 局部中位数(2) / 迭代σ裁剪(3) 模式下参数变化才需要重算
+        if self.cb_filter.currentIndex() in (2, 3):
             self.update_analysis()
+
+    def _sync_filter_enabled(self):
+        """按当前滤波模式启用/禁用对应参数控件，避免误以为某参数对当前模式生效。"""
+        m = self.cb_filter.currentIndex()
+        local_on = (m == 2)
+        sigma_on = (m == 3)
+        for w in (self.lbl_k, self.spin_k, self.lbl_thresh, self.spin_thresh):
+            w.setEnabled(local_on)
+        for w in (self.lbl_sigma, self.spin_sigma, self.lbl_sigma_iter, self.spin_sigma_iter):
+            w.setEnabled(sigma_on)
+
+    def _on_filter_mode_changed(self):
+        self._sync_filter_enabled()
+        self.update_analysis()
 
     def _on_detrend_display_changed(self):
         self.display_detrended = self.chk_detrend_display.isChecked()
@@ -1363,52 +1501,34 @@ class SurfaceAnalyzerPro(QMainWindow):
                 return
             xb, yb, zb = tx[idx], ty[idx], tz[idx]
 
-            # 1. 初始拟合 + 滤波
-            c0 = self.fit_plane(xb, yb, zb)
-            resids = zb - (c0[0] * xb + c0[1] * yb + c0[2])
-
+            # 1. 滤波（主界面与批量共用同一分发 filter_keep_mask）
             mode = self.cb_filter.currentIndex()
             self.n_filtered = 0
-            if mode == 0 or len(idx) <= 10:
+            keep = self.filter_keep_mask(
+                xb, yb, zb, mode,
+                k=self.spin_k.value(),
+                threshold_mm=self.spin_thresh.value() * 1e-3,
+                sigma_k=self.spin_sigma.value(),
+                sigma_iters=self.spin_sigma_iter.value())
+            if mode != 0 and keep.sum() < 3:
+                self.statusBar().showMessage("⚠ 滤波后点数不足 3 个，已自动退回未滤波状态。请调整参数。", 10000)
                 self.active_idx = idx
             else:
-                if mode == 1:
-                    keep = self.mad_filter(resids, k=3.5)
-                else:
-                    threshold_mm = self.spin_thresh.value() * 1e-3
-                    keep = self.local_median_filter(
-                        xb, yb, resids,
-                        k=self.spin_k.value(),
-                        threshold_mm=threshold_mm,
-                        global_threshold_mm=threshold_mm)
-                if keep.sum() < 3:
-                    self.statusBar().showMessage("⚠ 滤波后点数不足 3 个，已自动退回未滤波状态。请调整阈值/k。", 10000)
-                    self.active_idx = idx
-                else:
-                    self.active_idx = idx[keep]
-                    self.n_filtered = int(len(idx) - keep.sum())
+                self.active_idx = idx[keep]
+                self.n_filtered = int(len(idx) - keep.sum())
 
             self.lbl_filter_info.setText(
                 f"滤波剔除: {self.n_filtered} 点 | 手动删除: {int((~self.manual_mask).sum())} 点 | 参与拟合: {len(self.active_idx)} 点")
 
             fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
 
-            # 2. 最终拟合与指标
-            c = self.fit_plane(fx, fy, fz)
+            # 2. 最终拟合与指标（与批量处理共用 compute_plane_metrics）
+            m = self.compute_plane_metrics(fx, fy, fz)
+            c = m['coeffs']
             self.current_coeffs = c
+            mean_z, ttv, pv, rx, ry = m['mean_z'], m['ttv'], m['pv'], m['rx'], m['ry']
 
-            mean_z = np.mean(fz)
-            ttv = (np.max(fz) - np.min(fz)) * 1000
-
-            res_z = fz - (c[0] * fx + c[1] * fy + c[2])
-            normal_factor = np.sqrt(c[0] ** 2 + c[1] ** 2 + 1.0)
-            res_normal = res_z / normal_factor
-            pv = (np.max(res_normal) - np.min(res_normal)) * 1000
-
-            rx = np.arctan(c[1]) * 1e6
-            ry = np.arctan(-c[0]) * 1e6
-
-            self.last_metrics = {'a': c[0], 'b': c[1], 'c': c[2],
+            self.last_metrics = {'a': m['a'], 'b': m['b'], 'c': m['c'],
                                  'mean_z': mean_z, 'pv': pv, 'ttv': ttv,
                                  'rx': rx, 'ry': ry}
 
@@ -1557,8 +1677,10 @@ class SurfaceAnalyzerPro(QMainWindow):
             filter_text = self.cb_filter.currentText()
             if self.cb_filter.currentIndex() == 2:
                 filter_text += f" (k={self.spin_k.value()}, 局部阈值={self.spin_thresh.value()}µm, 全局兜底阈值={self.spin_thresh.value()}µm)"
+            elif self.cb_filter.currentIndex() == 3:
+                filter_text += f" (σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})"
             meta = [
-                "# ===== 面型及Rxy分析工具 V3.5.3 导出 =====",
+                "# ===== 面型及Rxy分析工具 V3.6.0 导出 =====",
                 f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
                 f"# 数据来源: {self.current_source_name}",
                 f"# 变换路径: {pipeline_text}",
@@ -1584,6 +1706,225 @@ class SurfaceAnalyzerPro(QMainWindow):
             self.statusBar().showMessage(f"已导出 {len(fz)} 点到 {path}", 5000)
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
+
+    # ================= 批量处理 =================
+    def _capture_batch_params(self):
+        """快照当前界面用于批量处理的参数（与具体文件无关）。
+        导入Recipe会先把参数写入界面，所以这里读到的就是Recipe或手动调好的设置。"""
+        unit_m = {"mm": 1.0, "µm": 1e-3, "nm": 1e-6}
+        mode = self.cb_filter.currentIndex()
+        filter_text = self.cb_filter.currentText()
+        if mode == 2:
+            filter_text += f" (k={self.spin_k.value()}, 阈值={self.spin_thresh.value()}µm)"
+        elif mode == 3:
+            filter_text += f" (σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})"
+        pipeline = list(self.transform_pipeline)
+        return {
+            'x_col': self.cb_x_col.currentText(),
+            'y_col': self.cb_y_col.currentText(),
+            'z_col': self.cb_z_col.currentText(),
+            'x_unit': self.cb_x_unit.currentText(),
+            'y_unit': self.cb_y_unit.currentText(),
+            'z_unit': self.cb_z_unit.currentText(),
+            'ux': unit_m[self.cb_x_unit.currentText()],
+            'uy': unit_m[self.cb_y_unit.currentText()],
+            'uz': unit_m[self.cb_z_unit.currentText()],
+            'pipeline': pipeline,
+            'pipeline_text': " -> ".join(pipeline) if pipeline else "原始状态",
+            'mode': mode,
+            'k': self.spin_k.value(),
+            'threshold_mm': self.spin_thresh.value() * 1e-3,
+            'sigma_k': self.spin_sigma.value(),
+            'sigma_iters': self.spin_sigma_iter.value(),
+            'filter_text': filter_text,
+            'display_detrended': self.display_detrended,
+        }
+
+    def batch_process(self):
+        """多选文件批量处理：沿用当前界面(或已导入Recipe)的设置，逐个出报告图+汇总表。"""
+        if self.cb_x_col.count() == 0:
+            QMessageBox.warning(
+                self, "请先配置参数",
+                "批量处理会沿用当前界面的列映射/单位/旋转/滤波设置。\n"
+                "请先载入其中一个文件、调好参数(或导入Recipe)，再点批量处理。")
+            return
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "批量选择测量数据 (可多选)", "",
+            "Data (*.csv *.txt *.tsv *.dat *.asc *.xyz *.xlsx *.xls *.xlsm);;All Files (*)")
+        if not files:
+            return
+        outdir = QFileDialog.getExistingDirectory(self, "选择结果输出文件夹", str(Path(files[0]).parent))
+        if not outdir:
+            return
+        p = self._capture_batch_params()
+        confirm = (
+            f"将批量处理 {len(files)} 个文件，沿用当前设置：\n\n"
+            f"列映射: X={p['x_col']}({p['x_unit']})  Y={p['y_col']}({p['y_unit']})  Z={p['z_col']}({p['z_unit']})\n"
+            f"变换路径: {p['pipeline_text']}\n"
+            f"滤波模式: {p['filter_text']}\n\n"
+            f"每个文件输出: result_<原文件名>.png（含主页面指标+四视图）\n"
+            f"另生成: result_batch_summary.csv（指标汇总表）\n"
+            f"输出目录: {outdir}\n\n"
+            f"注意: 批量仅用自动滤波，不含手动框选删点；\n请确认所有文件为同一设备、同样列格式。")
+        if QMessageBox.question(
+                self, "确认批量处理", confirm,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
+            return
+
+        results = self._run_batch(files, outdir, p)
+        ok = [r for r in results if r['status'] == 'ok']
+        fail = [r for r in results if r['status'] != 'ok']
+        msg = (f"批量处理完成：成功 {len(ok)} / 失败 {len(fail)}\n"
+               f"输出目录：{outdir}\n"
+               f"报告图：result_<原文件名>.png\n"
+               f"汇总表：result_batch_summary.csv" + ("（本次无成功项，未生成）" if not ok else ""))
+        if fail:
+            preview = "\n".join(f"  ✗ {r['file']}: {r['error']}" for r in fail[:8])
+            if len(fail) > 8:
+                preview += f"\n  …其余 {len(fail) - 8} 个失败未列出"
+            msg += "\n\n失败清单：\n" + preview
+        self.statusBar().showMessage(
+            f"批量完成：成功 {len(ok)} / 失败 {len(fail)}，输出至 {outdir}", 10000)
+        (QMessageBox.warning if fail else QMessageBox.information)(self, "批量处理结果", msg)
+
+    def _run_batch(self, files, outdir, params):
+        """逐文件执行 读入→映射→变换→滤波→拟合→出报告图，并写汇总CSV；返回结果列表。
+        批量期间会临时改动 import_info，结束后恢复，避免污染主界面当前视图状态。"""
+        saved_info = dict(self.import_info)
+        saved_note = self.last_import_note
+        results, summary_rows = [], []
+        out = Path(outdir)
+        try:
+            for path in files:
+                name = Path(path).name
+                try:
+                    df_raw = self._read_table(path)
+                    import_info_snap = dict(self.import_info)
+                    for col in (params['x_col'], params['y_col'], params['z_col']):
+                        if col not in df_raw.columns:
+                            raise ValueError(f"列 '{col}' 不在文件列 {list(df_raw.columns)[:6]} 中（列格式不一致？）")
+                    d = pd.DataFrame({
+                        'X': pd.to_numeric(df_raw[params['x_col']], errors='coerce'),
+                        'Y': pd.to_numeric(df_raw[params['y_col']], errors='coerce'),
+                        'Z': pd.to_numeric(df_raw[params['z_col']], errors='coerce'),
+                    }).dropna()
+                    if len(d) < 3:
+                        raise ValueError("有效数据点少于 3 个")
+                    x = d['X'].values * params['ux']
+                    y = d['Y'].values * params['uy']
+                    z = d['Z'].values * params['uz']
+                    x, y, z = self._apply_transform_pipeline(x, y, z, params['pipeline'])
+                    n_total = len(z)
+                    keep = self.filter_keep_mask(
+                        x, y, z, params['mode'],
+                        k=params['k'], threshold_mm=params['threshold_mm'],
+                        sigma_k=params['sigma_k'], sigma_iters=params['sigma_iters'])
+                    if params['mode'] != 0 and keep.sum() < 3:
+                        keep = np.ones(n_total, dtype=bool)
+                        n_filtered = 0
+                    else:
+                        n_filtered = int(n_total - keep.sum())
+                    active_idx = np.where(keep)[0]
+                    fx, fy, fz = x[active_idx], y[active_idx], z[active_idx]
+                    metrics = self.compute_plane_metrics(fx, fy, fz)
+                    fig = self._render_report_figure(
+                        name, x, y, z, active_idx, metrics, n_filtered,
+                        params['pipeline_text'], params['filter_text'],
+                        import_info_snap, params['display_detrended'])
+                    out_png = out / f"result_{Path(path).stem}.png"
+                    fig.savefig(str(out_png), dpi=130)
+                    results.append({'status': 'ok', 'file': name, 'out': str(out_png)})
+                    summary_rows.append({
+                        '文件': name, '总点数': n_total, '参与拟合': int(len(active_idx)),
+                        '滤波剔除': n_filtered,
+                        '平均Z_mm': round(metrics['mean_z'], 6),
+                        'PV_um': round(metrics['pv'], 3), 'TTV_um': round(metrics['ttv'], 3),
+                        'Rx_urad': round(metrics['rx'], 2), 'Ry_urad': round(metrics['ry'], 2),
+                        '平面方程': f"Z={metrics['a']:.4f}X+{metrics['b']:.4f}Y+{metrics['c']:.4f}",
+                    })
+                except Exception as e:
+                    results.append({'status': 'fail', 'file': name, 'error': str(e)})
+            if summary_rows:
+                pd.DataFrame(summary_rows).to_csv(
+                    out / 'result_batch_summary.csv', index=False, encoding='utf-8-sig')
+        finally:
+            self.import_info = saved_info
+            self.last_import_note = saved_note
+            self._update_import_status_label()
+        return results
+
+    def _render_report_figure(self, source_name, tx, ty, tz, active_idx, metrics,
+                              n_filtered, pipeline_text, filter_text,
+                              import_info, display_detrended):
+        """生成包含主页面全部信息(指标文本 + 四视图)的报告图，返回 Figure(Agg后端)。"""
+        # YaHei 同时含中文与 µ(U+00B5)，避免报告图里 µm/µrad 出现缺字方块；其余字体兜底
+        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+        fig = Figure(figsize=(17, 9), constrained_layout=True)
+        FigureCanvasAgg(fig)
+        gs = fig.add_gridspec(2, 3, width_ratios=[1.15, 1.0, 1.0])
+        ax_text = fig.add_subplot(gs[:, 0]); ax_text.axis('off')
+        ax3d = fig.add_subplot(gs[0, 1], projection='3d')
+        ax_xy = fig.add_subplot(gs[0, 2])
+        ax_xz = fig.add_subplot(gs[1, 1])
+        ax_yz = fig.add_subplot(gs[1, 2])
+
+        coeffs = metrics['coeffs']
+        # 绘图抽样（与主界面口径一致）；指标仍按全部参与拟合点
+        plot_idx = active_idx
+        limit = self._display_limit()
+        if len(plot_idx) > limit:
+            pick = np.linspace(0, len(plot_idx) - 1, limit, dtype=int)
+            plot_idx = plot_idx[pick]
+        dx, dy = tx[plot_idx], ty[plot_idx]
+        if display_detrended:
+            plot_z_all = (tz - (coeffs[0] * tx + coeffs[1] * ty + coeffs[2])) * 1000.0
+            zlab, ttl3d, txt, tyt = "去倾斜残差 (µm)", "3D 去倾斜残差面型", "X-残差剖面", "Y-残差剖面"
+        else:
+            plot_z_all = tz
+            zlab, ttl3d, txt, tyt = "Z (mm)", "3D 原始高度", "X-Z剖面", "Y-Z剖面"
+        dz = plot_z_all[plot_idx]
+
+        sc = {'c': dz, 'cmap': 'turbo', 's': 12, 'alpha': 0.8}
+        ax3d.scatter(dx, dy, dz, **sc)
+        ax3d.set_title(ttl3d); ax3d.set_xlabel("X (mm)"); ax3d.set_ylabel("Y (mm)"); ax3d.set_zlabel(zlab)
+        ax_xy.scatter(dx, dy, **sc); ax_xy.set_title("XY 俯视分布"); ax_xy.set_xlabel("X (mm)"); ax_xy.set_ylabel("Y (mm)")
+        ax_xz.scatter(dx, dz, **sc); ax_xz.set_title(txt); ax_xz.set_xlabel("X (mm)"); ax_xz.set_ylabel(zlab)
+        ax_yz.scatter(dy, dz, **sc); ax_yz.set_title(tyt); ax_yz.set_xlabel("Y (mm)"); ax_yz.set_ylabel(zlab)
+        for ax in (ax_xy, ax_xz, ax_yz):
+            ax.grid(True, linestyle=':', alpha=0.5)
+
+        if len(dx) > 0:
+            xx, yy = np.meshgrid(np.linspace(dx.min(), dx.max(), 10), np.linspace(dy.min(), dy.max(), 10))
+            zz = np.zeros_like(xx) if display_detrended else coeffs[0] * xx + coeffs[1] * yy + coeffs[2]
+            ax3d.plot_surface(xx, yy, zz, color='#3498db', alpha=0.3, edgecolor='none')
+
+        info_lines = [
+            f"报告时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
+            f"数据来源: {source_name}",
+            f"导入方式: {import_info.get('strategy', '--')} | 抽样: {import_info.get('sampled', False)}",
+            f"源文件大小: {import_info.get('file_size_mb', 0.0):.1f} MB | 读入行: {import_info.get('import_rows', 0)}",
+            f"有效点数: {import_info.get('valid_rows', len(tz))} | 参与拟合: {len(active_idx)}",
+            f"滤波剔除: {n_filtered} 点 (批量无手动删点)",
+            f"变换路径: {pipeline_text}",
+            f"滤波模式: {filter_text}",
+            f"显示模式: {'去倾斜残差(µm)' if display_detrended else '原始Z高度(mm)'}",
+            "─" * 28,
+            "【分析结果】",
+            f"平面方程: Z = {metrics['a']:.4f}·X + {metrics['b']:.4f}·Y + {metrics['c']:.4f}",
+            f"平均厚度 Z      = {metrics['mean_z']:.5f} mm",
+            f"面型 PV(法向)   = {metrics['pv']:.3f} µm",
+            f"TTV(原始Z极差)  = {metrics['ttv']:.3f} µm",
+            f"物料 Rx         = {metrics['rx']:.2f} µrad",
+            f"物料 Ry         = {metrics['ry']:.2f} µrad",
+            "─" * 28,
+            "注: Rx≈+dZ/dY, Ry≈-dZ/dX，符号约定需标准件校准。",
+            "PV 为相对最佳拟合平面的法向残差极差。",
+        ]
+        ax_text.text(0.0, 1.0, "\n".join(info_lines), va='top', ha='left',
+                     fontsize=11.5, linespacing=1.6, transform=ax_text.transAxes)
+        fig.suptitle(f"面型及Rxy分析报告 (V3.6.0) — {source_name}", fontsize=15, fontweight='bold')
+        return fig
 
 
 if __name__ == "__main__":
