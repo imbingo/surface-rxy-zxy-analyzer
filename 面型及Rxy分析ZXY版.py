@@ -1,7 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-面型及Rxy分析工具 V3.6.0
+面型及Rxy分析工具 V3.7.0
 基于 V1 的修复与增强：
+  [优化] V3.7.0 (UI优化·方案A): 整理版左栏 + 顶部结果读数条。仅重排界面，不改动任何算法。
+         · 结果指标(平均厚度Z/PV/TTV/Rx/Ry+平面方程)上提为绘图区上方常驻读数条，随分析实时刷新。
+         · 左栏工作流改为「1 载入 → 2 列映射 → 3 姿态 → 4 滤波」编号分步，结构与现状一致，迁移成本低。
+         · 批量处理按钮紧邻「载入测量数据」；Recipe 导入/导出、大文件策略收进顶部应用栏。
+         · 去掉多彩按钮，统一中性灰阶 + 单一强调色 #2F6DB0；删除/危险操作用低饱和红描边。
+         · 去倾斜显示开关并入读数条标题行右侧，省掉单独一行，绘图区更高。
+  [优化] V3.7.0 (UI优化·方案A收尾): 进一步贴近设计稿，纯界面/样式，不动任何算法。
+         · 四视图改为 2×2 四张独立卡片(白底圆角+投影+留缝)，模块感更强。
+         · 卡片化投影：顶部读数卡、姿态磁贴、绘图卡均挂柔和投影，悬浮模块质感。
+         · 姿态变换改为带线性图标(↻↺⟳⇄↕↔⊕↶)的方块磁贴；去除全部 emoji，按钮统一中性风。
+         · 自绘 chevron 替换 Windows 原生下拉/微调箭头；子图标题用 Qt 渲染的「● 标题」，蓝点对齐。
+         · 顶部五个结果卡淡底色+加大加粗数值强化读数；PV 卡蓝色高亮。
+         · 无边框自绘标题栏：顶栏拖动移动/双击最大化、边缘拉伸缩放、最小化/最大化/关闭按钮。
   [修复] 导出 Z_um 单位错误（原版导出的是 mm 值，列名却是 µm）
   [修复] 旋转/翻转改为基于包围盒(min/max)，坐标不从0开始也不会产生偏移
   [修复] 90°旋转明确为【物料旋转】语义(物料随治具/台面实物转动)，
@@ -45,9 +58,11 @@
 注意：Rx/Ry 符号约定 (Rx≈+dZ/dY, Ry≈-dZ/dX) 需用已知倾角标准件实测校准一次。
 """
 import sys
+import os
 import re
 import mmap
 import json
+import tempfile
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
@@ -61,23 +76,71 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QFileDialog, QLabel,
                              QSplitter, QGroupBox, QGridLayout, QMessageBox,
                              QScrollArea, QComboBox, QTabWidget, QDoubleSpinBox,
-                             QSpinBox, QCheckBox, QDialog, QDialogButtonBox)
-from PyQt6.QtCore import Qt
+                             QSpinBox, QCheckBox, QDialog, QDialogButtonBox,
+                             QFrame, QSizePolicy, QGraphicsDropShadowEffect,
+                             QSizeGrip)
+from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
+from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
 
 
-class MultiViewCanvas(FigureCanvas):
+class MultiViewCanvas(QWidget):
+    """四视图改为 4 张独立卡片（2×2 网格），每张白底圆角 + 投影 + 顶部「● 标题」，
+    模块感更强；标题用 Qt 渲染，蓝点与文字天然对齐。"""
     def __init__(self, parent=None):
+        super().__init__(parent)
         # YaHei 同时含中文与 µ(U+00B5)，去倾斜显示的 µm 轴标签也不再出现缺字方块
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
         plt.rcParams['axes.unicode_minus'] = False
-        self.fig = plt.figure(figsize=(10, 8), constrained_layout=True)
-        self.ax3d = self.fig.add_subplot(221, projection='3d')
-        self.ax_xy = self.fig.add_subplot(222)
-        self.ax_xz = self.fig.add_subplot(223)
-        self.ax_yz = self.fig.add_subplot(224)
-        super().__init__(self.fig)
-        self.setParent(parent)
+        plt.rcParams.update({
+            'figure.facecolor': '#ffffff', 'axes.facecolor': '#ffffff',
+            'axes.edgecolor': '#d8dee4', 'axes.linewidth': 0.8,
+            'axes.labelcolor': '#5b6672', 'axes.labelsize': 9,
+            'grid.color': '#edf0f3', 'grid.linewidth': 0.7,
+            'xtick.color': '#9aa4ae', 'ytick.color': '#9aa4ae',
+            'xtick.labelsize': 8, 'ytick.labelsize': 8,
+        })
+        grid = QGridLayout(self)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(12)
+        self.ax3d, c3, card3, self.title_3d = self._make_card("3D 原始高度", '3d')
+        self.ax_xy, cxy, cardxy, self.title_xy = self._make_card("XY 俯视分布", None)
+        self.ax_xz, cxz, cardxz, self.title_xz = self._make_card("X-Z 剖面", None)
+        self.ax_yz, cyz, cardyz, self.title_yz = self._make_card("Y-Z 剖面", None)
+        self._canvases = [c3, cxy, cxz, cyz]
+        grid.addWidget(card3, 0, 0); grid.addWidget(cardxy, 0, 1)
+        grid.addWidget(cardxz, 1, 0); grid.addWidget(cardyz, 1, 1)
+
+    def _make_card(self, title, projection):
+        card = QFrame(); card.setObjectName("plotCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(12, 9, 10, 8); v.setSpacing(5)
+        head = QHBoxLayout(); head.setSpacing(7)
+        dot = QLabel(); dot.setObjectName("plotDot"); dot.setFixedSize(8, 8)
+        tlabel = QLabel(title); tlabel.setObjectName("plotTitle")
+        head.addWidget(dot); head.addWidget(tlabel); head.addStretch()
+        v.addLayout(head)
+        fig = Figure(constrained_layout=True)
+        ax = fig.add_subplot(111, projection=projection)
+        canvas = FigureCanvas(fig)
+        v.addWidget(canvas, 1)
+        eff = QGraphicsDropShadowEffect(card)
+        eff.setBlurRadius(20); eff.setXOffset(0); eff.setYOffset(3)
+        eff.setColor(QColor(18, 28, 40, 30))
+        card.setGraphicsEffect(eff)
+        return ax, canvas, card, tlabel
+
+    def set_titles(self, detrended):
+        if detrended:
+            self.title_3d.setText("3D 去倾斜残差面型"); self.title_xy.setText("XY 俯视分布")
+            self.title_xz.setText("X-残差剖面"); self.title_yz.setText("Y-残差剖面")
+        else:
+            self.title_3d.setText("3D 原始高度"); self.title_xy.setText("XY 俯视分布")
+            self.title_xz.setText("X-Z 剖面"); self.title_yz.setText("Y-Z 剖面")
+
+    def draw(self):
+        for c in self._canvases:
+            c.draw_idle()
 
 
 class SurfaceAnalyzerPro(QMainWindow):
@@ -88,8 +151,8 @@ class SurfaceAnalyzerPro(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("面型及Rxy分析ZXY版 V3.6.0")
-        self.resize(1750, 950)
+        self.setWindowTitle("面型及Rxy分析ZXY版 V3.7.0")
+        self.resize(1860, 980)
 
         # 数据流
         self.absolute_raw_df = None
@@ -136,96 +199,449 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.init_ui()
 
     # ================= UI =================
+    # V3.7.0 方案A 主题：中性灰阶 + 单一强调色 #2F6DB0，去多彩按钮
+    ACCENT = "#2f6db0"
+
+    def _apply_theme(self):
+        """全局 QSS：只管视觉，不影响任何逻辑。objectName 驱动强调/危险/卡片样式。"""
+        self.setStyleSheet("""
+            QMainWindow { background: #eceff3; }
+            #centralRoot { background: #eceff3; }
+            #appBar { background: #ffffff; border-bottom: 1px solid #e7ebef; }
+            #brandDot { background: #2f6db0; border-radius: 5px; }
+            #appTitle { color: #1f2933; font-size: 15px; font-weight: bold; }
+            #verPill { color: #2f6db0; background: #eaf1f9; border: 1px solid #d6e5f4;
+                       border-radius: 9px; padding: 2px 8px; font-size: 11px; font-weight: bold; }
+            QTabWidget::pane { border: 1px solid #e7ebef; background: #ffffff; border-radius: 8px; top: -1px; }
+            QTabBar::tab { background: #eef1f4; color: #7a858f; padding: 8px 18px;
+                           border: 1px solid #e3e7eb; border-bottom: none;
+                           border-top-left-radius: 7px; border-top-right-radius: 7px; font-weight: bold; }
+            QTabBar::tab:selected { background: #ffffff; color: #1f2933; }
+            QScrollArea { border: none; background: #ffffff; }
+            QGroupBox { border: 1px solid #eef1f4; border-radius: 8px; margin-top: 8px;
+                        background: #ffffff; font-weight: bold; color: #46505a; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
+            QLabel { color: #2b333c; }
+            QPushButton { background: #ffffff; border: 1px solid #dde2e7; border-radius: 7px;
+                          padding: 7px 12px; color: #46505a; }
+            QPushButton:hover { border-color: #2f6db0; color: #2f6db0; }
+            QPushButton:disabled { color: #b6bdc4; border-color: #e9edf1; }
+            QComboBox, QSpinBox, QDoubleSpinBox { border: 1px solid #d9dee3; border-radius: 6px;
+                          padding: 4px 8px; background: #ffffff; color: #2b333c; min-height: 22px; }
+            QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled { color: #b6bdc4; background: #f6f8fa; }
+            #accentBtn { background: #2f6db0; border: none; color: #ffffff; font-weight: bold; }
+            #accentBtn:hover { background: #285f9a; color: #ffffff; }
+            #accentBtn:disabled { background: #aebfd4; }
+            #accentSoftBtn { background: #eaf1f9; border: 1px solid #d2e2f3; color: #2f6db0; font-weight: bold; }
+            #accentSoftBtn:hover { background: #dceaf7; color: #2f6db0; }
+            #dangerBtn { background: #ffffff; border: 1px solid #ecc9c6; color: #b4453a; font-weight: bold; }
+            #dangerBtn:hover { background: #fbf0ef; color: #b4453a; }
+            #stepBadge { background: #eef2f6; color: #5b6672; border-radius: 5px; font-weight: bold; font-size: 11px; }
+            #stepBadgeActive { background: #2f6db0; color: #ffffff; border-radius: 5px; font-weight: bold; font-size: 11px; }
+            #stepTitle { color: #2b333c; font-weight: bold; font-size: 12px; }
+            #stepLine { background: #eef1f4; }
+            #resultsStrip { background: transparent; border: none; }
+            #stripCaption { color: #5b6672; font-weight: bold; font-size: 11px; letter-spacing: 1px; }
+            #stripEqn { color: #9aa4ae; font-family: 'Consolas','Microsoft YaHei'; font-size: 11px; }
+            #metricCard { background: #f7f9fc; border: 1px solid #e6ebf1; border-radius: 12px; }
+            #metricCardAccent { background: #eaf3fd; border: 1px solid #cbe0f4; border-radius: 12px; }
+            #metricTitle { color: #7e8893; font-size: 10px; font-weight: bold; }
+            #metricTitleAccent { color: #2f6db0; font-size: 10px; font-weight: bold; }
+            #metricValue { color: #14202c; font-family: 'Consolas','Microsoft YaHei'; font-size: 20px; font-weight: bold; }
+            #metricValueAccent { color: #2f6db0; font-family: 'Consolas','Microsoft YaHei'; font-size: 20px; font-weight: bold; }
+            #metricUnit { color: #aab2ba; font-size: 10px; }
+            #plotCard { background: #ffffff; border: 1px solid #e9edf1; border-radius: 12px; }
+            #plotDot { background: #2f6db0; border-radius: 4px; }
+            #plotTitle { color: #2b333c; font-size: 12px; font-weight: bold; }
+            QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right;
+                                   width: 20px; border: none; }
+            QSpinBox::up-button, QDoubleSpinBox::up-button { subcontrol-origin: border;
+                                    subcontrol-position: top right; width: 16px; border: none; }
+            QSpinBox::down-button, QDoubleSpinBox::down-button { subcontrol-origin: border;
+                                    subcontrol-position: bottom right; width: 16px; border: none; }
+            #mutedNote { color: #9aa4ae; font-size: 11px; }
+            #pipelineNote { color: #6b7682; font-family: 'Consolas','Microsoft YaHei'; font-size: 11px;
+                            background: #f6f8fa; border: 1px solid #eef1f4; border-radius: 6px; padding: 5px 8px; }
+            #sourceNote { color: #3a444e; font-size: 12px; font-weight: bold;
+                          background: #f6f8fa; border: 1px solid #e9edf1; border-radius: 6px; padding: 6px 9px; }
+            #poseTile { background: #ffffff; border: 1px solid #eaeef2; border-radius: 11px; }
+            #poseTile:hover { border-color: #2f6db0; background: #f6faff; }
+            #poseTileActive { background: #eaf1f9; border: 1px solid #cfe0f1; border-radius: 11px; }
+            #poseTileActive:hover { background: #dceaf7; }
+            #poseIcon { font-size: 16px; color: #55606b; background: transparent; }
+            #poseLabel { font-size: 10px; color: #6b7682; background: transparent; }
+            #poseTileActive #poseIcon { color: #2f6db0; }
+            #poseTileActive #poseLabel { color: #2f6db0; }
+            #winBtn { background: transparent; border: none; border-radius: 6px;
+                      color: #5b6672; font-size: 14px; padding: 0; }
+            #winBtn:hover { background: #eef2f6; color: #1f2933; }
+            #winClose { background: transparent; border: none; border-radius: 6px;
+                        color: #5b6672; font-size: 13px; padding: 0; }
+            #winClose:hover { background: #e15b4d; color: #ffffff; }
+        """)
+        # 用自绘 chevron 图标替换 Windows 原生下拉/微调箭头，统一为细线 V 形
+        down = self._make_arrow_png('down')
+        up = self._make_arrow_png('up')
+        if down and up:
+            self.setStyleSheet(self.styleSheet() + (
+                "QComboBox::down-arrow { image: url(%s); width: 11px; height: 11px; margin-right: 5px; }"
+                "QSpinBox::up-arrow, QDoubleSpinBox::up-arrow { image: url(%s); width: 9px; height: 9px; }"
+                "QSpinBox::down-arrow, QDoubleSpinBox::down-arrow { image: url(%s); width: 9px; height: 9px; }"
+            ) % (down, up, down))
+
+    @staticmethod
+    def _make_arrow_png(direction='down', color='#8a949e', size=22):
+        """生成一个细线 chevron(V形) PNG 并返回正斜杠路径，供 QSS image:url() 用。"""
+        try:
+            pm = QPixmap(size, size)
+            pm.fill(Qt.GlobalColor.transparent)
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            pen = QPen(QColor(color))
+            pen.setWidthF(size * 0.11)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            p.setPen(pen)
+            pad = size * 0.30
+            cx = size / 2.0
+            if direction == 'down':
+                a, b, c = QPointF(pad, size * 0.40), QPointF(cx, size * 0.62), QPointF(size - pad, size * 0.40)
+            else:
+                a, b, c = QPointF(pad, size * 0.60), QPointF(cx, size * 0.38), QPointF(size - pad, size * 0.60)
+            p.drawLine(a, b)
+            p.drawLine(b, c)
+            p.end()
+            path = os.path.join(tempfile.gettempdir(), f'sra_chevron_{direction}.png')
+            pm.save(path)
+            return path.replace('\\', '/')
+        except Exception:
+            return None
+
+    def _add_shadow(self, widget, blur=22, dy=4, alpha=38):
+        """给卡片挂柔和投影，营造模块化悬浮质感（理想车机 / Apple 风）。
+        每个 widget 只能有一个 graphics effect，且父子不要同时挂以免重复渲染。"""
+        eff = QGraphicsDropShadowEffect(widget)
+        eff.setBlurRadius(blur)
+        eff.setXOffset(0)
+        eff.setYOffset(dy)
+        eff.setColor(QColor(18, 28, 40, alpha))
+        widget.setGraphicsEffect(eff)
+        return widget
+
     def init_ui(self):
+        self._apply_theme()
+        # 无边框自绘标题栏：顶部应用栏兼任标题栏（拖动/双击最大化），状态栏带缩放手柄
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setMinimumSize(1180, 700)
         central = QWidget()
+        central.setObjectName("centralRoot")
         self.setCentralWidget(central)
-        layout = QHBoxLayout(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ---------- 顶部应用栏：标题 + 版本 + Recipe / 大文件策略 ----------
+        appbar = QWidget()
+        appbar.setObjectName("appBar")
+        appbar.setFixedHeight(50)
+        ab = QHBoxLayout(appbar)
+        ab.setContentsMargins(16, 0, 14, 0)
+        ab.setSpacing(9)
+        dot = QLabel(); dot.setObjectName("brandDot"); dot.setFixedSize(10, 10)
+        app_title = QLabel("面型及 Rxy 分析"); app_title.setObjectName("appTitle")
+        ver_pill = QLabel("V3.7.0"); ver_pill.setObjectName("verPill")
+        ab.addWidget(dot); ab.addWidget(app_title); ab.addWidget(ver_pill)
+        ab.addStretch()
+
+        self.btn_import_recipe = QPushButton("导入 Recipe")
+        self.btn_import_recipe.setToolTip("读取Recipe并自动写入当前UI参数；若尚未载入数据，列映射会在下次载入后自动应用。")
+        self.btn_import_recipe.clicked.connect(self.import_recipe)
+        self.btn_export_recipe = QPushButton("导出 Recipe")
+        self.btn_export_recipe.setToolTip("保存当前单位、列映射、物料旋转组合、滤波、大文件显示和Gap参数。")
+        self.btn_export_recipe.clicked.connect(self.export_recipe)
+        self.btn_bigfile_settings = QPushButton("大文件策略")
+        self.btn_bigfile_settings.setToolTip("设置超大TXT预抽样、导入上限、绘图显示上限。")
+        self.btn_bigfile_settings.clicked.connect(self.show_bigfile_settings_dialog)
+        for b in (self.btn_import_recipe, self.btn_export_recipe, self.btn_bigfile_settings):
+            b.setFixedHeight(30)
+            ab.addWidget(b)
+
+        # 窗口控制按钮（最小化 / 最大化-还原 / 关闭）
+        ab.addSpacing(8)
+        self.btn_win_min = QPushButton("–"); self.btn_win_min.setObjectName("winBtn")
+        self.btn_win_max = QPushButton("□"); self.btn_win_max.setObjectName("winBtn")
+        self.btn_win_close = QPushButton("✕"); self.btn_win_close.setObjectName("winClose")
+        for b in (self.btn_win_min, self.btn_win_max, self.btn_win_close):
+            b.setFixedSize(36, 28)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            ab.addWidget(b)
+        self.btn_win_min.clicked.connect(self.showMinimized)
+        self.btn_win_max.clicked.connect(self._toggle_max_restore)
+        self.btn_win_close.clicked.connect(self.close)
+
+        self._appbar = appbar
+        appbar.installEventFilter(self)
+        root.addWidget(appbar)
+
+        # 隐藏状态标签：仅供内部更新/写入按钮 tooltip 与状态栏，不占UI
+        self.lbl_import_status = QLabel("导入状态: --")
+        self.lbl_import_status.setVisible(False)
+
+        # ---------- 主体：左控制面板 | 右（结果条 + 工具条 + 四视图）----------
+        body = QWidget()
+        self._body = body
+        body.setMouseTracking(True)
+        body.installEventFilter(self)
+        body_l = QHBoxLayout(body)
+        body_l.setContentsMargins(12, 12, 12, 12)
+        body_l.setSpacing(12)
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self.tabs = QTabWidget()
-        self.tabs.setFixedWidth(460)
-        self.tabs.setStyleSheet("QTabBar::tab { font-weight: bold; padding: 10px; }")
-
+        self.tabs.setFixedWidth(440)
         tab_main = QWidget()
         self.setup_main_tab(tab_main)
-        self.tabs.addTab(tab_main, "📊 单层/主控分析")
-
+        self.tabs.addTab(tab_main, "单层 / 主控分析")
         tab_math = QWidget()
         self.setup_math_tab(tab_math)
-        self.tabs.addTab(tab_math, "🥪 多层胶厚扣减运算")
+        self.tabs.addTab(tab_math, "多层胶厚扣减")
 
-        # 右侧图窗：顶部放紧凑显示工具条，避免占用左侧主控区空间
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(6, 0, 0, 0)
-        right_layout.setSpacing(4)
-
-        view_bar = QWidget()
-        view_bar.setFixedHeight(34)
-        view_layout = QHBoxLayout(view_bar)
-        view_layout.setContentsMargins(8, 0, 8, 0)
-        view_layout.setSpacing(10)
-
-        self.chk_detrend_display = QCheckBox("去倾斜显示")
-        self.chk_detrend_display.setToolTip(
-            "开启后，3D/XZ/YZ图中的Z轴改为：实测Z - 当前最佳拟合平面，单位 µm。\n"
-            "用于更清晰观察物料表面面型起伏；只影响显示和框选，不改变Rx/Ry/PV/TTV计算，也不修改原始数据。")
-        self.chk_detrend_display.stateChanged.connect(self._on_detrend_display_changed)
-        view_layout.addWidget(self.chk_detrend_display)
-
-        self.lbl_detrend_info = QLabel("当前显示：原始Z高度 mm")
-        self.lbl_detrend_info.setStyleSheet("color: #7f8c8d; font-size: 11px;")
-        view_layout.addWidget(self.lbl_detrend_info)
-
-        self.btn_bigfile_settings = QPushButton("⚙ 大文件策略")
-        self.btn_bigfile_settings.setFixedHeight(28)
-        self.btn_bigfile_settings.setToolTip("设置超大TXT预抽样、导入上限、绘图显示上限。")
-        self.btn_bigfile_settings.clicked.connect(self.show_bigfile_settings_dialog)
-        view_layout.addWidget(self.btn_bigfile_settings)
-
-        # 保留状态标签对象用于内部更新；正常不占UI空间，状态写入按钮tooltip和状态栏
-        self.lbl_import_status = QLabel("导入状态: --")
-        self.lbl_import_status.setVisible(False)
-        view_layout.addWidget(self.lbl_import_status)
-        view_layout.addStretch()
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
+        right_layout.addWidget(self._build_results_strip())
 
         self.canvas = MultiViewCanvas(self)
-        right_layout.addWidget(view_bar)
         right_layout.addWidget(self.canvas, 1)
 
         splitter.addWidget(self.tabs)
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(1, 4)
-        layout.addWidget(splitter)
+        body_l.addWidget(splitter)
+        root.addWidget(body, 1)
+
+        # 无边框窗口：用状态栏右下角缩放手柄实现拖拽缩放
+        self.statusBar().setSizeGripEnabled(True)
+
+    def _toggle_max_restore(self):
+        if self.isMaximized():
+            self.showNormal()
+            self.btn_win_max.setText("□")
+        else:
+            self.showMaximized()
+            self.btn_win_max.setText("❐")
+
+    def _resize_edge_at(self, gpos):
+        """根据全局光标位置判断是否贴近窗口边缘，返回组合 Qt.Edge 或 None。"""
+        if self.isMaximized():
+            return None
+        p = self.mapFromGlobal(gpos)
+        r = self.rect()
+        m = 6
+        parts = []
+        if p.x() <= m:
+            parts.append(Qt.Edge.LeftEdge)
+        elif p.x() >= r.width() - m:
+            parts.append(Qt.Edge.RightEdge)
+        if p.y() <= m:
+            parts.append(Qt.Edge.TopEdge)
+        elif p.y() >= r.height() - m:
+            parts.append(Qt.Edge.BottomEdge)
+        if not parts:
+            return None
+        edges = parts[0]
+        for x in parts[1:]:
+            edges |= x
+        return edges
+
+    @staticmethod
+    def _cursor_for_edges(edges):
+        L, R = Qt.Edge.LeftEdge, Qt.Edge.RightEdge
+        T, B = Qt.Edge.TopEdge, Qt.Edge.BottomEdge
+        if (bool(edges & L) and bool(edges & T)) or (bool(edges & R) and bool(edges & B)):
+            return Qt.CursorShape.SizeFDiagCursor
+        if (bool(edges & R) and bool(edges & T)) or (bool(edges & L) and bool(edges & B)):
+            return Qt.CursorShape.SizeBDiagCursor
+        if bool(edges & L) or bool(edges & R):
+            return Qt.CursorShape.SizeHorCursor
+        return Qt.CursorShape.SizeVerCursor
+
+    def eventFilter(self, obj, event):
+        """应用栏兼任标题栏：左键拖动移动窗口、双击最大化/还原；
+        主体外缘 6px 作为缩放边，左键按下触发系统缩放（无边框窗口的边缘拉伸）。"""
+        if obj is getattr(self, '_appbar', None):
+            et = event.type()
+            if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                wh = self.windowHandle()
+                if wh is not None:
+                    wh.startSystemMove()
+                    return True
+            elif et == QEvent.Type.MouseButtonDblClick:
+                self._toggle_max_restore()
+                return True
+        elif obj is getattr(self, '_body', None):
+            et = event.type()
+            if et == QEvent.Type.MouseMove and not (event.buttons() & Qt.MouseButton.LeftButton):
+                edges = self._resize_edge_at(event.globalPosition().toPoint())
+                obj.setCursor(self._cursor_for_edges(edges) if edges else Qt.CursorShape.ArrowCursor)
+            elif et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                edges = self._resize_edge_at(event.globalPosition().toPoint())
+                if edges is not None:
+                    wh = self.windowHandle()
+                    if wh is not None:
+                        wh.startSystemResize(edges)
+                        return True
+        return super().eventFilter(obj, event)
+
+    # ---------- 顶部结果读数条（方案A 核心：指标常驻可见）----------
+    def _make_metric_card(self, title, value_label, accent=False):
+        card = QFrame()
+        card.setObjectName("metricCardAccent" if accent else "metricCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(12, 9, 12, 9)
+        v.setSpacing(4)
+        t = QLabel(title)
+        t.setObjectName("metricTitleAccent" if accent else "metricTitle")
+        value_label.setObjectName("metricValueAccent" if accent else "metricValue")
+        v.addWidget(t)
+        v.addWidget(value_label)
+        self._add_shadow(card, blur=20, dy=3, alpha=34)
+        return card
+
+    def _build_results_strip(self):
+        strip = QFrame()
+        strip.setObjectName("resultsStrip")
+        outer = QVBoxLayout(strip)
+        outer.setContentsMargins(6, 2, 6, 8)
+        outer.setSpacing(8)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        cap = QLabel("实时分析结果")
+        cap.setObjectName("stripCaption")
+        self.lbl_eqn = QLabel("--")
+        self.lbl_eqn.setObjectName("stripEqn")
+        head.addWidget(cap)
+        head.addWidget(self.lbl_eqn)
+        head.addStretch()
+        # 去倾斜显示开关并入标题行右侧，省掉单独一行（绘图区垂直空间紧张）
+        self.chk_detrend_display = QCheckBox("去倾斜显示")
+        self.chk_detrend_display.setToolTip(
+            "开启后，3D/XZ/YZ图中的Z轴改为：实测Z - 当前最佳拟合平面，单位 µm。\n"
+            "用于更清晰观察物料表面面型起伏；只影响显示和框选，不改变Rx/Ry/PV/TTV计算，也不修改原始数据。")
+        self.chk_detrend_display.stateChanged.connect(self._on_detrend_display_changed)
+        self.lbl_detrend_info = QLabel("原始Z高度 mm")
+        self.lbl_detrend_info.setObjectName("mutedNote")
+        head.addWidget(self.chk_detrend_display)
+        head.addWidget(self.lbl_detrend_info)
+        outer.addLayout(head)
+
+        cards = QHBoxLayout()
+        cards.setSpacing(13)
+        cards.setContentsMargins(4, 2, 4, 4)
+        self.lbl_z = QLabel("--")
+        self.lbl_pv = QLabel("--")
+        self.lbl_ttv = QLabel("--")
+        self.lbl_rx = QLabel("--")
+        self.lbl_ry = QLabel("--")
+        cards.addWidget(self._make_metric_card("平均厚度 Z (mm)", self.lbl_z), 1)
+        cards.addWidget(self._make_metric_card("面型 PV·法向 (µm)", self.lbl_pv, accent=True), 1)
+        cards.addWidget(self._make_metric_card("TTV·Z极差 (µm)", self.lbl_ttv), 1)
+        cards.addWidget(self._make_metric_card("物料 Rx (µrad)", self.lbl_rx), 1)
+        cards.addWidget(self._make_metric_card("物料 Ry (µrad)", self.lbl_ry), 1)
+        outer.addLayout(cards)
+        return strip
+
+    def _step_header(self, num, text, hint=None, active=False):
+        """编号分步标题：序号徽章 + 标题 + 可选提示 + 分隔线。"""
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+        badge = QLabel(str(num))
+        badge.setObjectName("stepBadgeActive" if active else "stepBadge")
+        badge.setFixedSize(20, 20)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title = QLabel(text)
+        title.setObjectName("stepTitle")
+        h.addWidget(badge)
+        h.addWidget(title)
+        if hint:
+            hint_lbl = QLabel(hint)
+            hint_lbl.setObjectName("mutedNote")
+            h.addWidget(hint_lbl)
+        line = QWidget()
+        line.setObjectName("stepLine")
+        line.setFixedHeight(1)
+        h.addWidget(line, 1)
+        return row
+
+    def _pose_tile(self, icon, label, slot, active=False, tooltip=None):
+        """姿态变换磁贴：线性图标在上、文字在下，方块卡片样式（对齐方案A）。"""
+        btn = QPushButton()
+        btn.setObjectName("poseTileActive" if active else "poseTile")
+        btn.setFixedHeight(52)
+        btn.clicked.connect(slot)
+        if tooltip:
+            btn.setToolTip(tooltip)
+        v = QVBoxLayout(btn)
+        v.setContentsMargins(2, 5, 2, 5)
+        v.setSpacing(1)
+        ic = QLabel(icon); ic.setObjectName("poseIcon")
+        ic.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tx = QLabel(label); tx.setObjectName("poseLabel")
+        tx.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        for lab in (ic, tx):
+            lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        v.addWidget(ic); v.addWidget(tx)
+        self._add_shadow(btn, blur=14, dy=2, alpha=26)
+        return btn
 
     def setup_main_tab(self, parent_widget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         w = QWidget()
         ll = QVBoxLayout(w)
+        ll.setContentsMargins(14, 12, 14, 12)
+        ll.setSpacing(9)
 
-        # 1. 载入与重置
+        # ---------- 1. 载入数据（批量处理紧邻）----------
+        ll.addWidget(self._step_header(1, "载入数据", active=True))
         file_layout = QHBoxLayout()
-        self.btn_open = QPushButton("📂 1. 载入测量数据")
-        self.btn_open.setFixedHeight(45)
-        self.btn_open.setStyleSheet("background-color: #2c3e50; color: white; font-weight: bold; border-radius: 4px;")
+        file_layout.setSpacing(8)
+        self.btn_open = QPushButton("载入测量数据")
+        self.btn_open.setObjectName("accentBtn")
+        self.btn_open.setFixedHeight(38)
         self.btn_open.clicked.connect(self.load_file)
-
-        self.btn_reset_all = QPushButton("♻️ 全部重置")
-        self.btn_reset_all.setFixedHeight(45)
-        self.btn_reset_all.setStyleSheet("background-color: #e67e22; color: white; border-radius: 4px;")
+        self.btn_reset_all = QPushButton("重置")
+        self.btn_reset_all.setFixedHeight(38)
+        self.btn_reset_all.setFixedWidth(92)
         self.btn_reset_all.clicked.connect(self.reset_all)
-        file_layout.addWidget(self.btn_open); file_layout.addWidget(self.btn_reset_all)
+        file_layout.addWidget(self.btn_open)
+        file_layout.addWidget(self.btn_reset_all)
         ll.addLayout(file_layout)
 
         self.lbl_source = QLabel("当前数据: 未载入")
-        self.lbl_source.setStyleSheet("color: #2c3e50; font-weight: bold; font-size: 12px;")
+        self.lbl_source.setObjectName("sourceNote")
         self.lbl_source.setWordWrap(True)
         ll.addWidget(self.lbl_source)
 
-        # 2. 列映射
-        map_group = QGroupBox("🔀 2. 数据解析映射")
+        self.btn_batch = QPushButton("批量处理 · 多选文件 → 每个出报告图")
+        self.btn_batch.setFixedHeight(34)
+        self.btn_batch.setToolTip(
+            "导入时可多选文件，沿用当前界面(或已导入Recipe)的列映射/单位/旋转/滤波设置逐个处理。\n"
+            "每个文件输出一张含主页面全部信息(指标+四视图)的报告图 result_<原文件名>.png，\n"
+            "并汇总生成 result_batch_summary.csv。要求所有文件为同一设备、同样列格式。\n"
+            "建议先载入其中一个文件调好参数(或导入Recipe)，再点此批量处理。")
+        self.btn_batch.clicked.connect(self.batch_process)
+        ll.addWidget(self.btn_batch)
+
+        # ---------- 2. 列映射与单位 ----------
+        ll.addWidget(self._step_header(2, "列映射与单位"))
+        map_group = QGroupBox()
+        map_group.setFlat(True)
         ml = QGridLayout(map_group)
+        ml.setContentsMargins(2, 2, 2, 2)
         ml.addWidget(QLabel("X列:"), 0, 0); self.cb_x_col = QComboBox(); ml.addWidget(self.cb_x_col, 0, 1)
         ml.addWidget(QLabel("原单位:"), 0, 2); self.cb_x_unit = QComboBox(); self.cb_x_unit.addItems(["mm", "µm"]); ml.addWidget(self.cb_x_unit, 0, 3)
         ml.addWidget(QLabel("Y列:"), 1, 0); self.cb_y_col = QComboBox(); ml.addWidget(self.cb_y_col, 1, 1)
@@ -233,67 +649,48 @@ class SurfaceAnalyzerPro(QMainWindow):
         ml.addWidget(QLabel("Z列:"), 2, 0); self.cb_z_col = QComboBox(); ml.addWidget(self.cb_z_col, 2, 1)
         ml.addWidget(QLabel("原单位:"), 2, 2); self.cb_z_unit = QComboBox(); self.cb_z_unit.addItems(["mm", "µm", "nm"]); ml.addWidget(self.cb_z_unit, 2, 3)
         self.cb_z_unit.setCurrentText("µm")
-        self.btn_apply_map = QPushButton("✅ 应用映射并解析数据"); self.btn_apply_map.setFixedHeight(35)
-        self.btn_apply_map.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold;")
+        self.btn_apply_map = QPushButton("应用映射并解析数据")
+        self.btn_apply_map.setObjectName("accentSoftBtn")
+        self.btn_apply_map.setFixedHeight(33)
         self.btn_apply_map.clicked.connect(self.apply_mapping)
         ml.addWidget(self.btn_apply_map, 3, 0, 1, 4)
         ll.addWidget(map_group)
 
-        # 3. 姿态组合
-        trans_group = QGroupBox("🔄 3. 物料旋转组合与原点对齐 (点击叠加)")
+        # ---------- 3. 姿态变换 ----------
+        ll.addWidget(self._step_header(3, "姿态变换", hint="点击叠加"))
+        trans_group = QGroupBox()
+        trans_group.setFlat(True)
         tl = QVBoxLayout(trans_group)
+        tl.setContentsMargins(2, 2, 2, 2)
         grid_trans = QGridLayout()
-        btns = [
-            ("顺时针90°", self.add_cw90), ("逆时针90°", self.add_ccw90),
-            ("旋转180°", self.add_rot180), ("X-Y轴对调", self.add_swap),
-            ("X轴翻转(前后)", self.add_flipx), ("Y轴翻转(左右)", self.add_flipy),
-            ("📍 平移归零(0,0)", self.add_origin), ("↩️ 撤销上一步", self.undo_transform)
+        grid_trans.setSpacing(6)
+        # (图标, 文字, 槽, 是否高亮, tooltip) —— 4列磁贴
+        tiles = [
+            ("↻", "顺时针90°", self.add_cw90, False, "物料顺时针旋转90°：顶部点转到右侧"),
+            ("↺", "逆时针90°", self.add_ccw90, False, "物料逆时针旋转90°：顶部点转到左侧"),
+            ("⟳", "旋转180°", self.add_rot180, False, "物料旋转180°"),
+            ("⇄", "X-Y对调", self.add_swap, False, "X、Y 轴对调"),
+            ("↕", "前后翻转", self.add_flipx, False, "X轴翻转(前后) = Y 镜像"),
+            ("↔", "左右翻转", self.add_flipy, False, "Y轴翻转(左右) = X 镜像"),
+            ("⊕", "平移归零", self.add_origin, True, "平移归零(0,0)：X,Y 包围盒原点对齐"),
+            ("↶", "撤销", self.undo_transform, False, "撤销上一步姿态变换"),
         ]
-        for i, (name, func) in enumerate(btns):
-            btn = QPushButton(name); btn.setFixedHeight(30); btn.clicked.connect(func)
-            if name == "📍 平移归零(0,0)":
-                btn.setStyleSheet("background-color: #3498db; color: white; font-weight: bold;")
-            elif name == "↩️ 撤销上一步":
-                btn.setStyleSheet("background-color: #95a5a6; color: white; font-weight: bold;")
-            grid_trans.addWidget(btn, i // 2, i % 2)
+        for i, (icon, name, func, active, tip) in enumerate(tiles):
+            grid_trans.addWidget(self._pose_tile(icon, name, func, active, tip), i // 4, i % 4)
 
         tl.addLayout(grid_trans)
-        self.lbl_pipeline = QLabel("当前变换路径: 原始状态")
-        self.lbl_pipeline.setStyleSheet("color: #d35400; font-family: 'Consolas'; font-size: 11px;")
+        self.lbl_pipeline = QLabel("变换路径: 原始状态")
+        self.lbl_pipeline.setObjectName("pipelineNote")
         self.lbl_pipeline.setWordWrap(True)
         tl.addWidget(self.lbl_pipeline)
         ll.addWidget(trans_group)
 
-        # 4. 分析结果
-        res_group = QGroupBox("📊 实时分析结果")
-        rg = QGridLayout(res_group)
-        self.lbl_eqn = QLabel("--"); self.lbl_z = QLabel("--")
-        self.lbl_pv = QLabel("--"); self.lbl_ttv = QLabel("--")
-        self.lbl_rx = QLabel("--"); self.lbl_ry = QLabel("--")
-
-        val_style = "font-family: 'Consolas'; font-size: 14px; color: #1e88e5; font-weight: bold;"
-        for lbl in [self.lbl_eqn, self.lbl_z, self.lbl_pv, self.lbl_ttv, self.lbl_rx, self.lbl_ry]:
-            lbl.setStyleSheet(val_style)
-
-        rg.addWidget(QLabel("平面方程:"), 0, 0); rg.addWidget(self.lbl_eqn, 0, 1)
-        rg.addWidget(QLabel("平均厚度 Z (mm):"), 1, 0); rg.addWidget(self.lbl_z, 1, 1)
-        lbl_pv_name = QLabel("面型 PV·BF平面法向 (µm):")
-        lbl_pv_name.setToolTip("相对最佳拟合平面的法向残差 PV，不是原始高度 PV")
-        rg.addWidget(lbl_pv_name, 2, 0); rg.addWidget(self.lbl_pv, 2, 1)
-        lbl_ttv_name = QLabel("TTV·原始Z极差 (µm):")
-        lbl_ttv_name.setToolTip("原始 Z 最大值 - 最小值（未去平面）")
-        rg.addWidget(lbl_ttv_name, 3, 0); rg.addWidget(self.lbl_ttv, 3, 1)
-        lbl_rx_name = QLabel("物料 Rx (µrad):")
-        lbl_rx_name.setToolTip("Rx ≈ +dZ/dY。符号约定需用已知倾角标准件实测校准一次！")
-        rg.addWidget(lbl_rx_name, 4, 0); rg.addWidget(self.lbl_rx, 4, 1)
-        lbl_ry_name = QLabel("物料 Ry (µrad):")
-        lbl_ry_name.setToolTip("Ry ≈ -dZ/dX。符号约定需用已知倾角标准件实测校准一次！")
-        rg.addWidget(lbl_ry_name, 5, 0); rg.addWidget(self.lbl_ry, 5, 1)
-        ll.addWidget(res_group)
-
-        # 5. 滤波区
-        flt_group = QGroupBox("🛡 异常点滤波")
+        # ---------- 4. 异常点滤波 ----------
+        ll.addWidget(self._step_header(4, "异常点滤波"))
+        flt_group = QGroupBox()
+        flt_group.setFlat(True)
         fl = QGridLayout(flt_group)
+        fl.setContentsMargins(2, 2, 2, 2)
         fl.addWidget(QLabel("模式:"), 0, 0)
         self.cb_filter = QComboBox()
         self.cb_filter.addItems(["关闭", "MAD 全局鲁棒滤波", "局部中位数滤波 (邻域比较)",
@@ -334,7 +731,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.spin_sigma_iter.setToolTip("迭代σ裁剪的最大轮数，达到收敛会提前停止；常用 3~8")
         fl.addWidget(self.spin_sigma_iter, 2, 3)
         self.lbl_filter_info = QLabel("滤波剔除: 0 点 | 手动删除: 0 点")
-        self.lbl_filter_info.setStyleSheet("color: #7f8c8d; font-size: 11px;")
+        self.lbl_filter_info.setObjectName("mutedNote")
         fl.addWidget(self.lbl_filter_info, 3, 0, 1, 4)
         self.cb_filter.currentIndexChanged.connect(self._on_filter_mode_changed)
         self.spin_k.valueChanged.connect(self._on_filter_param_changed)
@@ -346,38 +743,21 @@ class SurfaceAnalyzerPro(QMainWindow):
 
         ll.addStretch()
 
-        self.btn_del = QPushButton("🗑 确认删除已框选点")
-        self.btn_del.setFixedHeight(45); self.btn_del.setStyleSheet("background-color: #c62828; color: white; font-weight: bold;")
+        # ---------- 底部操作：导出CSV(主) + 删除框选(危险) ----------
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
+        self.btn_save = QPushButton("导出最终 CSV")
+        self.btn_save.setObjectName("accentBtn")
+        self.btn_save.setFixedHeight(38)
+        self.btn_save.clicked.connect(self.save_file)
+        self.btn_del = QPushButton("删除已框选点")
+        self.btn_del.setObjectName("dangerBtn")
+        self.btn_del.setFixedHeight(38)
+        self.btn_del.setFixedWidth(132)
         self.btn_del.clicked.connect(self.apply_manual_deletion)
-        ll.addWidget(self.btn_del)
-
-        recipe_row = QHBoxLayout()
-        self.btn_export_recipe = QPushButton("📤 导出Recipe")
-        self.btn_export_recipe.setFixedHeight(34)
-        self.btn_export_recipe.setToolTip("保存当前单位、列映射、物料旋转组合、滤波、大文件显示和Gap参数。")
-        self.btn_export_recipe.clicked.connect(self.export_recipe)
-        self.btn_import_recipe = QPushButton("📥 导入Recipe")
-        self.btn_import_recipe.setFixedHeight(34)
-        self.btn_import_recipe.setToolTip("读取Recipe并自动写入当前UI参数；若尚未载入数据，列映射会在下次载入后自动应用。")
-        self.btn_import_recipe.clicked.connect(self.import_recipe)
-        recipe_row.addWidget(self.btn_export_recipe)
-        recipe_row.addWidget(self.btn_import_recipe)
-        ll.addLayout(recipe_row)
-
-        self.btn_batch = QPushButton("🗂 批量处理 (多选文件 → 每个出报告图)")
-        self.btn_batch.setFixedHeight(40)
-        self.btn_batch.setStyleSheet("background-color: #16a085; color: white; font-weight: bold; border-radius: 4px;")
-        self.btn_batch.setToolTip(
-            "导入时可多选文件，沿用当前界面(或已导入Recipe)的列映射/单位/旋转/滤波设置逐个处理。\n"
-            "每个文件输出一张含主页面全部信息(指标+四视图)的报告图 result_<原文件名>.png，\n"
-            "并汇总生成 result_batch_summary.csv。要求所有文件为同一设备、同样列格式。\n"
-            "建议先载入其中一个文件调好参数(或导入Recipe)，再点此批量处理。")
-        self.btn_batch.clicked.connect(self.batch_process)
-        ll.addWidget(self.btn_batch)
-
-        self.btn_save = QPushButton("💾 导出最终 CSV 数据 (含元数据头)")
-        self.btn_save.setFixedHeight(40); self.btn_save.clicked.connect(self.save_file)
-        ll.addWidget(self.btn_save)
+        action_row.addWidget(self.btn_save)
+        action_row.addWidget(self.btn_del)
+        ll.addLayout(action_row)
 
         scroll.setWidget(w)
         parent_widget.setLayout(QVBoxLayout())
@@ -407,6 +787,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.lbl_stack_status = QLabel("❌ 尚未设置"); self.lbl_stack_status.setStyleSheet("color: #c0392b; font-weight: bold;")
         self.lbl_stack_status.setWordWrap(True)
         btn_set_stack = QPushButton("👆 将当前视图设为【堆叠总成】"); btn_set_stack.setFixedHeight(35)
+        btn_set_stack.setObjectName("accentSoftBtn")
         btn_set_stack.clicked.connect(lambda: self.set_memory_slot('stack'))
         gl_stack.addWidget(self.lbl_stack_status); gl_stack.addWidget(btn_set_stack)
         ll.addWidget(grp_stack)
@@ -416,6 +797,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.lbl_base1_status = QLabel("❌ 尚未设置"); self.lbl_base1_status.setStyleSheet("color: #c0392b; font-weight: bold;")
         self.lbl_base1_status.setWordWrap(True)
         btn_set_base1 = QPushButton("👇 将当前视图设为【单片 1】"); btn_set_base1.setFixedHeight(35)
+        btn_set_base1.setObjectName("accentSoftBtn")
         btn_set_base1.clicked.connect(lambda: self.set_memory_slot('base1'))
         gl_base1.addWidget(self.lbl_base1_status); gl_base1.addWidget(btn_set_base1)
         ll.addWidget(grp_base1)
@@ -426,7 +808,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.lbl_base2_status.setWordWrap(True)
         hl_b2 = QHBoxLayout()
         btn_set_base2 = QPushButton("📥 设为【单片 2】"); btn_set_base2.setFixedHeight(35); btn_set_base2.clicked.connect(lambda: self.set_memory_slot('base2'))
-        btn_clear_base2 = QPushButton("✖ 清除"); btn_clear_base2.setFixedHeight(35); btn_clear_base2.setStyleSheet("background-color: #bdc3c7;")
+        btn_clear_base2 = QPushButton("✖ 清除"); btn_clear_base2.setFixedHeight(35)
         btn_clear_base2.clicked.connect(lambda: self.clear_memory_slot('base2'))
         hl_b2.addWidget(btn_set_base2); hl_b2.addWidget(btn_clear_base2)
         gl_base2.addWidget(self.lbl_base2_status); gl_base2.addLayout(hl_b2)
@@ -434,7 +816,6 @@ class SurfaceAnalyzerPro(QMainWindow):
 
         btn_clear_all = QPushButton("🧹 清空全部寄存器")
         btn_clear_all.setFixedHeight(35)
-        btn_clear_all.setStyleSheet("background-color: #95a5a6; color: white; font-weight: bold;")
         btn_clear_all.clicked.connect(self.clear_all_memory_slots)
         ll.addWidget(btn_clear_all)
 
@@ -456,8 +837,8 @@ class SurfaceAnalyzerPro(QMainWindow):
 
         action_row = QHBoxLayout()
         self.btn_calc_gap = QPushButton("📐 容差匹配点云并计算胶厚")
+        self.btn_calc_gap.setObjectName("accentBtn")
         self.btn_calc_gap.setFixedHeight(60)
-        self.btn_calc_gap.setStyleSheet("background-color: #8e44ad; color: white; font-weight: bold; font-size: 14px; border-radius: 6px;")
         self.btn_calc_gap.clicked.connect(self.calculate_gap)
         action_row.addWidget(self.btn_calc_gap, 1)
         ll.addLayout(action_row)
@@ -472,7 +853,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         """导出当前界面参数，不包含测量数据本身。"""
         return {
             'recipe_type': 'SurfaceRxyZxyAnalyzerRecipe',
-            'app_version': 'V3.5.3',
+            'app_version': 'V3.7.0',
             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'column_mapping': {
                 'x_col': self.cb_x_col.currentText() if hasattr(self, 'cb_x_col') else '',
@@ -564,7 +945,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         detrended = bool((recipe.get('display', {}) or {}).get('detrended', False))
         self.chk_detrend_display.blockSignals(True); self.chk_detrend_display.setChecked(detrended); self.chk_detrend_display.blockSignals(False)
         self.display_detrended = detrended
-        self.lbl_detrend_info.setText("当前显示：去倾斜残差 µm（指标不变）" if detrended else "当前显示：原始Z高度 mm")
+        self.lbl_detrend_info.setText("去倾斜残差 µm" if detrended else "原始Z高度 mm")
         self._update_import_status_label()
         if self.df_raw is not None:
             self.update_analysis()
@@ -897,7 +1278,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.chk_detrend_display.setChecked(False)
         self.chk_detrend_display.blockSignals(False)
         self.display_detrended = False
-        self.lbl_detrend_info.setText("当前显示：原始Z高度 mm")
+        self.lbl_detrend_info.setText("原始Z高度 mm")
         self.update_analysis()
         self.statusBar().showMessage("系统已完全重置（滤波已关闭，去倾斜显示已关闭）", 3000)
 
@@ -1472,9 +1853,9 @@ class SurfaceAnalyzerPro(QMainWindow):
     def _on_detrend_display_changed(self):
         self.display_detrended = self.chk_detrend_display.isChecked()
         if self.display_detrended:
-            self.lbl_detrend_info.setText("当前显示：去倾斜残差 µm（指标不变）")
+            self.lbl_detrend_info.setText("去倾斜残差 µm")
         else:
-            self.lbl_detrend_info.setText("当前显示：原始Z高度 mm")
+            self.lbl_detrend_info.setText("原始Z高度 mm")
         self.update_plots_only()
 
     def _get_plot_z(self, tx, ty, tz):
@@ -1533,10 +1914,11 @@ class SurfaceAnalyzerPro(QMainWindow):
                                  'rx': rx, 'ry': ry}
 
             # UI 更新
-            self.lbl_eqn.setText(f"Z={c[0]:.4f}X+{c[1]:.4f}Y+{c[2]:.4f}")
-            self.lbl_z.setText(f"{mean_z:.5f} mm")
-            self.lbl_pv.setText(f"{pv:.3f} µm"); self.lbl_ttv.setText(f"{ttv:.3f} µm")
-            self.lbl_rx.setText(f"{rx:.2f} µrad"); self.lbl_ry.setText(f"{ry:.2f} µrad")
+            self.lbl_eqn.setText(f"Z = {c[0]:.4f}·X + {c[1]:.4f}·Y + {c[2]:.4f}")
+            # 单位已在结果卡片标题中展示，这里只写数值，避免重复
+            self.lbl_z.setText(f"{mean_z:.5f}")
+            self.lbl_pv.setText(f"{pv:.3f}"); self.lbl_ttv.setText(f"{ttv:.3f}")
+            self.lbl_rx.setText(f"{rx:.2f}"); self.lbl_ry.setText(f"{ry:.2f}")
             self.draw_plots(tx, ty, tz)
             self.setup_selectors()
         except Exception as e:
@@ -1565,24 +1947,27 @@ class SurfaceAnalyzerPro(QMainWindow):
                ("X (mm)", z_axis_label),
                ("Y (mm)", z_axis_label)]
         for ax, lb in zip(axes, lbs):
-            ax.clear(); ax.grid(True, linestyle=':', alpha=0.5)
+            ax.clear(); ax.grid(True, linestyle='-', linewidth=0.7, color='#edf0f3')
             ax.set_xlabel(lb[0]); ax.set_ylabel(lb[1])
             if len(lb) > 2: ax.set_zlabel(lb[2])
+        # 2D 子图：隐藏上/右边框，坐标轴改浅灰，向方案A的卡片化绘图靠拢
+        for ax in (self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz):
+            ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
+            ax.spines['left'].set_color('#d8dee4'); ax.spines['bottom'].set_color('#d8dee4')
+            ax.tick_params(colors='#9aa4ae', labelsize=8)
+        # 3D 子图：背景面改浅色、网格变淡
+        a3 = self.canvas.ax3d
+        for pane in (a3.xaxis.pane, a3.yaxis.pane, a3.zaxis.pane):
+            pane.set_facecolor('#fbfcfd'); pane.set_edgecolor('#e6eaee'); pane.set_alpha(1.0)
+        a3.tick_params(colors='#9aa4ae', labelsize=7)
 
-        if self.display_detrended:
-            self.canvas.ax3d.set_title("3D 去倾斜残差面型")
-            self.canvas.ax_xz.set_title("X-残差剖面")
-            self.canvas.ax_yz.set_title("Y-残差剖面")
-        else:
-            self.canvas.ax3d.set_title("3D 原始高度")
-            self.canvas.ax_xz.set_title("X-Z剖面")
-            self.canvas.ax_yz.set_title("Y-Z剖面")
+        self.canvas.set_titles(self.display_detrended)
 
         if len(dx) == 0:
             self.canvas.draw()
             return
 
-        sc_params = {'c': dz, 'cmap': 'turbo', 's': 20, 'alpha': 0.8}
+        sc_params = {'c': dz, 'cmap': 'turbo', 's': 14, 'alpha': 0.85, 'edgecolors': 'none'}
         self.canvas.ax3d.scatter(dx, dy, dz, **sc_params)
         self.canvas.ax_xy.scatter(dx, dy, **sc_params)
         self.canvas.ax_xz.scatter(dx, dz, **sc_params)
@@ -1680,7 +2065,7 @@ class SurfaceAnalyzerPro(QMainWindow):
             elif self.cb_filter.currentIndex() == 3:
                 filter_text += f" (σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})"
             meta = [
-                "# ===== 面型及Rxy分析工具 V3.6.0 导出 =====",
+                "# ===== 面型及Rxy分析工具 V3.7.0 导出 =====",
                 f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
                 f"# 数据来源: {self.current_source_name}",
                 f"# 变换路径: {pipeline_text}",
@@ -1943,7 +2328,7 @@ class SurfaceAnalyzerPro(QMainWindow):
                      va='top', ha='left', fontsize=9, style='italic',
                      color='#7f8c8d', transform=ax_foot.transAxes)
 
-        fig.suptitle(f"面型及Rxy分析报告 (V3.6.0) — {source_name}", fontsize=16, fontweight='bold')
+        fig.suptitle(f"面型及Rxy分析报告 (V3.7.0) — {source_name}", fontsize=16, fontweight='bold')
         return fig
 
 
