@@ -1102,6 +1102,8 @@ class SurfaceAnalyzerPro(QMainWindow):
         normal_factor = np.sqrt(c[0] ** 2 + c[1] ** 2 + 1.0)
         res_normal = res_z / normal_factor
         pv = float((np.max(res_normal) - np.min(res_normal)) * 1000)
+        # Rx=arctan(+dZ/dY)，Ry=arctan(-dZ/dX)；姿态变换后的 Rx/Ry 物理正确性说明见
+        # _apply_transform_pipeline 的文档（本机台 Z=厚度、不变号，旋转/翻面/平移七变换均正确）。
         rx = float(np.arctan(c[1]) * 1e6)
         ry = float(np.arctan(-c[0]) * 1e6)
         return {'a': float(c[0]), 'b': float(c[1]), 'c': float(c[2]), 'coeffs': c,
@@ -1788,7 +1790,26 @@ class SurfaceAnalyzerPro(QMainWindow):
     def _apply_transform_pipeline(x, y, z, pipeline):
         """基于包围盒的姿态变换（无状态，供主界面缓存与批量处理共用）。
         旋转/翻转均以数据包围盒为参照，坐标不从0开始也不会产生偏移。
-        90°旋转采用【物料旋转】语义：CW90 顶部点->右侧；CCW90 顶部点->左侧。"""
+        90°旋转采用【物料旋转】语义：CW90 顶部点->右侧；CCW90 顶部点->左侧。
+
+        ===== Rx/Ry 物理正确性（已多方核验，2026-07 结论）=====
+        本机台 Z = 厚度（标量），在任何重新装夹 / 翻面 / 镜像下都【不变号】。
+        因此所有姿态变换只重排 (x,y)、保持 z 不变，这在物理上是正确的。
+
+        以物料坐标系为基准输出：物料在整机里的位姿是固定真值，姿态变换是把
+        实测数据搬回该固定坐标系；变换后 Rx/Ry 是同一物理楔形在新工件轴向下的正确再表达。
+        （Rx=arctan(dZ/dY)·1e6，Ry=arctan(-dZ/dX)·1e6，见 compute_plane_metrics。）
+
+        七个变换全部数学自洽 + 物理正确（|tilt|=sqrt(Rx²+Ry²) 在所有变换下恒定不变）：
+          · 旋转 CW90/CCW90/ROT180 (det=+1)：工件在平面内转着重新装夹。
+          · 反射 SWAP/FLIPX/FLIPY (det=-1)：工件绕【面内轴】翻面。
+              对面高(干涉)测量翻面会使 Z→-Z、裸 XY 镜像会给错符号；
+              但本机台 Z=厚度不变号，翻面就等于「XY 镜像 + 厚度不变」，
+              正是这三个反射所做的事——故对本机台【合法且正确】。
+          · 平移 ORIGIN：只改截距，斜率(倾斜)不变。
+        闭合性：CW90×4=恒等、CW90×2=ROT180、FLIPX+FLIPY=ROT180。
+        用法注意：①选对变换要对准实际装夹/翻面动作（|tilt| 幅值恒定，抓不出选错按钮的 90° 偏差）；
+                  ②Rx/Ry 绝对正负号需用已知楔形方向的标准件实测标定一次。"""
         x = np.asarray(x, dtype=float).copy()
         y = np.asarray(y, dtype=float).copy()
         z = np.asarray(z, dtype=float).copy()
