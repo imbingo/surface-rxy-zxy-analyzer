@@ -637,12 +637,26 @@ class SurfaceAnalyzerPro(QMainWindow):
         map_group.setFlat(True)
         ml = QGridLayout(map_group)
         ml.setContentsMargins(2, 2, 2, 2)
-        ml.addWidget(QLabel("X列:"), 0, 0); self.cb_x_col = QComboBox(); ml.addWidget(self.cb_x_col, 0, 1)
-        ml.addWidget(QLabel("原单位:"), 0, 2); self.cb_x_unit = QComboBox(); self.cb_x_unit.addItems(["mm", "µm"]); ml.addWidget(self.cb_x_unit, 0, 3)
-        ml.addWidget(QLabel("Y列:"), 1, 0); self.cb_y_col = QComboBox(); ml.addWidget(self.cb_y_col, 1, 1)
-        ml.addWidget(QLabel("原单位:"), 1, 2); self.cb_y_unit = QComboBox(); self.cb_y_unit.addItems(["mm", "µm"]); ml.addWidget(self.cb_y_unit, 1, 3)
-        ml.addWidget(QLabel("Z列:"), 2, 0); self.cb_z_col = QComboBox(); ml.addWidget(self.cb_z_col, 2, 1)
-        ml.addWidget(QLabel("原单位:"), 2, 2); self.cb_z_unit = QComboBox(); self.cb_z_unit.addItems(["mm", "µm", "nm"]); ml.addWidget(self.cb_z_unit, 2, 3)
+        ml.setHorizontalSpacing(8)
+        ml.setVerticalSpacing(7)
+        ml.setColumnStretch(1, 1)   # 列名下拉自适应拉伸；标签/单位列贴紧内容
+        self.cb_x_col = QComboBox(); self.cb_y_col = QComboBox(); self.cb_z_col = QComboBox()
+        self.cb_x_unit = QComboBox(); self.cb_x_unit.addItems(["mm", "µm"])
+        self.cb_y_unit = QComboBox(); self.cb_y_unit.addItems(["mm", "µm"])
+        self.cb_z_unit = QComboBox(); self.cb_z_unit.addItems(["mm", "µm", "nm"])
+        for cb in (self.cb_x_col, self.cb_y_col, self.cb_z_col):
+            cb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        for cb in (self.cb_x_unit, self.cb_y_unit, self.cb_z_unit):
+            cb.setFixedWidth(78)
+        rlab = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        rows = [("X 列", self.cb_x_col, self.cb_x_unit),
+                ("Y 列", self.cb_y_col, self.cb_y_unit),
+                ("Z 列", self.cb_z_col, self.cb_z_unit)]
+        for r, (name, col_cb, unit_cb) in enumerate(rows):
+            ml.addWidget(QLabel(name), r, 0, rlab)
+            ml.addWidget(col_cb, r, 1)
+            ml.addWidget(QLabel("单位"), r, 2, rlab)
+            ml.addWidget(unit_cb, r, 3)
         self.cb_z_unit.setCurrentText("µm")
         self.btn_apply_map = QPushButton("应用映射并解析数据")
         self.btn_apply_map.setObjectName("accentSoftBtn")
