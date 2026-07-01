@@ -752,16 +752,25 @@ class SurfaceAnalyzerPro(QMainWindow):
 
         ll.addStretch()
 
-        # ---------- 底部操作：导出CSV(主) + 删除框选(危险) ----------
+        # ---------- 底部操作：导出报告图(主) / 导出CSV / 删除框选(危险) ----------
+        self.btn_export_report = QPushButton("导出测量报告图")
+        self.btn_export_report.setObjectName("accentBtn")
+        self.btn_export_report.setFixedHeight(38)
+        self.btn_export_report.setToolTip(
+            "导出当前测量的报告图（与批量处理同款：主页面全部指标 + 四视图）。\n"
+            "默认命名 Result_<导入文件名>_<时间>.png。")
+        self.btn_export_report.clicked.connect(self.export_report_image)
+        ll.addWidget(self.btn_export_report)
+
         action_row = QHBoxLayout()
         action_row.setSpacing(8)
-        self.btn_save = QPushButton("导出最终 CSV")
-        self.btn_save.setObjectName("accentBtn")
-        self.btn_save.setFixedHeight(38)
+        self.btn_save = QPushButton("导出 CSV")
+        self.btn_save.setObjectName("accentSoftBtn")
+        self.btn_save.setFixedHeight(36)
         self.btn_save.clicked.connect(self.save_file)
         self.btn_del = QPushButton("删除已框选点")
         self.btn_del.setObjectName("dangerBtn")
-        self.btn_del.setFixedHeight(38)
+        self.btn_del.setFixedHeight(36)
         self.btn_del.setFixedWidth(132)
         self.btn_del.clicked.connect(self.apply_manual_deletion)
         action_row.addWidget(self.btn_save)
@@ -2071,6 +2080,37 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.update_analysis()
 
     # ================= 导出 =================
+    def export_report_image(self):
+        """导出当前测量的报告图（与批量处理同款：主页面全部信息 + 四视图）。
+        默认命名 Result_<导入文件名>_<时间>.png。"""
+        if self.df_raw is None or self.active_idx is None or self.last_metrics is None:
+            QMessageBox.warning(self, "暂无数据", "请先载入并解析数据，再导出测量报告图。")
+            return
+        src = self.current_source_name if self.current_source_name not in (None, '', '--') else 'report'
+        stem = Path(src).stem or 'report'
+        default_name = f"Result_{stem}_{datetime.now():%Y%m%d_%H%M%S}.png"
+        path, _ = QFileDialog.getSaveFileName(self, "导出测量报告图", default_name, "PNG 图片 (*.png);;All Files (*)")
+        if not path:
+            return
+        try:
+            tx, ty, tz = self.get_final_transformed_data(self.df_raw)
+            fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
+            metrics = self.compute_plane_metrics(fx, fy, fz)
+            pipeline_text = " -> ".join(self.transform_pipeline) if self.transform_pipeline else "原始状态"
+            filter_text = self.cb_filter.currentText()
+            if self.cb_filter.currentIndex() == 2:
+                filter_text += f" (k={self.spin_k.value()}, 阈值={self.spin_thresh.value()}µm)"
+            elif self.cb_filter.currentIndex() == 3:
+                filter_text += f" (σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})"
+            fig = self._render_report_figure(
+                self.current_source_name, tx, ty, tz, self.active_idx, metrics,
+                self.n_filtered, pipeline_text, filter_text, self.import_info, self.display_detrended)
+            fig.savefig(path, dpi=150)
+            self.statusBar().showMessage(f"已导出报告图: {path}", 6000)
+            QMessageBox.information(self, "导出成功", f"测量报告图已导出：\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+
     def save_file(self):
         if self.df_raw is None or self.active_idx is None: return
         path, _ = QFileDialog.getSaveFileName(self, "导出", "Result_Data.csv", "CSV (*.csv)")
