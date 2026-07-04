@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-面型及Rxy分析工具 V3.8.0
+面型及Rxy分析工具 V3.8.2
 基于 V1 的修复与增强：
   [优化] V3.7.0 (UI优化·方案A): 整理版左栏 + 顶部结果读数条。仅重排界面，不改动任何算法。
          · 结果指标(平均厚度Z/PV/TTV/Rx/Ry+平面方程)上提为绘图区上方常驻读数条，随分析实时刷新。
@@ -51,6 +51,10 @@
   [增强] V3.8.0: 新增【平行度分析】页：主页面依次写入基准面/测量面，分别拟合平面后输出
          基准面和测量面的 Rx/Ry/RMS/PV/TTV/平均Z，以及测量面-基准面的 ΔRx/ΔRy 和合成夹角。
          该功能不做对应点相减，适用于两个测量区域不重叠的双文件平行度比较。
+  [增强] V3.8.1: 大文件策略新增快速/标准/精确三档模式，统一管理抽样触发阈值、导入上限和显示上限。
+  [修复] V3.8.2: 平行度预览保持 3D 分面预览并优化点云清晰度；左侧控件改为主控页同款分步布局。
+  [增强] V3.8.2: 平行度分析导出从预览图升级为清晰报告图，包含结果卡片、指标表和双 3D 拟合预览。
+  [增强] V3.8.2: 多层胶厚扣减新增匹配诊断图，显示未对齐/未参与扣减点。
 注意：Rx/Ry 符号约定 (Rx≈+dZ/dY, Ry≈-dZ/dX) 需用已知倾角标准件实测校准一次。
 """
 import sys
@@ -143,7 +147,7 @@ class MultiViewCanvas(QWidget):
 
 
 class ParallelismCanvas(FigureCanvas):
-    """平行度分析专用静态预览：基准面和测量面分成两个 3D 图，避免高度接近时互相遮挡。"""
+    """平行度分析专用静态预览：基准面和测量面分成两个 3D 图。"""
     def __init__(self, parent=None):
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
         plt.rcParams['axes.unicode_minus'] = False
@@ -162,7 +166,7 @@ class ParallelismCanvas(FigureCanvas):
                   ha='center', va='center', color='#8a94a3')
         ax.set_axis_off()
 
-    def _draw_record(self, ax, rec, title, color, point_color):
+    def _draw_record(self, ax, rec, title, plane_color):
         if rec is None:
             self._empty_axis(ax, title)
             return
@@ -176,9 +180,14 @@ class ParallelismCanvas(FigureCanvas):
         ax.set_zlabel("Z (mm)")
         ax.grid(True, linestyle='-', linewidth=0.6, color='#edf0f3')
 
+        finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+        x, y, z = x[finite], y[finite], z[finite]
         n = len(z)
-        if n > 12000:
-            idx = np.linspace(0, n - 1, 12000, dtype=int)
+        if n == 0:
+            self._empty_axis(ax, title)
+            return
+        if n > 25000:
+            idx = np.linspace(0, n - 1, 25000, dtype=int)
             sx, sy, sz = x[idx], y[idx], z[idx]
         else:
             sx, sy, sz = x, y, z
@@ -189,35 +198,169 @@ class ParallelismCanvas(FigureCanvas):
             xmin -= 0.5; xmax += 0.5
         if np.isclose(ymin, ymax):
             ymin -= 0.5; ymax += 0.5
-        xx, yy = np.meshgrid(np.linspace(xmin, xmax, 18), np.linspace(ymin, ymax, 18))
+        xx, yy = np.meshgrid(np.linspace(xmin, xmax, 22), np.linspace(ymin, ymax, 22))
         zz = m['a'] * xx + m['b'] * yy + m['c']
-        ax.plot_surface(xx, yy, zz, color=color, alpha=0.42, edgecolor='none')
-        ax.scatter(sx, sy, sz, s=4, c=point_color, alpha=0.38, edgecolors='none')
+        ax.plot_surface(xx, yy, zz, color=plane_color, alpha=0.28, edgecolor='none', shade=False)
+
+        size = 8 if len(sx) <= 12000 else 5
+        ax.scatter(sx, sy, sz, c=sz, s=size, cmap='turbo', alpha=0.78,
+                   edgecolors='none', depthshade=False, rasterized=True)
+        ax.text2D(0.01, 0.98,
+                  f"点数 {n:,} | Rx {m['rx']:.2f} µrad | Ry {m['ry']:.2f} µrad",
+                  transform=ax.transAxes, ha='left', va='top', fontsize=8,
+                  color='#4b5563', bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='#e5e7eb', alpha=0.86))
         ax.view_init(elev=24, azim=-52)
         try:
-            ax.set_box_aspect((1.35, 1.0, 0.38), zoom=1.10)
+            ax.set_box_aspect((1.35, 1.0, 0.42), zoom=1.08)
         except TypeError:
-            ax.set_box_aspect((1.35, 1.0, 0.38))
+            ax.set_box_aspect((1.35, 1.0, 0.42))
         for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
             pane.set_facecolor('#fbfcfd')
             pane.set_edgecolor('#e6eaee')
             pane.set_alpha(1.0)
 
     def plot_records(self, base_rec, measure_rec):
-        self._draw_record(self.ax_base, base_rec, "基准面拟合预览", '#2f6db0', '#1f5f99')
-        self._draw_record(self.ax_measure, measure_rec, "测量面拟合预览", '#f59e0b', '#b45309')
+        self.fig.clear()
+        self.ax_base = self.fig.add_subplot(121, projection='3d')
+        self.ax_measure = self.fig.add_subplot(122, projection='3d')
+        self._draw_record(self.ax_base, base_rec, "基准面 3D 拟合预览", '#2f6db0')
+        self._draw_record(self.ax_measure, measure_rec, "测量面 3D 拟合预览", '#f59e0b')
+        self.draw()
+
+
+class GapMatchCanvas(FigureCanvas):
+    """多层胶厚扣减匹配诊断：用堆叠层 XY 点显示哪些点没有匹配到单片层。"""
+    def __init__(self, parent=None):
+        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+        self.fig = Figure(constrained_layout=True)
+        self.ax = self.fig.add_subplot(111)
+        super().__init__(self.fig)
+        self.setParent(parent)
+        self.setMinimumHeight(460)
+        self.plot_diagnostic(None)
+
+    def plot_diagnostic(self, diag):
+        self.fig.clear()
+        self.ax = self.fig.add_subplot(111)
+        ax = self.ax
+        ax.clear()
+        if not diag:
+            ax.set_title("多层扣减匹配诊断")
+            ax.text(0.5, 0.5, "计算胶厚后显示匹配/未匹配点分布",
+                    transform=ax.transAxes, ha='center', va='center', color='#8a94a3')
+            ax.set_axis_off()
+            self.draw()
+            return
+
+        x = diag['x']
+        y = diag['y']
+        valid1 = diag['valid1']
+        valid2 = diag.get('valid2')
+        final_valid = diag['final_valid']
+        finite = np.isfinite(x) & np.isfinite(y)
+        x = x[finite]
+        y = y[finite]
+        valid1 = valid1[finite]
+        final_valid = final_valid[finite]
+        if valid2 is not None:
+            valid2 = valid2[finite]
+
+        total_full = len(x)
+        matched_full = int(final_valid.sum())
+        display_note = ""
+        if total_full > 100000:
+            unmatched_idx = np.flatnonzero(~final_valid)
+            matched_idx = np.flatnonzero(final_valid)
+            keep_parts = []
+            if len(unmatched_idx) > 0:
+                max_unmatched = min(len(unmatched_idx), 60000)
+                if len(unmatched_idx) > max_unmatched:
+                    unmatched_idx = unmatched_idx[np.linspace(0, len(unmatched_idx) - 1, max_unmatched, dtype=int)]
+                keep_parts.append(unmatched_idx)
+            remaining = max(10000, 100000 - sum(len(k) for k in keep_parts))
+            if len(matched_idx) > remaining:
+                matched_idx = matched_idx[np.linspace(0, len(matched_idx) - 1, remaining, dtype=int)]
+            keep_parts.append(matched_idx)
+            keep = np.sort(np.concatenate(keep_parts)) if keep_parts else np.array([], dtype=int)
+            x, y = x[keep], y[keep]
+            valid1, final_valid = valid1[keep], final_valid[keep]
+            if valid2 is not None:
+                valid2 = valid2[keep]
+            display_note = f" | 显示 {len(keep):,}/{total_full:,} 点"
+
+        ax.set_title(f"多层扣减匹配诊断 | 容差 {diag['tolerance']:.3f} mm", fontsize=11)
+        ax.set_xlabel("X (mm)")
+        ax.set_ylabel("Y (mm)")
+        ax.grid(True, linestyle='-', linewidth=0.6, color='#edf0f3')
+        ax.set_aspect('equal', adjustable='box')
+
+        def scatter_mask(mask, label, color, marker='o', size=16, alpha=0.90, zorder=2):
+            if np.any(mask):
+                kwargs = {
+                    's': size, 'c': color, 'marker': marker, 'alpha': alpha,
+                    'label': f"{label} ({int(mask.sum()):,})",
+                    'rasterized': True, 'zorder': zorder
+                }
+                if marker not in ('x', '+', '1', '2', '3', '4'):
+                    kwargs['edgecolors'] = 'none'
+                ax.scatter(x[mask], y[mask], **kwargs)
+
+        scatter_mask(final_valid, "成功匹配", '#2f6db0', 'o', 12, 0.72, 1)
+        if valid2 is None:
+            scatter_mask(~valid1, "未匹配单片1", '#dc2626', 'x', 24, 0.95, 4)
+        else:
+            miss_both = (~valid1) & (~valid2)
+            miss_b1 = (~valid1) & valid2
+            miss_b2 = valid1 & (~valid2)
+            scatter_mask(miss_b1, "未匹配单片1", '#dc2626', 'x', 28, 0.95, 4)
+            scatter_mask(miss_b2, "未匹配单片2", '#f59e0b', '^', 26, 0.95, 4)
+            scatter_mask(miss_both, "两层都未匹配", '#7c3aed', 'x', 32, 0.95, 5)
+
+        ax.text(0.01, 0.99,
+                f"堆叠点 {total_full:,} | 成功 {matched_full:,} | 未参与扣减 {total_full - matched_full:,}{display_note}",
+                transform=ax.transAxes, ha='left', va='top', fontsize=9,
+                color='#374151', bbox=dict(boxstyle='round,pad=0.28', fc='white', ec='#e5e7eb', alpha=0.88))
+        ax.legend(loc='lower right', frameon=True, fontsize=8)
         self.draw()
 
 
 class SurfaceAnalyzerPro(QMainWindow):
+    APP_VERSION = "V3.8.2"
     DISPLAY_POINT_LIMIT = 80000
     LARGE_TEXT_FILE_BYTES = 512 * 1024 * 1024
     LARGE_TEXT_IMPORT_LIMIT = 500000
+    BIGFILE_MODE_PRESETS = {
+        'fast': {
+            'label': '快速',
+            'auto_sample': True,
+            'threshold_mb': 128,
+            'import_limit': 150000,
+            'display_limit': 40000,
+            'description': '优先不卡顿：较早触发抽样，适合先快速判断面型趋势和导入格式。'
+        },
+        'standard': {
+            'label': '标准',
+            'auto_sample': True,
+            'threshold_mb': 512,
+            'import_limit': 500000,
+            'display_limit': 80000,
+            'description': '默认推荐：延续 V3.8.0 口径，兼顾速度和拟合稳定性。'
+        },
+        'precise': {
+            'label': '精确',
+            'auto_sample': True,
+            'threshold_mb': 512,
+            'import_limit': 1500000,
+            'display_limit': 150000,
+            'description': '保留更多点参与拟合，导入和绘图会更慢，适合最终复核。'
+        },
+    }
     MISSING_TEXT_TOKENS = {'***', '--', 'NA', 'N/A', 'NaN', 'nan', 'null', 'NULL'}
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("面型及Rxy分析ZXY版 V3.8.0")
+        self.setWindowTitle(f"面型及Rxy分析ZXY版 {self.APP_VERSION}")
         self.resize(1860, 980)
 
         # 数据流
@@ -234,6 +377,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.display_detrended = False    # 去倾斜显示：只影响绘图/框选，不改变数据与指标
         self.last_import_note = ""        # 最近一次导入说明
         self.last_displayed_points = 0     # 最近一次绘图实际显示点数
+        self.large_file_mode = 'standard'  # 大文件策略模式：fast / standard / precise / custom
         self.import_info = {               # 导入状态：用于UI与导出元数据
             'file_size_bytes': 0,
             'file_size_mb': 0.0,
@@ -241,6 +385,7 @@ class SurfaceAnalyzerPro(QMainWindow):
             'sampled': False,
             'import_rows': 0,
             'display_limit': self.DISPLAY_POINT_LIMIT,
+            'large_file_mode': self._bigfile_mode_label(),
             'notes': ''
         }
         # V3.5.1: 大文件策略不再占用左侧UI，改为右侧工具条按钮弹窗设置
@@ -420,7 +565,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         ab.setSpacing(9)
         dot = QLabel(); dot.setObjectName("brandDot"); dot.setFixedSize(10, 10)
         app_title = QLabel("面型及 Rxy 分析"); app_title.setObjectName("appTitle")
-        ver_pill = QLabel("V3.8.0"); ver_pill.setObjectName("verPill")
+        ver_pill = QLabel(self.APP_VERSION); ver_pill.setObjectName("verPill")
         ab.addWidget(dot); ab.addWidget(app_title); ab.addWidget(ver_pill)
         ab.addStretch()
 
@@ -431,7 +576,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.btn_export_recipe.setToolTip("保存当前单位、列映射、物料旋转组合、滤波、大文件显示和Gap参数。")
         self.btn_export_recipe.clicked.connect(self.export_recipe)
         self.btn_bigfile_settings = QPushButton("大文件策略")
-        self.btn_bigfile_settings.setToolTip("设置超大TXT预抽样、导入上限、绘图显示上限。")
+        self.btn_bigfile_settings.setToolTip("设置超大TXT预抽样模式、导入上限、绘图显示上限。")
         self.btn_bigfile_settings.clicked.connect(self.show_bigfile_settings_dialog)
         for b in (self.btn_import_recipe, self.btn_export_recipe, self.btn_bigfile_settings):
             b.setFixedHeight(30)
@@ -475,7 +620,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.tabs.addTab(tab_main, "单层 / 主控分析")
         tab_math = QWidget()
         self.setup_math_tab(tab_math)
-        self.tabs.addTab(tab_math, "多层胶厚扣减")
+        self.math_tab_index = self.tabs.addTab(tab_math, "多层胶厚扣减")
 
         tab_parallel = QWidget()
         self.setup_parallel_tab(tab_parallel)
@@ -493,6 +638,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.right_stack = QStackedWidget()
         self.right_stack.addWidget(right_main_panel)
         self.right_stack.addWidget(self._build_parallel_right_panel())
+        self.right_stack.addWidget(self._build_gap_right_panel())
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         splitter.addWidget(self.tabs)
@@ -879,7 +1025,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             "公式：<span style='color:red; font-weight:bold;'>Inner Gap = 堆叠总成 - 单片1 [- 单片2]</span><br>"
             "1. 务必确保所有数据在载入后，都点击了<b>[📍 平移归零]</b>，使X,Y坐标网格原点对齐。<br>"
             "2. 依次载入不同层数据并存入下方对应的寄存器中（寄存器会显示来源文件名，请核对）。<br>"
-            "3. 【对齐误差窗口】：用于补偿机台定位偏差。容差越大，匹配点越多，但过大可能匹配到错误邻居。"
+            "3. 【对齐误差窗口】：用于补偿机台定位偏差。容差越大，匹配点越多，但过大可能匹配到错误邻居。<br>"
+            "4. 右侧匹配诊断图会显示哪些堆叠点没有在单片层中找到容差内匹配点。"
             "</div>"
         )
         guide_lbl.setWordWrap(True)
@@ -954,7 +1101,12 @@ class SurfaceAnalyzerPro(QMainWindow):
     # ================= 平行度分析 =================
     def _on_tab_changed(self, index):
         if hasattr(self, 'right_stack'):
-            self.right_stack.setCurrentIndex(1 if index == getattr(self, 'parallel_tab_index', -1) else 0)
+            if index == getattr(self, 'parallel_tab_index', -1):
+                self.right_stack.setCurrentIndex(1)
+            elif index == getattr(self, 'math_tab_index', -1):
+                self.right_stack.setCurrentIndex(2)
+            else:
+                self.right_stack.setCurrentIndex(0)
 
     def setup_parallel_tab(self, parent_widget):
         scroll = QScrollArea()
@@ -972,8 +1124,12 @@ class SurfaceAnalyzerPro(QMainWindow):
         note.setWordWrap(True)
         ll.addWidget(note)
 
-        grp_ref = QGroupBox("基准面")
+        ll.addWidget(self._step_header(1, "基准面", active=True))
+        grp_ref = QGroupBox()
+        grp_ref.setFlat(True)
         gl_ref = QVBoxLayout(grp_ref)
+        gl_ref.setContentsMargins(2, 2, 2, 2)
+        gl_ref.setSpacing(6)
         self.lbl_parallel_base_status = QLabel("尚未设置")
         self.lbl_parallel_base_status.setObjectName("sourceNote")
         self.lbl_parallel_base_status.setWordWrap(True)
@@ -985,8 +1141,12 @@ class SurfaceAnalyzerPro(QMainWindow):
         gl_ref.addWidget(btn_ref)
         ll.addWidget(grp_ref)
 
-        grp_meas = QGroupBox("测量面")
+        ll.addWidget(self._step_header(2, "测量面"))
+        grp_meas = QGroupBox()
+        grp_meas.setFlat(True)
         gl_meas = QVBoxLayout(grp_meas)
+        gl_meas.setContentsMargins(2, 2, 2, 2)
+        gl_meas.setSpacing(6)
         self.lbl_parallel_measure_status = QLabel("尚未设置")
         self.lbl_parallel_measure_status.setObjectName("sourceNote")
         self.lbl_parallel_measure_status.setWordWrap(True)
@@ -998,7 +1158,9 @@ class SurfaceAnalyzerPro(QMainWindow):
         gl_meas.addWidget(btn_meas)
         ll.addWidget(grp_meas)
 
+        ll.addWidget(self._step_header(3, "计算与导出"))
         ops = QHBoxLayout()
+        ops.setSpacing(8)
         btn_swap = QPushButton("交换")
         btn_swap.setFixedHeight(34)
         btn_swap.clicked.connect(self.swap_parallel_surfaces)
@@ -1015,8 +1177,11 @@ class SurfaceAnalyzerPro(QMainWindow):
         btn_calc.clicked.connect(self.calculate_parallelism)
         ll.addWidget(btn_calc)
 
-        grp_rule = QGroupBox("计算口径")
-        gr = QVBoxLayout(grp_rule)
+        rule_box = QFrame()
+        rule_box.setObjectName("pipelineNote")
+        gr = QVBoxLayout(rule_box)
+        gr.setContentsMargins(8, 6, 8, 6)
+        gr.setSpacing(4)
         for text in (
             "不做对应点相减；两个文件可为空间上不重叠的区域。",
             "分别拟合 Z = aX + bY + c，再计算 ΔRx / ΔRy = 测量面 - 基准面。",
@@ -1025,17 +1190,18 @@ class SurfaceAnalyzerPro(QMainWindow):
             lab.setObjectName("mutedNote")
             lab.setWordWrap(True)
             gr.addWidget(lab)
-        ll.addWidget(grp_rule)
+        ll.addWidget(rule_box)
 
         exp = QHBoxLayout()
+        exp.setSpacing(8)
         btn_export = QPushButton("导出CSV")
         btn_export.setFixedHeight(34)
         btn_export.clicked.connect(self.export_parallel_csv)
-        btn_png = QPushButton("导出预览图")
-        btn_png.setFixedHeight(34)
-        btn_png.clicked.connect(self.export_parallel_preview)
+        btn_report = QPushButton("导出报告图")
+        btn_report.setFixedHeight(34)
+        btn_report.clicked.connect(self.export_parallel_report)
         exp.addWidget(btn_export)
-        exp.addWidget(btn_png)
+        exp.addWidget(btn_report)
         ll.addLayout(exp)
 
         btn_copy = QPushButton("复制结果")
@@ -1056,6 +1222,45 @@ class SurfaceAnalyzerPro(QMainWindow):
 
     def _make_value_card(self, title, label, accent=False):
         return self._make_metric_card(title, label, accent=accent)
+
+    def _build_gap_right_panel(self):
+        panel = QWidget()
+        outer = QVBoxLayout(panel)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(10)
+
+        strip = QFrame()
+        strip.setObjectName("resultsStrip")
+        sl = QHBoxLayout(strip)
+        sl.setContentsMargins(10, 4, 10, 8)
+        sl.setSpacing(12)
+        self.lbl_gap_matched = QLabel("--")
+        self.lbl_gap_unmatched = QLabel("--")
+        self.lbl_gap_tolerance = QLabel("--")
+        self.lbl_gap_state = QLabel("待计算")
+        sl.addWidget(self._make_value_card("成功匹配点", self.lbl_gap_matched, accent=True), 1)
+        sl.addWidget(self._make_value_card("未参与扣减点", self.lbl_gap_unmatched, accent=True), 1)
+        sl.addWidget(self._make_value_card("容差窗口 (mm)", self.lbl_gap_tolerance), 1)
+        sl.addWidget(self._make_value_card("状态", self.lbl_gap_state), 1)
+        outer.addWidget(strip)
+
+        card = QFrame()
+        card.setObjectName("plotCard")
+        cv = QVBoxLayout(card)
+        cv.setContentsMargins(12, 10, 12, 10)
+        cv.setSpacing(6)
+        head = QLabel("多层扣减匹配诊断")
+        head.setObjectName("plotTitle")
+        hint = QLabel("以堆叠总成 XY 点为基准，显示哪些点成功匹配、哪些点没有在单片层中找到容差内最近点。")
+        hint.setObjectName("mutedNote")
+        hint.setWordWrap(True)
+        cv.addWidget(head)
+        cv.addWidget(hint)
+        self.gap_match_canvas = GapMatchCanvas(self)
+        cv.addWidget(self.gap_match_canvas, 1)
+        self._add_shadow(card, blur=20, dy=3, alpha=30)
+        outer.addWidget(card, 1)
+        return panel
 
     def _build_parallel_right_panel(self):
         panel = QWidget()
@@ -1086,8 +1291,9 @@ class SurfaceAnalyzerPro(QMainWindow):
         cv.setSpacing(6)
         head = QLabel("静态 3D 预览")
         head.setObjectName("plotTitle")
-        hint = QLabel("基准面和测量面分成两个图显示，避免高度接近时互相遮挡。")
+        hint = QLabel("基准面和测量面分成两个 3D 图显示，点云按 Z 高度着色，并叠加半透明拟合面。")
         hint.setObjectName("mutedNote")
+        hint.setWordWrap(True)
         cv.addWidget(head)
         cv.addWidget(hint)
         cv.addWidget(self.parallel_canvas, 1)
@@ -1205,17 +1411,21 @@ class SurfaceAnalyzerPro(QMainWindow):
             self.parallel_canvas.plot_records(self.parallel_base, self.parallel_measure)
         self._update_parallel_result_ui()
 
+    def _compute_parallel_result(self):
+        b, m = self.parallel_base['metrics'], self.parallel_measure['metrics']
+        drx = m['rx'] - b['rx']
+        dry = m['ry'] - b['ry']
+        return {'drx': float(drx), 'dry': float(dry), 'angle': float(np.hypot(drx, dry))}
+
     def calculate_parallelism(self):
         if self.parallel_base is None or self.parallel_measure is None:
             QMessageBox.warning(self, "数据不完整", "请先分别设置基准面和测量面。")
             return
-        b, m = self.parallel_base['metrics'], self.parallel_measure['metrics']
-        drx = m['rx'] - b['rx']
-        dry = m['ry'] - b['ry']
-        angle = float(np.hypot(drx, dry))
-        self.parallel_result = {'drx': float(drx), 'dry': float(dry), 'angle': angle}
+        self.parallel_result = self._compute_parallel_result()
         self._update_parallel_result_ui()
-        self.statusBar().showMessage(f"平行度已计算: ΔRx={drx:.2f} µrad, ΔRy={dry:.2f} µrad", 6000)
+        self.statusBar().showMessage(
+            f"平行度已计算: ΔRx={self.parallel_result['drx']:.2f} µrad, "
+            f"ΔRy={self.parallel_result['dry']:.2f} µrad", 6000)
 
     def _fmt_metric(self, key, value):
         if key == 'mean_z':
@@ -1306,7 +1516,7 @@ class SurfaceAnalyzerPro(QMainWindow):
                 {'metric': 'Mean_Z_mm', 'base': b['mean_z'], 'measure': m['mean_z'], 'delta': ''},
             ]
             with open(path, 'w', encoding='utf-8-sig', newline='') as f:
-                f.write("# ===== 平行度分析 V3.8.0 导出 =====\n")
+                f.write(f"# ===== 平行度分析 {self.APP_VERSION} 导出 =====\n")
                 f.write(f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
                 f.write(f"# 基准面: {self.parallel_base['name']} | 点数: {self.parallel_base['n']}\n")
                 f.write(f"# 测量面: {self.parallel_measure['name']} | 点数: {self.parallel_measure['n']}\n")
@@ -1316,25 +1526,210 @@ class SurfaceAnalyzerPro(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
 
-    def export_parallel_preview(self):
+    @staticmethod
+    def _short_report_text(text, max_chars=54):
+        s = str(text or "--").replace("\n", " ")
+        return s if len(s) <= max_chars else s[:max_chars - 3] + "..."
+
+    def _parallel_report_default_name(self):
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = Path(str(self.parallel_base.get('name') or 'base')).stem or 'base'
+        meas = Path(str(self.parallel_measure.get('name') or 'measure')).stem or 'measure'
+        name = f"Parallelism_Report_{base}_vs_{meas}_{stamp}.png"
+        name = re.sub(r'[<>:"/\\|?*\r\n]+', '_', name)
+        return name if len(name) <= 160 else f"Parallelism_Report_{stamp}.png"
+
+    def _draw_parallel_report_surface(self, fig, ax, rec, title, plane_color):
+        x = np.asarray(rec['x'])
+        y = np.asarray(rec['y'])
+        z = np.asarray(rec['z'])
+        m = rec['metrics']
+        finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+        x, y, z = x[finite], y[finite], z[finite]
+        if len(z) == 0:
+            ax.set_title(title)
+            ax.text2D(0.5, 0.5, "无有效点", transform=ax.transAxes,
+                      ha='center', va='center', color='#8a94a3')
+            ax.set_axis_off()
+            return
+
+        max_points = min(int(self._display_limit()), 60000)
+        if len(z) > max_points:
+            pick = np.linspace(0, len(z) - 1, max_points, dtype=int)
+            sx, sy, sz = x[pick], y[pick], z[pick]
+            sample_note = f"绘图抽样 {len(sz):,}/{len(z):,} 点"
+        else:
+            sx, sy, sz = x, y, z
+            sample_note = f"绘图点数 {len(z):,}"
+
+        xmin, xmax = float(np.min(x)), float(np.max(x))
+        ymin, ymax = float(np.min(y)), float(np.max(y))
+        if np.isclose(xmin, xmax):
+            xmin -= 0.5; xmax += 0.5
+        if np.isclose(ymin, ymax):
+            ymin -= 0.5; ymax += 0.5
+        xx, yy = np.meshgrid(np.linspace(xmin, xmax, 24), np.linspace(ymin, ymax, 24))
+        zz = m['a'] * xx + m['b'] * yy + m['c']
+
+        ax.plot_surface(xx, yy, zz, color=plane_color, alpha=0.28,
+                        edgecolor='none', shade=False)
+        point_size = 8 if len(sz) <= 20000 else 5
+        sc = ax.scatter(sx, sy, sz, c=sz, cmap='turbo', s=point_size,
+                        alpha=0.82, edgecolors='none', depthshade=False,
+                        rasterized=True)
+        ax.set_title(title, fontsize=12, fontweight='bold')
+        ax.set_xlabel("X (mm)")
+        ax.set_ylabel("Y (mm)")
+        ax.set_zlabel("")
+        ax.set_zticks([])
+        ax.tick_params(labelsize=8, colors='#94a3b8')
+        ax.view_init(elev=24, azim=-52)
+        ax.grid(True, linestyle=':', linewidth=0.7, color='#dce3ea')
+        try:
+            ax.set_box_aspect((1.35, 1.0, 0.42), zoom=1.06)
+        except TypeError:
+            ax.set_box_aspect((1.35, 1.0, 0.42))
+        for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
+            pane.set_facecolor('#fbfcfd')
+            pane.set_edgecolor('#e6eaee')
+            pane.set_alpha(1.0)
+
+        ax.text2D(
+            0.02, 0.98,
+            f"{sample_note}\nRx {m['rx']:.2f} µrad | Ry {m['ry']:.2f} µrad\n"
+            f"RMS {m['rms']:.3f} µm | PV {m['pv']:.3f} µm",
+            transform=ax.transAxes, ha='left', va='top', fontsize=9,
+            color='#334155',
+            bbox=dict(boxstyle='round,pad=0.35', fc='white', ec='#dbe3ec', alpha=0.9)
+        )
+        cbar = fig.colorbar(sc, ax=ax, shrink=0.68, aspect=24, pad=0.05)
+        cbar.set_label("Z (mm)", fontsize=9)
+        cbar.ax.tick_params(labelsize=8)
+
+    def _render_parallel_report_figure(self):
+        """生成平行度分析报告图，返回 Figure(Agg 后端)。"""
+        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+        if self.parallel_result is None:
+            self.parallel_result = self._compute_parallel_result()
+
+        b_rec, m_rec = self.parallel_base, self.parallel_measure
+        b, m = b_rec['metrics'], m_rec['metrics']
+        r = self.parallel_result
+
+        fig = Figure(figsize=(17, 9.5), constrained_layout=True)
+        FigureCanvasAgg(fig)
+        gs = fig.add_gridspec(1, 3, width_ratios=[1.12, 1.34, 1.34])
+        gs_left = gs[0, 0].subgridspec(24, 1)
+        ax_meta = fig.add_subplot(gs_left[0:7, 0]); ax_meta.axis('off')
+        ax_result = fig.add_subplot(gs_left[7:12, 0]); ax_result.axis('off')
+        ax_table = fig.add_subplot(gs_left[12:21, 0]); ax_table.axis('off')
+        ax_note = fig.add_subplot(gs_left[21:24, 0]); ax_note.axis('off')
+        ax_base = fig.add_subplot(gs[0, 1], projection='3d')
+        ax_meas = fig.add_subplot(gs[0, 2], projection='3d')
+
+        meta_lines = [
+            f"报告时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
+            f"基准面: {self._short_report_text(b_rec['name'])}",
+            f"测量面: {self._short_report_text(m_rec['name'])}",
+            f"基准点数: {b_rec['n']:,} | 测量点数: {m_rec['n']:,}",
+            f"基准导入: {b_rec.get('import_strategy', '--')} | 抽样: {b_rec.get('sampled', False)}",
+            f"测量导入: {m_rec.get('import_strategy', '--')} | 抽样: {m_rec.get('sampled', False)}",
+            f"基准处理: {self._short_report_text(b_rec.get('pipeline'), 46)}",
+            f"测量处理: {self._short_report_text(m_rec.get('pipeline'), 46)}",
+        ]
+        ax_meta.text(0.02, 0.98, "\n".join(meta_lines), va='top', ha='left',
+                     fontsize=10.3, linespacing=1.55, color='#34495e',
+                     transform=ax_meta.transAxes)
+
+        result_text = (
+            "平行度结果\n\n"
+            f"ΔRx = {r['drx']:.2f} µrad\n"
+            f"ΔRy = {r['dry']:.2f} µrad\n"
+            f"合成夹角 = {r['angle']:.2f} µrad"
+        )
+        ax_result.text(0.06, 0.95, result_text, va='top', ha='left',
+                       fontsize=15.5, linespacing=1.45, color='#11447a',
+                       transform=ax_result.transAxes,
+                       bbox=dict(boxstyle='round,pad=0.65', facecolor='#eaf2fb',
+                                 edgecolor='#2f6db0', linewidth=1.4))
+
+        table_rows = [
+            ["Rx (µrad)", f"{b['rx']:.2f}", f"{m['rx']:.2f}", f"{r['drx']:.2f}"],
+            ["Ry (µrad)", f"{b['ry']:.2f}", f"{m['ry']:.2f}", f"{r['dry']:.2f}"],
+            ["RMS (µm)", f"{b['rms']:.3f}", f"{m['rms']:.3f}", "--"],
+            ["PV 法向 (µm)", f"{b['pv']:.3f}", f"{m['pv']:.3f}", "--"],
+            ["TTV Z极差 (µm)", f"{b['ttv']:.3f}", f"{m['ttv']:.3f}", "--"],
+            ["平均 Z (mm)", f"{b['mean_z']:.5f}", f"{m['mean_z']:.5f}", "--"],
+        ]
+        ax_table.set_title("单面拟合指标", loc='left', fontsize=12, fontweight='bold', pad=8)
+        tbl = ax_table.table(
+            cellText=table_rows,
+            colLabels=["指标", "基准面", "测量面", "差值"],
+            loc='center',
+            cellLoc='center',
+            colLoc='center',
+            colWidths=[0.32, 0.23, 0.23, 0.22],
+        )
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(9.6)
+        tbl.scale(1, 1.42)
+        for (row, col), cell in tbl.get_celld().items():
+            cell.set_edgecolor('#d7dee8')
+            cell.set_linewidth(0.8)
+            if row == 0:
+                cell.set_facecolor('#edf3f9')
+                cell.set_text_props(weight='bold', color='#334155')
+            elif col == 3 and row in (1, 2):
+                cell.set_facecolor('#eaf2fb')
+                cell.set_text_props(weight='bold', color='#11447a')
+            else:
+                cell.set_facecolor('#ffffff')
+
+        note = (
+            "口径说明\n"
+            "不做对应点相减；两个文件可为空间不重叠区域。\n"
+            "分别拟合 Z = aX + bY + c，再计算测量面 - 基准面的 Rx/Ry 差值。\n"
+            "Rx/Ry 符号约定需用标准件校准。"
+        )
+        ax_note.text(0.02, 0.98, note, va='top', ha='left',
+                     fontsize=9.6, linespacing=1.45, color='#6b7280',
+                     transform=ax_note.transAxes)
+
+        self._draw_parallel_report_surface(fig, ax_base, b_rec, "基准面 3D 拟合预览", '#2f6db0')
+        self._draw_parallel_report_surface(fig, ax_meas, m_rec, "测量面 3D 拟合预览", '#f59e0b')
+        fig.suptitle(f"平行度分析报告 ({self.APP_VERSION})", fontsize=16, fontweight='bold')
+        return fig
+
+    def export_parallel_report(self):
         if self.parallel_base is None or self.parallel_measure is None:
             QMessageBox.warning(self, "暂无数据", "请先设置基准面和测量面。")
             return
-        path, _ = QFileDialog.getSaveFileName(self, "导出平行度预览图", "Parallelism_Preview.png", "PNG 图片 (*.png)")
+        if self.parallel_result is None:
+            self.parallel_result = self._compute_parallel_result()
+            self._update_parallel_result_ui()
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出平行度报告图", self._parallel_report_default_name(),
+            "PNG 图片 (*.png);;All Files (*)")
         if not path:
             return
         try:
-            self.parallel_canvas.fig.savefig(path, dpi=160)
-            self.statusBar().showMessage(f"平行度预览图已导出: {path}", 5000)
+            fig = self._render_parallel_report_figure()
+            fig.savefig(path, dpi=150)
+            self.statusBar().showMessage(f"平行度报告图已导出: {path}", 6000)
+            QMessageBox.information(self, "导出成功", f"平行度报告图已导出：\n{path}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
+
+    def export_parallel_preview(self):
+        self.export_parallel_report()
 
     # ================= Recipe 导入 / 导出 =================
     def _current_recipe_dict(self):
         """导出当前界面参数，不包含测量数据本身。"""
         return {
             'recipe_type': 'SurfaceRxyZxyAnalyzerRecipe',
-            'app_version': 'V3.8.0',
+            'app_version': self.APP_VERSION,
             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'column_mapping': {
                 'x_col': self.cb_x_col.currentText() if hasattr(self, 'cb_x_col') else '',
@@ -1345,7 +1740,13 @@ class SurfaceAnalyzerPro(QMainWindow):
             'transform_pipeline': list(self.transform_pipeline),
             'filter': {'mode_index': int(self.cb_filter.currentIndex()), 'mode_text': self.cb_filter.currentText(), 'neighbor_k': int(self.spin_k.value()), 'threshold_um': float(self.spin_thresh.value()), 'sigma_k': float(self.spin_sigma.value()), 'sigma_iters': int(self.spin_sigma_iter.value())},
             'display': {'detrended': bool(self.display_detrended)},
-            'large_file': {'auto_sample': bool(self.auto_sample_large_text), 'threshold_mb': int(self.large_text_threshold_mb), 'import_limit': int(self.large_text_import_limit), 'display_limit': int(self.display_point_limit)},
+            'large_file': {
+                'mode': self._matching_bigfile_mode(),
+                'auto_sample': bool(self.auto_sample_large_text),
+                'threshold_mb': int(self.large_text_threshold_mb),
+                'import_limit': int(self.large_text_import_limit),
+                'display_limit': int(self.display_point_limit)
+            },
             'gap': {'tolerance_mm': float(self.spin_tol.value()) if hasattr(self, 'spin_tol') else 0.05},
         }
 
@@ -1402,10 +1803,12 @@ class SurfaceAnalyzerPro(QMainWindow):
         if self.cb_z_col.count() > 0 and self._safe_set_combo_text(self.cb_z_col, mapping.get('z_col')):
             applied_cols.append('Z')
         lf = recipe.get('large_file', {}) or {}
+        self.large_file_mode = str(lf.get('mode', self.large_file_mode))
         self.auto_sample_large_text = bool(lf.get('auto_sample', self.auto_sample_large_text))
         self.large_text_threshold_mb = int(lf.get('threshold_mb', self.large_text_threshold_mb))
         self.large_text_import_limit = int(lf.get('import_limit', self.large_text_import_limit))
         self.display_point_limit = int(lf.get('display_limit', self.display_point_limit))
+        self.large_file_mode = self._matching_bigfile_mode()
         self.import_info['display_limit'] = self.display_point_limit
         gap = recipe.get('gap', {}) or {}
         if hasattr(self, 'spin_tol'):
@@ -1631,7 +2034,28 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.lbl_base1_status.setStyleSheet("color: #c0392b; font-weight: bold;")
         self.lbl_base2_status.setText("⭕ 可选空置")
         self.lbl_base2_status.setStyleSheet("color: #7f8c8d; font-weight: bold;")
+        self._update_gap_diagnostic(None)
         self.statusBar().showMessage("已清空全部寄存器", 3000)
+
+    def _update_gap_diagnostic(self, diag):
+        if not hasattr(self, 'gap_match_canvas'):
+            return
+        self.gap_match_canvas.plot_diagnostic(diag)
+        if diag is None:
+            if hasattr(self, 'lbl_gap_matched'):
+                self.lbl_gap_matched.setText("--")
+                self.lbl_gap_unmatched.setText("--")
+                self.lbl_gap_tolerance.setText("--")
+                self.lbl_gap_state.setText("待计算")
+            return
+        final_valid = diag['final_valid']
+        total = int(len(final_valid))
+        matched = int(np.sum(final_valid))
+        if hasattr(self, 'lbl_gap_matched'):
+            self.lbl_gap_matched.setText(f"{matched:,}")
+            self.lbl_gap_unmatched.setText(f"{total - matched:,}")
+            self.lbl_gap_tolerance.setText(f"{diag['tolerance']:.3f}")
+            self.lbl_gap_state.setText("已诊断" if matched >= 10 else "匹配不足")
 
     def calculate_gap(self):
         if self.data_stack is None or self.data_base1 is None:
@@ -1690,10 +2114,23 @@ class SurfaceAnalyzerPro(QMainWindow):
                 final_sy = sy[valid]
                 final_gap_z = sz[valid] - b1z[idx1[valid]] - b2z[idx2[valid]]
             else:
+                valid2 = None
                 valid = valid1
                 final_sx = sx[valid]
                 final_sy = sy[valid]
                 final_gap_z = sz[valid] - b1z[idx1[valid]]
+
+            self._update_gap_diagnostic({
+                'x': sx.copy(),
+                'y': sy.copy(),
+                'valid1': valid1.copy(),
+                'valid2': valid2.copy() if valid2 is not None else None,
+                'final_valid': valid.copy(),
+                'tolerance': float(tolerance),
+                'stack_name': self.data_stack['name'],
+                'base1_name': self.data_base1['name'],
+                'base2_name': self.data_base2['name'] if self.data_base2 is not None else None,
+            })
 
             if len(final_gap_z) < 10:
                 raise ValueError("容差范围内配对成功的有效点不足！\n请尝试增大【误差窗口】数值，或检查各组数据是否都执行了[平移归零]。")
@@ -1717,6 +2154,7 @@ class SurfaceAnalyzerPro(QMainWindow):
                 'import_rows': len(self.df_raw),
                 'valid_rows': len(self.df_raw),
                 'display_limit': self._display_limit(),
+                'large_file_mode': self._bigfile_mode_label(),
                 'notes': '由多层点云匹配计算生成'
             }
             self._update_import_status_label()
@@ -1725,16 +2163,17 @@ class SurfaceAnalyzerPro(QMainWindow):
             self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
             self.current_coeffs = None
 
-            self.tabs.setCurrentIndex(0)
             self.update_analysis()
+            self.tabs.setCurrentIndex(self.math_tab_index)
+            self._on_tab_changed(self.math_tab_index)
 
             msg = (f"成功配对并算出 Inner Gap！\n"
                    f"容差设定: {tolerance} mm\n"
                    f"成功对齐点数: {len(final_gap_z)}\n"
                    f"公式: 堆叠总成 - 单片1{' - 单片2' if self.data_base2 is not None else ''}\n\n"
                    f"—— 匹配质量报告 ——\n" + "\n".join(report_parts) +
-                   "\n\n注: 当前视图已切换为 Gap 结果，原文件映射已锁定；"
-                   "如需重新分析原数据请重新载入文件。")
+                   "\n\n注: Gap 结果已写入主控分析，当前右侧显示匹配诊断；"
+                   "如需查看 Gap 面型请切回[单层 / 主控分析]。")
             QMessageBox.information(self, "计算成功", msg)
 
         except Exception as e:
@@ -1770,6 +2209,31 @@ class SurfaceAnalyzerPro(QMainWindow):
     TEXT_SUFFIXES = ('.csv', '.txt', '.tsv', '.dat', '.asc', '.xyz')
     EXCEL_SUFFIXES = ('.xlsx', '.xls', '.xlsm')
 
+    def _bigfile_mode_label(self, mode_key=None):
+        mode = mode_key or getattr(self, 'large_file_mode', 'standard')
+        preset = self.BIGFILE_MODE_PRESETS.get(mode)
+        return preset['label'] if preset else '自定义'
+
+    def _bigfile_mode_description(self, mode_key=None):
+        mode = mode_key or getattr(self, 'large_file_mode', 'standard')
+        preset = self.BIGFILE_MODE_PRESETS.get(mode)
+        if preset:
+            return preset['description']
+        return '手动参数：当前阈值、导入上限或显示上限与三档预设不完全一致。'
+
+    def _matching_bigfile_mode(self, auto_sample=None, threshold_mb=None, import_limit=None, display_limit=None):
+        auto = bool(self.auto_sample_large_text if auto_sample is None else auto_sample)
+        threshold = int(self.large_text_threshold_mb if threshold_mb is None else threshold_mb)
+        rows = int(self.large_text_import_limit if import_limit is None else import_limit)
+        shown = int(self.display_point_limit if display_limit is None else display_limit)
+        for key, preset in self.BIGFILE_MODE_PRESETS.items():
+            if (auto == bool(preset['auto_sample'])
+                    and threshold == int(preset['threshold_mb'])
+                    and rows == int(preset['import_limit'])
+                    and shown == int(preset['display_limit'])):
+                return key
+        return 'custom'
+
     def _large_text_threshold_bytes(self):
         return int(getattr(self, 'large_text_threshold_mb', self.LARGE_TEXT_FILE_BYTES // (1024 * 1024))) * 1024 * 1024
 
@@ -1793,6 +2257,7 @@ class SurfaceAnalyzerPro(QMainWindow):
             'sampled': False,
             'import_rows': 0,
             'display_limit': self._display_limit(),
+            'large_file_mode': self._bigfile_mode_label(),
             'notes': ''
         }
 
@@ -1815,6 +2280,7 @@ class SurfaceAnalyzerPro(QMainWindow):
             self.lbl_import_status.setText(text)
         if hasattr(self, 'btn_bigfile_settings'):
             cfg = (f"大文件策略\n"
+                   f"模式: {self._bigfile_mode_label()}\n"
                    f"自动抽样: {'开启' if self.auto_sample_large_text else '关闭'}\n"
                    f"触发阈值: {self.large_text_threshold_mb} MB\n"
                    f"导入上限: {self.large_text_import_limit:,} 行\n"
@@ -1845,33 +2311,86 @@ class SurfaceAnalyzerPro(QMainWindow):
         chk_auto.setToolTip("开启后，超过阈值的TXT/CSV/ASC/XYZ等文本文件不会全量读入，而是先按文件位置均匀抽样，避免Zeiss大文件卡死。")
         grid.addWidget(chk_auto, 0, 0, 1, 2)
 
-        grid.addWidget(QLabel("触发阈值(MB):"), 1, 0)
+        grid.addWidget(QLabel("策略模式:"), 1, 0)
+        cb_mode = QComboBox()
+        for key in ('fast', 'standard', 'precise'):
+            cb_mode.addItem(f"{self.BIGFILE_MODE_PRESETS[key]['label']}模式", key)
+        cb_mode.addItem("自定义", "custom")
+        current_mode = self._matching_bigfile_mode()
+        mode_idx = cb_mode.findData(current_mode)
+        cb_mode.setCurrentIndex(mode_idx if mode_idx >= 0 else cb_mode.findData("custom"))
+        cb_mode.setToolTip("快速更流畅，标准为默认推荐，精确保留更多点但会更慢。")
+        grid.addWidget(cb_mode, 1, 1)
+
+        mode_note = QLabel(self._bigfile_mode_description(current_mode))
+        mode_note.setWordWrap(True)
+        mode_note.setStyleSheet("color: #7f8c8d; font-size: 11px;")
+        grid.addWidget(mode_note, 2, 0, 1, 2)
+
+        grid.addWidget(QLabel("触发阈值(MB):"), 3, 0)
         spin_mb = QSpinBox()
         spin_mb.setRange(1, 4096)
         spin_mb.setValue(int(self.large_text_threshold_mb))
         spin_mb.setToolTip("文件大小达到该阈值时触发预抽样导入。默认512MB。")
-        grid.addWidget(spin_mb, 1, 1)
+        grid.addWidget(spin_mb, 3, 1)
 
-        grid.addWidget(QLabel("导入上限(行):"), 2, 0)
+        grid.addWidget(QLabel("导入上限(行):"), 4, 0)
         spin_import = QSpinBox()
         spin_import.setRange(10000, 5000000)
         spin_import.setSingleStep(50000)
         spin_import.setValue(int(self.large_text_import_limit))
         spin_import.setToolTip("超大文本预抽样最多导入的行数。注意：该上限影响后续拟合/滤波指标。")
-        grid.addWidget(spin_import, 2, 1)
+        grid.addWidget(spin_import, 4, 1)
 
-        grid.addWidget(QLabel("显示上限(点):"), 3, 0)
+        grid.addWidget(QLabel("显示上限(点):"), 5, 0)
         spin_display = QSpinBox()
         spin_display.setRange(5000, 1000000)
         spin_display.setSingleStep(5000)
         spin_display.setValue(int(self.display_point_limit))
         spin_display.setToolTip("仅限制右侧绘图显示点数，不改变已导入数据和Rx/Ry/PV/TTV计算。")
-        grid.addWidget(spin_display, 3, 1)
+        grid.addWidget(spin_display, 5, 1)
 
-        note = QLabel("说明：导入抽样会影响参与分析的数据量；显示上限只影响绘图，不改变已导入数据。")
+        applying_preset = {'active': False}
+
+        def set_mode_index(mode_key):
+            idx = cb_mode.findData(mode_key)
+            if idx >= 0 and cb_mode.currentIndex() != idx:
+                cb_mode.setCurrentIndex(idx)
+
+        def sync_mode_from_values(*_args):
+            if applying_preset['active']:
+                return
+            mode_key = self._matching_bigfile_mode(chk_auto.isChecked(), spin_mb.value(),
+                                                   spin_import.value(), spin_display.value())
+            set_mode_index(mode_key)
+            mode_note.setText(self._bigfile_mode_description(mode_key))
+
+        def apply_preset_from_combo(*_args):
+            mode_key = cb_mode.currentData()
+            preset = self.BIGFILE_MODE_PRESETS.get(mode_key)
+            if not preset:
+                mode_note.setText(self._bigfile_mode_description('custom'))
+                return
+            applying_preset['active'] = True
+            try:
+                chk_auto.setChecked(bool(preset['auto_sample']))
+                spin_mb.setValue(int(preset['threshold_mb']))
+                spin_import.setValue(int(preset['import_limit']))
+                spin_display.setValue(int(preset['display_limit']))
+            finally:
+                applying_preset['active'] = False
+            mode_note.setText(self._bigfile_mode_description(mode_key))
+
+        cb_mode.currentIndexChanged.connect(apply_preset_from_combo)
+        chk_auto.toggled.connect(sync_mode_from_values)
+        spin_mb.valueChanged.connect(sync_mode_from_values)
+        spin_import.valueChanged.connect(sync_mode_from_values)
+        spin_display.valueChanged.connect(sync_mode_from_values)
+
+        note = QLabel("说明：快速/标准/精确只改变大文件抽样参数；导入抽样会影响参与分析的数据量；显示上限只影响绘图，不改变已导入数据。")
         note.setWordWrap(True)
         note.setStyleSheet("color: #7f8c8d; font-size: 11px;")
-        grid.addWidget(note, 4, 0, 1, 2)
+        grid.addWidget(note, 6, 0, 1, 2)
         layout.addWidget(group)
 
         status = QLabel(self.lbl_import_status.text() if hasattr(self, 'lbl_import_status') else "导入状态: --")
@@ -1890,7 +2409,9 @@ class SurfaceAnalyzerPro(QMainWindow):
             self.large_text_threshold_mb = int(spin_mb.value())
             self.large_text_import_limit = int(spin_import.value())
             self.display_point_limit = int(spin_display.value())
+            self.large_file_mode = self._matching_bigfile_mode()
             self.import_info['display_limit'] = self.display_point_limit
+            self.import_info['large_file_mode'] = self._bigfile_mode_label()
             self._update_import_status_label()
             if old_display_limit != self.display_point_limit and self.df_raw is not None and self.active_idx is not None:
                 self.update_plots_only()
@@ -2037,6 +2558,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         df = pd.DataFrame(rows, columns=cols)
         self.last_import_note = (
             f"超大文本已预抽样导入，避免全量读入导致卡死。\n"
+            f"策略模式: {self._bigfile_mode_label()}\n"
             f"文件大小: {file_size / (1024 * 1024):.1f} MB\n"
             f"触发阈值: {self.large_text_threshold_mb} MB\n"
             f"抽样上限: {max_rows:,} 行\n"
@@ -2048,7 +2570,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             'strategy': '超大文本预抽样导入',
             'sampled': True,
             'import_rows': len(df),
-            'notes': f"抽样上限 {max_rows:,} 行"
+            'large_file_mode': self._bigfile_mode_label(),
+            'notes': f"{self._bigfile_mode_label()}模式 | 抽样上限 {max_rows:,} 行"
         })
         return df
 
@@ -2599,7 +3122,7 @@ class SurfaceAnalyzerPro(QMainWindow):
             elif self.cb_filter.currentIndex() == 3:
                 filter_text += f" (σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})"
             meta = [
-                "# ===== 面型及Rxy分析工具 V3.8.0 导出 =====",
+                f"# ===== 面型及Rxy分析工具 {self.APP_VERSION} 导出 =====",
                 f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
                 f"# 数据来源: {self.current_source_name}",
                 f"# 变换路径: {pipeline_text}",
@@ -2862,7 +3385,7 @@ class SurfaceAnalyzerPro(QMainWindow):
                      va='top', ha='left', fontsize=9, style='italic',
                      color='#7f8c8d', transform=ax_foot.transAxes)
 
-        fig.suptitle(f"面型及Rxy分析报告 (V3.8.0) — {source_name}", fontsize=16, fontweight='bold')
+        fig.suptitle(f"面型及Rxy分析报告 ({self.APP_VERSION}) — {source_name}", fontsize=16, fontweight='bold')
         return fig
 
 
