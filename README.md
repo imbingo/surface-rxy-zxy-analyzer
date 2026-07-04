@@ -1,24 +1,32 @@
 # Surface Rxy ZXY Analyzer
 
-面型及 Rxy 分析工具，当前主程序已更新到 V3.8.2。
+面型及 Rxy 分析工具，当前主程序已更新到 V3.8.3。
 
 ## 文件
 
-- `面型及Rxy分析ZXY版.py`: PyQt6 GUI 主程序，内容为 V3.8.2 最新版。
-- `start_surface_analyzer_v3_8_2.bat`: 推荐启动脚本，固定使用仓库内 `.venv`，避免换解释器后重复装依赖。
+- `面型及Rxy分析ZXY版.py`: PyQt6 GUI 主程序，内容为 V3.8.3 最新版。
+- `start_surface_analyzer_v3_8_3.bat`: 推荐启动脚本，固定使用仓库内 `.venv`，避免换解释器后重复装依赖。
 - `requirements.txt`: 运行所需 Python 依赖。
 
 ## 运行
 
 ```powershell
-.\start_surface_analyzer_v3_8_2.bat
+.\start_surface_analyzer_v3_8_3.bat
 ```
 
 首次运行会创建 `.venv` 并安装依赖；后续会复用同一个环境。需要只检查环境、不打开 GUI 时：
 
 ```powershell
-.\start_surface_analyzer_v3_8_2.bat --check
+.\start_surface_analyzer_v3_8_3.bat --check
 ```
+
+## V3.8.3 重点
+
+- **大文件默认使用空间网格均匀采样**：超过阈值的 TXT / DAT / ASC / XYZ 会按 X/Y 网格采样，不再默认按文件位置抽行。
+- **每格保留极值**：每个网格最多保留首个代表点、Z 最小点、Z 最大点，降低 TTV / PV 因采样丢失局部极值的风险。
+- **网格数可自动或自定义**：大文件策略里新增“空间网格数”，0 表示自动；实际使用的网格数、占用网格数会写入导入说明。
+- **保留旧采样方式**：大文件策略里仍可切换到“文件位置均匀采样”，用于兼容旧版导入口径。
+- **平行度报告排版优化**：导出的报告图左侧改为报告信息、平行度结果、单面拟合指标、口径说明四段式布局，文字更清楚。
 
 ## V3.8.2 重点
 

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-面型及Rxy分析工具 V3.8.2
+面型及Rxy分析工具 V3.8.3
 基于 V1 的修复与增强：
   [优化] V3.7.0 (UI优化·方案A): 整理版左栏 + 顶部结果读数条。仅重排界面，不改动任何算法。
          · 结果指标(平均厚度Z/PV/TTV/Rx/Ry+平面方程)上提为绘图区上方常驻读数条，随分析实时刷新。
@@ -55,6 +55,8 @@
   [修复] V3.8.2: 平行度预览保持 3D 分面预览并优化点云清晰度；左侧控件改为主控页同款分步布局。
   [增强] V3.8.2: 平行度分析导出从预览图升级为清晰报告图，包含结果卡片、指标表和双 3D 拟合预览。
   [增强] V3.8.2: 多层胶厚扣减新增匹配诊断图，显示未对齐/未参与扣减点。
+  [增强] V3.8.3: 大文件默认改为空间网格均匀采样；每格保留代表点、Z最小点和Z最大点，并显示实际网格数。
+  [优化] V3.8.3: 平行度报告文字排版改为四段式卡片布局，减少标题、结果卡和表格之间的拥挤。
 注意：Rx/Ry 符号约定 (Rx≈+dZ/dY, Ry≈-dZ/dX) 需用已知倾角标准件实测校准一次。
 """
 import sys
@@ -69,6 +71,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
+from matplotlib.patches import FancyBboxPatch
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.widgets import RectangleSelector
@@ -326,7 +329,7 @@ class GapMatchCanvas(FigureCanvas):
 
 
 class SurfaceAnalyzerPro(QMainWindow):
-    APP_VERSION = "V3.8.2"
+    APP_VERSION = "V3.8.3"
     DISPLAY_POINT_LIMIT = 80000
     LARGE_TEXT_FILE_BYTES = 512 * 1024 * 1024
     LARGE_TEXT_IMPORT_LIMIT = 500000
@@ -337,6 +340,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             'threshold_mb': 128,
             'import_limit': 150000,
             'display_limit': 40000,
+            'sample_method': 'spatial_grid',
+            'grid_count': 0,
             'description': '优先不卡顿：较早触发抽样，适合先快速判断面型趋势和导入格式。'
         },
         'standard': {
@@ -345,6 +350,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             'threshold_mb': 512,
             'import_limit': 500000,
             'display_limit': 80000,
+            'sample_method': 'spatial_grid',
+            'grid_count': 0,
             'description': '默认推荐：延续 V3.8.0 口径，兼顾速度和拟合稳定性。'
         },
         'precise': {
@@ -353,6 +360,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             'threshold_mb': 512,
             'import_limit': 1500000,
             'display_limit': 150000,
+            'sample_method': 'spatial_grid',
+            'grid_count': 0,
             'description': '保留更多点参与拟合，导入和绘图会更慢，适合最终复核。'
         },
     }
@@ -378,6 +387,8 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.last_import_note = ""        # 最近一次导入说明
         self.last_displayed_points = 0     # 最近一次绘图实际显示点数
         self.large_file_mode = 'standard'  # 大文件策略模式：fast / standard / precise / custom
+        self.large_file_sample_method = 'spatial_grid'  # V3.8.3 默认：空间网格均匀采样
+        self.large_text_grid_count = 0     # 0=自动；>0 为用户指定的 X/Y 单边网格数
         self.import_info = {               # 导入状态：用于UI与导出元数据
             'file_size_bytes': 0,
             'file_size_mb': 0.0,
@@ -386,6 +397,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             'import_rows': 0,
             'display_limit': self.DISPLAY_POINT_LIMIT,
             'large_file_mode': self._bigfile_mode_label(),
+            'sample_method': self._sample_method_label(),
+            'grid_count': self.large_text_grid_count,
             'notes': ''
         }
         # V3.5.1: 大文件策略不再占用左侧UI，改为右侧工具条按钮弹窗设置
@@ -1617,42 +1630,61 @@ class SurfaceAnalyzerPro(QMainWindow):
         b, m = b_rec['metrics'], m_rec['metrics']
         r = self.parallel_result
 
-        fig = Figure(figsize=(17, 9.5), constrained_layout=True)
+        fig = Figure(figsize=(17.6, 10.0), constrained_layout=False)
         FigureCanvasAgg(fig)
-        gs = fig.add_gridspec(1, 3, width_ratios=[1.12, 1.34, 1.34])
-        gs_left = gs[0, 0].subgridspec(24, 1)
-        ax_meta = fig.add_subplot(gs_left[0:7, 0]); ax_meta.axis('off')
-        ax_result = fig.add_subplot(gs_left[7:12, 0]); ax_result.axis('off')
-        ax_table = fig.add_subplot(gs_left[12:21, 0]); ax_table.axis('off')
-        ax_note = fig.add_subplot(gs_left[21:24, 0]); ax_note.axis('off')
+        gs = fig.add_gridspec(
+            1, 3, width_ratios=[1.08, 1.42, 1.42],
+            left=0.035, right=0.985, top=0.90, bottom=0.06, wspace=0.16)
+        gs_left = gs[0, 0].subgridspec(4, 1, height_ratios=[1.65, 1.45, 3.15, 1.35], hspace=0.32)
+        ax_meta = fig.add_subplot(gs_left[0, 0]); ax_meta.axis('off')
+        ax_result = fig.add_subplot(gs_left[1, 0]); ax_result.axis('off')
+        ax_table = fig.add_subplot(gs_left[2, 0]); ax_table.axis('off')
+        ax_note = fig.add_subplot(gs_left[3, 0]); ax_note.axis('off')
         ax_base = fig.add_subplot(gs[0, 1], projection='3d')
         ax_meas = fig.add_subplot(gs[0, 2], projection='3d')
 
-        meta_lines = [
-            f"报告时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
-            f"基准面: {self._short_report_text(b_rec['name'])}",
-            f"测量面: {self._short_report_text(m_rec['name'])}",
-            f"基准点数: {b_rec['n']:,} | 测量点数: {m_rec['n']:,}",
-            f"基准导入: {b_rec.get('import_strategy', '--')} | 抽样: {b_rec.get('sampled', False)}",
-            f"测量导入: {m_rec.get('import_strategy', '--')} | 抽样: {m_rec.get('sampled', False)}",
-            f"基准处理: {self._short_report_text(b_rec.get('pipeline'), 46)}",
-            f"测量处理: {self._short_report_text(m_rec.get('pipeline'), 46)}",
-        ]
-        ax_meta.text(0.02, 0.98, "\n".join(meta_lines), va='top', ha='left',
-                     fontsize=10.3, linespacing=1.55, color='#34495e',
+        ax_meta.text(0.02, 0.98, "报告信息", va='top', ha='left',
+                     fontsize=12.2, fontweight='bold', color='#1f2937',
                      transform=ax_meta.transAxes)
+        meta_lines = [
+            f"时间  {datetime.now():%Y-%m-%d %H:%M:%S}",
+            f"基准  {self._short_report_text(b_rec['name'], 42)}",
+            f"测量  {self._short_report_text(m_rec['name'], 42)}",
+            f"点数  基准 {b_rec['n']:,} / 测量 {m_rec['n']:,}",
+            f"导入  基准 {b_rec.get('import_strategy', '--')} / 测量 {m_rec.get('import_strategy', '--')}",
+            f"抽样  基准 {b_rec.get('sampled', False)} / 测量 {m_rec.get('sampled', False)}",
+            f"处理  {self._short_report_text(b_rec.get('pipeline'), 38)}",
+        ]
+        ax_meta.text(0.02, 0.80, "\n".join(meta_lines), va='top', ha='left',
+                     fontsize=9.7, linespacing=1.45, color='#475569',
+                     transform=ax_meta.transAxes,
+                     bbox=dict(boxstyle='round,pad=0.45', facecolor='#f8fafc',
+                               edgecolor='#dbe3ec', linewidth=1.0))
 
-        result_text = (
-            "平行度结果\n\n"
-            f"ΔRx = {r['drx']:.2f} µrad\n"
-            f"ΔRy = {r['dry']:.2f} µrad\n"
-            f"合成夹角 = {r['angle']:.2f} µrad"
-        )
-        ax_result.text(0.06, 0.95, result_text, va='top', ha='left',
-                       fontsize=15.5, linespacing=1.45, color='#11447a',
-                       transform=ax_result.transAxes,
-                       bbox=dict(boxstyle='round,pad=0.65', facecolor='#eaf2fb',
-                                 edgecolor='#2f6db0', linewidth=1.4))
+        ax_result.add_patch(FancyBboxPatch(
+            (0.0, 0.03), 0.98, 0.90,
+            boxstyle='round,pad=0.018,rounding_size=0.035',
+            transform=ax_result.transAxes,
+            facecolor='#eaf2fb', edgecolor='#2f6db0', linewidth=1.35,
+            zorder=0, clip_on=False))
+        ax_result.text(0.04, 0.84, "平行度结果", va='center', ha='left',
+                       fontsize=11.8, fontweight='bold', color='#11447a',
+                       transform=ax_result.transAxes, zorder=2)
+        result_rows = [
+            ("ΔRx", f"{r['drx']:.2f}", "µrad"),
+            ("ΔRy", f"{r['dry']:.2f}", "µrad"),
+            ("合成夹角", f"{r['angle']:.2f}", "µrad"),
+        ]
+        y0 = 0.61
+        for i, (name, value, unit) in enumerate(result_rows):
+            y = y0 - i * 0.23
+            ax_result.text(0.04, y, name, va='center', ha='left',
+                           fontsize=10.2, color='#64748b', transform=ax_result.transAxes, zorder=2)
+            ax_result.text(0.40, y, value, va='center', ha='right',
+                           fontsize=17.0, fontweight='bold', color='#11447a',
+                           transform=ax_result.transAxes, zorder=2)
+            ax_result.text(0.43, y, unit, va='center', ha='left',
+                           fontsize=10.2, color='#64748b', transform=ax_result.transAxes, zorder=2)
 
         table_rows = [
             ["Rx (µrad)", f"{b['rx']:.2f}", f"{m['rx']:.2f}", f"{r['drx']:.2f}"],
@@ -1662,18 +1694,20 @@ class SurfaceAnalyzerPro(QMainWindow):
             ["TTV Z极差 (µm)", f"{b['ttv']:.3f}", f"{m['ttv']:.3f}", "--"],
             ["平均 Z (mm)", f"{b['mean_z']:.5f}", f"{m['mean_z']:.5f}", "--"],
         ]
-        ax_table.set_title("单面拟合指标", loc='left', fontsize=12, fontweight='bold', pad=8)
+        ax_table.text(0.02, 0.99, "单面拟合指标", va='top', ha='left',
+                      fontsize=12.2, fontweight='bold', color='#1f2937',
+                      transform=ax_table.transAxes)
         tbl = ax_table.table(
             cellText=table_rows,
             colLabels=["指标", "基准面", "测量面", "差值"],
-            loc='center',
+            bbox=[0.0, 0.02, 1.0, 0.84],
             cellLoc='center',
             colLoc='center',
             colWidths=[0.32, 0.23, 0.23, 0.22],
         )
         tbl.auto_set_font_size(False)
         tbl.set_fontsize(9.6)
-        tbl.scale(1, 1.42)
+        tbl.scale(1, 1.26)
         for (row, col), cell in tbl.get_celld().items():
             cell.set_edgecolor('#d7dee8')
             cell.set_linewidth(0.8)
@@ -1686,19 +1720,23 @@ class SurfaceAnalyzerPro(QMainWindow):
             else:
                 cell.set_facecolor('#ffffff')
 
+        ax_note.text(0.02, 0.98, "口径说明", va='top', ha='left',
+                     fontsize=11.3, fontweight='bold', color='#1f2937',
+                     transform=ax_note.transAxes)
         note = (
-            "口径说明\n"
             "不做对应点相减；两个文件可为空间不重叠区域。\n"
             "分别拟合 Z = aX + bY + c，再计算测量面 - 基准面的 Rx/Ry 差值。\n"
             "Rx/Ry 符号约定需用标准件校准。"
         )
-        ax_note.text(0.02, 0.98, note, va='top', ha='left',
-                     fontsize=9.6, linespacing=1.45, color='#6b7280',
-                     transform=ax_note.transAxes)
+        ax_note.text(0.02, 0.76, note, va='top', ha='left',
+                     fontsize=9.3, linespacing=1.45, color='#6b7280',
+                     transform=ax_note.transAxes,
+                     bbox=dict(boxstyle='round,pad=0.45', facecolor='#f8fafc',
+                               edgecolor='#e2e8f0', linewidth=1.0))
 
         self._draw_parallel_report_surface(fig, ax_base, b_rec, "基准面 3D 拟合预览", '#2f6db0')
         self._draw_parallel_report_surface(fig, ax_meas, m_rec, "测量面 3D 拟合预览", '#f59e0b')
-        fig.suptitle(f"平行度分析报告 ({self.APP_VERSION})", fontsize=16, fontweight='bold')
+        fig.suptitle(f"平行度分析报告 ({self.APP_VERSION})", fontsize=17, fontweight='bold', y=0.965)
         return fig
 
     def export_parallel_report(self):
@@ -1743,6 +1781,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             'large_file': {
                 'mode': self._matching_bigfile_mode(),
                 'auto_sample': bool(self.auto_sample_large_text),
+                'sample_method': str(self.large_file_sample_method),
+                'grid_count': int(self.large_text_grid_count),
                 'threshold_mb': int(self.large_text_threshold_mb),
                 'import_limit': int(self.large_text_import_limit),
                 'display_limit': int(self.display_point_limit)
@@ -1805,11 +1845,17 @@ class SurfaceAnalyzerPro(QMainWindow):
         lf = recipe.get('large_file', {}) or {}
         self.large_file_mode = str(lf.get('mode', self.large_file_mode))
         self.auto_sample_large_text = bool(lf.get('auto_sample', self.auto_sample_large_text))
+        self.large_file_sample_method = str(lf.get('sample_method', self.large_file_sample_method))
+        if self.large_file_sample_method not in ('spatial_grid', 'file_position'):
+            self.large_file_sample_method = 'spatial_grid'
+        self.large_text_grid_count = int(lf.get('grid_count', self.large_text_grid_count))
         self.large_text_threshold_mb = int(lf.get('threshold_mb', self.large_text_threshold_mb))
         self.large_text_import_limit = int(lf.get('import_limit', self.large_text_import_limit))
         self.display_point_limit = int(lf.get('display_limit', self.display_point_limit))
         self.large_file_mode = self._matching_bigfile_mode()
         self.import_info['display_limit'] = self.display_point_limit
+        self.import_info['sample_method'] = self._sample_method_label()
+        self.import_info['grid_count'] = self.large_text_grid_count
         gap = recipe.get('gap', {}) or {}
         if hasattr(self, 'spin_tol'):
             self.spin_tol.setValue(float(gap.get('tolerance_mm', self.spin_tol.value())))
@@ -2221,16 +2267,29 @@ class SurfaceAnalyzerPro(QMainWindow):
             return preset['description']
         return '手动参数：当前阈值、导入上限或显示上限与三档预设不完全一致。'
 
-    def _matching_bigfile_mode(self, auto_sample=None, threshold_mb=None, import_limit=None, display_limit=None):
+    def _sample_method_label(self, method=None):
+        method = method or getattr(self, 'large_file_sample_method', 'spatial_grid')
+        return '空间网格均匀采样' if method == 'spatial_grid' else '文件位置均匀采样'
+
+    def _grid_count_label(self, grid_count=None):
+        grid = int(self.large_text_grid_count if grid_count is None else grid_count)
+        return '自动' if grid <= 0 else f'{grid} × {grid}'
+
+    def _matching_bigfile_mode(self, auto_sample=None, threshold_mb=None, import_limit=None,
+                               display_limit=None, sample_method=None, grid_count=None):
         auto = bool(self.auto_sample_large_text if auto_sample is None else auto_sample)
         threshold = int(self.large_text_threshold_mb if threshold_mb is None else threshold_mb)
         rows = int(self.large_text_import_limit if import_limit is None else import_limit)
         shown = int(self.display_point_limit if display_limit is None else display_limit)
+        method = str(self.large_file_sample_method if sample_method is None else sample_method)
+        grid = int(self.large_text_grid_count if grid_count is None else grid_count)
         for key, preset in self.BIGFILE_MODE_PRESETS.items():
             if (auto == bool(preset['auto_sample'])
                     and threshold == int(preset['threshold_mb'])
                     and rows == int(preset['import_limit'])
-                    and shown == int(preset['display_limit'])):
+                    and shown == int(preset['display_limit'])
+                    and method == str(preset.get('sample_method', 'spatial_grid'))
+                    and grid == int(preset.get('grid_count', 0))):
                 return key
         return 'custom'
 
@@ -2258,6 +2317,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             'import_rows': 0,
             'display_limit': self._display_limit(),
             'large_file_mode': self._bigfile_mode_label(),
+            'sample_method': self._sample_method_label(),
+            'grid_count': self.large_text_grid_count,
             'notes': ''
         }
 
@@ -2282,6 +2343,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             cfg = (f"大文件策略\n"
                    f"模式: {self._bigfile_mode_label()}\n"
                    f"自动抽样: {'开启' if self.auto_sample_large_text else '关闭'}\n"
+                   f"采样方式: {self._sample_method_label()}\n"
+                   f"空间网格数: {self._grid_count_label()}\n"
                    f"触发阈值: {self.large_text_threshold_mb} MB\n"
                    f"导入上限: {self.large_text_import_limit:,} 行\n"
                    f"显示上限: {self.display_point_limit:,} 点\n\n{text}")
@@ -2308,7 +2371,7 @@ class SurfaceAnalyzerPro(QMainWindow):
 
         chk_auto = QCheckBox("超大文本自动抽样")
         chk_auto.setChecked(self.auto_sample_large_text)
-        chk_auto.setToolTip("开启后，超过阈值的TXT/CSV/ASC/XYZ等文本文件不会全量读入，而是先按文件位置均匀抽样，避免Zeiss大文件卡死。")
+        chk_auto.setToolTip("开启后，超过阈值的TXT/CSV/ASC/XYZ等文本文件不会全量读入，而是按设定采样方式预抽样，避免大文件卡死。")
         grid.addWidget(chk_auto, 0, 0, 1, 2)
 
         grid.addWidget(QLabel("策略模式:"), 1, 0)
@@ -2327,28 +2390,46 @@ class SurfaceAnalyzerPro(QMainWindow):
         mode_note.setStyleSheet("color: #7f8c8d; font-size: 11px;")
         grid.addWidget(mode_note, 2, 0, 1, 2)
 
-        grid.addWidget(QLabel("触发阈值(MB):"), 3, 0)
+        grid.addWidget(QLabel("采样方式:"), 3, 0)
+        cb_sample_method = QComboBox()
+        cb_sample_method.addItem("空间网格均匀采样", "spatial_grid")
+        cb_sample_method.addItem("文件位置均匀采样", "file_position")
+        sample_idx = cb_sample_method.findData(getattr(self, 'large_file_sample_method', 'spatial_grid'))
+        cb_sample_method.setCurrentIndex(sample_idx if sample_idx >= 0 else 0)
+        cb_sample_method.setToolTip("空间网格采样按 X/Y 分格，每格保留代表点、Z最小点和Z最大点；文件位置采样为旧版按文件顺序抽行。")
+        grid.addWidget(cb_sample_method, 3, 1)
+
+        grid.addWidget(QLabel("空间网格数:"), 4, 0)
+        spin_grid = QSpinBox()
+        spin_grid.setRange(0, 2000)
+        spin_grid.setSingleStep(10)
+        spin_grid.setSpecialValueText("自动")
+        spin_grid.setValue(int(getattr(self, 'large_text_grid_count', 0)))
+        spin_grid.setToolTip("0=自动按导入上限计算；自定义时表示 X/Y 单边网格数，例如 300 表示 300×300。每格最多保留3个点。")
+        grid.addWidget(spin_grid, 4, 1)
+
+        grid.addWidget(QLabel("触发阈值(MB):"), 5, 0)
         spin_mb = QSpinBox()
         spin_mb.setRange(1, 4096)
         spin_mb.setValue(int(self.large_text_threshold_mb))
         spin_mb.setToolTip("文件大小达到该阈值时触发预抽样导入。默认512MB。")
-        grid.addWidget(spin_mb, 3, 1)
+        grid.addWidget(spin_mb, 5, 1)
 
-        grid.addWidget(QLabel("导入上限(行):"), 4, 0)
+        grid.addWidget(QLabel("导入上限(行):"), 6, 0)
         spin_import = QSpinBox()
         spin_import.setRange(10000, 5000000)
         spin_import.setSingleStep(50000)
         spin_import.setValue(int(self.large_text_import_limit))
         spin_import.setToolTip("超大文本预抽样最多导入的行数。注意：该上限影响后续拟合/滤波指标。")
-        grid.addWidget(spin_import, 4, 1)
+        grid.addWidget(spin_import, 6, 1)
 
-        grid.addWidget(QLabel("显示上限(点):"), 5, 0)
+        grid.addWidget(QLabel("显示上限(点):"), 7, 0)
         spin_display = QSpinBox()
         spin_display.setRange(5000, 1000000)
         spin_display.setSingleStep(5000)
         spin_display.setValue(int(self.display_point_limit))
         spin_display.setToolTip("仅限制右侧绘图显示点数，不改变已导入数据和Rx/Ry/PV/TTV计算。")
-        grid.addWidget(spin_display, 5, 1)
+        grid.addWidget(spin_display, 7, 1)
 
         applying_preset = {'active': False}
 
@@ -2361,7 +2442,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             if applying_preset['active']:
                 return
             mode_key = self._matching_bigfile_mode(chk_auto.isChecked(), spin_mb.value(),
-                                                   spin_import.value(), spin_display.value())
+                                                   spin_import.value(), spin_display.value(),
+                                                   cb_sample_method.currentData(), spin_grid.value())
             set_mode_index(mode_key)
             mode_note.setText(self._bigfile_mode_description(mode_key))
 
@@ -2374,6 +2456,9 @@ class SurfaceAnalyzerPro(QMainWindow):
             applying_preset['active'] = True
             try:
                 chk_auto.setChecked(bool(preset['auto_sample']))
+                idx = cb_sample_method.findData(str(preset.get('sample_method', 'spatial_grid')))
+                cb_sample_method.setCurrentIndex(idx if idx >= 0 else 0)
+                spin_grid.setValue(int(preset.get('grid_count', 0)))
                 spin_mb.setValue(int(preset['threshold_mb']))
                 spin_import.setValue(int(preset['import_limit']))
                 spin_display.setValue(int(preset['display_limit']))
@@ -2381,16 +2466,23 @@ class SurfaceAnalyzerPro(QMainWindow):
                 applying_preset['active'] = False
             mode_note.setText(self._bigfile_mode_description(mode_key))
 
+        def update_grid_enabled(*_args):
+            spin_grid.setEnabled(cb_sample_method.currentData() == 'spatial_grid')
+            sync_mode_from_values()
+
         cb_mode.currentIndexChanged.connect(apply_preset_from_combo)
         chk_auto.toggled.connect(sync_mode_from_values)
+        cb_sample_method.currentIndexChanged.connect(update_grid_enabled)
+        spin_grid.valueChanged.connect(sync_mode_from_values)
         spin_mb.valueChanged.connect(sync_mode_from_values)
         spin_import.valueChanged.connect(sync_mode_from_values)
         spin_display.valueChanged.connect(sync_mode_from_values)
+        update_grid_enabled()
 
-        note = QLabel("说明：快速/标准/精确只改变大文件抽样参数；导入抽样会影响参与分析的数据量；显示上限只影响绘图，不改变已导入数据。")
+        note = QLabel("说明：空间网格采样会先扫描全文件确定 X/Y 范围，再按网格保留代表点、Z最小点和Z最大点；导入抽样会影响参与分析的数据量，显示上限只影响绘图。")
         note.setWordWrap(True)
         note.setStyleSheet("color: #7f8c8d; font-size: 11px;")
-        grid.addWidget(note, 6, 0, 1, 2)
+        grid.addWidget(note, 8, 0, 1, 2)
         layout.addWidget(group)
 
         status = QLabel(self.lbl_import_status.text() if hasattr(self, 'lbl_import_status') else "导入状态: --")
@@ -2406,12 +2498,16 @@ class SurfaceAnalyzerPro(QMainWindow):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             old_display_limit = self.display_point_limit
             self.auto_sample_large_text = chk_auto.isChecked()
+            self.large_file_sample_method = str(cb_sample_method.currentData())
+            self.large_text_grid_count = int(spin_grid.value())
             self.large_text_threshold_mb = int(spin_mb.value())
             self.large_text_import_limit = int(spin_import.value())
             self.display_point_limit = int(spin_display.value())
             self.large_file_mode = self._matching_bigfile_mode()
             self.import_info['display_limit'] = self.display_point_limit
             self.import_info['large_file_mode'] = self._bigfile_mode_label()
+            self.import_info['sample_method'] = self._sample_method_label()
+            self.import_info['grid_count'] = self.large_text_grid_count
             self._update_import_status_label()
             if old_display_limit != self.display_point_limit and self.df_raw is not None and self.active_idx is not None:
                 self.update_plots_only()
@@ -2503,10 +2599,44 @@ class SurfaceAnalyzerPro(QMainWindow):
                 last_sep = sep
         return None
 
+    def _infer_xyz_column_indices(self, column_names, ncols):
+        """大文件空间采样发生在列映射 UI 之前，只能按列名/常规 XYZ 顺序推断。"""
+        if ncols < 3:
+            raise ValueError("空间网格采样需要至少 3 列数值数据（X/Y/Z）。")
+        names = [str(c).strip().lower() for c in (column_names or [])]
+
+        def find_axis(axis, fallback):
+            candidates = []
+            for i, name in enumerate(names[:ncols]):
+                cleaned = re.sub(r'[^a-z0-9]+', '', name)
+                if cleaned == axis or cleaned.startswith(axis):
+                    candidates.append(i)
+            return candidates[0] if candidates else fallback
+
+        x_idx = find_axis('x', 0)
+        y_idx = find_axis('y', 1)
+        z_idx = find_axis('z', 2)
+        if len({x_idx, y_idx, z_idx}) < 3:
+            x_idx, y_idx, z_idx = 0, 1, 2
+        return x_idx, y_idx, z_idx
+
+    def _max_safe_grid_side(self, max_rows):
+        # 每格最多保留：代表点 + Z最小点 + Z最大点。
+        return max(1, int(np.floor(np.sqrt(max(1, int(max_rows)) / 3.0))))
+
+    def _auto_spatial_grid_side(self, valid_rows, max_rows):
+        target_rows = max(1, min(int(valid_rows), int(max_rows)))
+        target_cells = max(1, int(np.ceil(target_rows / 3.0)))
+        return max(1, int(np.ceil(np.sqrt(target_cells))))
+
     def _sample_large_text(self, path, enc, sep, ncols, column_names=None):
-        """超大文本预抽样：按文件字节位置均匀抽取数据行。
-        该步骤发生在 pandas 全量读入之前，目的是避免 Zeiss 大TXT一次性读爆内存。
-        注意：这是文件位置抽样，不是空间网格抽样。"""
+        method = getattr(self, 'large_file_sample_method', 'spatial_grid')
+        if method == 'file_position':
+            return self._sample_large_text_by_position(path, enc, sep, ncols, column_names)
+        return self._sample_large_text_by_spatial_grid(path, enc, sep, ncols, column_names)
+
+    def _sample_large_text_by_position(self, path, enc, sep, ncols, column_names=None):
+        """旧版超大文本预抽样：按文件字节位置均匀抽取数据行。"""
         file_size = Path(path).stat().st_size
         max_rows = self._large_text_import_limit()
         rows = []
@@ -2563,15 +2693,163 @@ class SurfaceAnalyzerPro(QMainWindow):
             f"触发阈值: {self.large_text_threshold_mb} MB\n"
             f"抽样上限: {max_rows:,} 行\n"
             f"实际导入行数: {len(df):,} 行\n"
-            f"抽样方式: 按文件位置均匀抽样，不是空间网格抽样。\n"
+            f"抽样方式: 文件位置均匀采样。\n"
             f"缺测值标记({', '.join(sorted(self.MISSING_TEXT_TOKENS))})已按空值处理。"
         )
         self.import_info.update({
-            'strategy': '超大文本预抽样导入',
+            'strategy': '超大文本文件位置采样导入',
             'sampled': True,
             'import_rows': len(df),
             'large_file_mode': self._bigfile_mode_label(),
-            'notes': f"{self._bigfile_mode_label()}模式 | 抽样上限 {max_rows:,} 行"
+            'sample_method': self._sample_method_label('file_position'),
+            'grid_count': 0,
+            'notes': f"{self._bigfile_mode_label()}模式 | 文件位置采样 | 抽样上限 {max_rows:,} 行"
+        })
+        return df
+
+    def _sample_large_text_by_spatial_grid(self, path, enc, sep, ncols, column_names=None):
+        """V3.8.3: 空间网格均匀采样。
+
+        按 X/Y 分格，每格最多保留三类点：首个代表点、Z最小点、Z最大点。
+        这样 TTV 的局部极值更不容易被采样丢掉；PV 仍以导入后的采样点参与拟合。
+        """
+        file_size = Path(path).stat().st_size
+        max_rows = self._large_text_import_limit()
+        x_idx, y_idx, z_idx = self._infer_xyz_column_indices(column_names, ncols)
+        cols = column_names if column_names and len(column_names) == ncols else [f'Col{i+1}' for i in range(ncols)]
+
+        x_min = y_min = z_min = np.inf
+        x_max = y_max = z_max = -np.inf
+        valid_rows = 0
+
+        def parse_numeric_line(line):
+            stripped = line.strip().lstrip('\ufeff')
+            if not stripped or stripped.startswith('#'):
+                return None
+            tokens = self._split_text_line(stripped, sep)
+            if not self._looks_like_numeric_text_row(tokens):
+                return None
+            values = [self._token_to_float(t) for t in tokens[:ncols]]
+            if len(values) < ncols:
+                values.extend([np.nan] * (ncols - len(values)))
+            return values
+
+        with open(path, 'r', encoding=enc, errors='ignore') as fh:
+            for line_no, line in enumerate(fh, start=1):
+                values = parse_numeric_line(line)
+                if values is None:
+                    continue
+                x, y, z = values[x_idx], values[y_idx], values[z_idx]
+                if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(z)):
+                    continue
+                valid_rows += 1
+                x_min = min(x_min, x); x_max = max(x_max, x)
+                y_min = min(y_min, y); y_max = max(y_max, y)
+                z_min = min(z_min, z); z_max = max(z_max, z)
+                if valid_rows % 100000 == 0:
+                    self.statusBar().showMessage(
+                        f"空间网格采样预扫描: 已识别 {valid_rows:,} 个有效 XYZ 点", 1000)
+                    QApplication.processEvents()
+
+        if valid_rows == 0:
+            raise ValueError("空间网格采样未识别到有效 XYZ 点，请检查文件列顺序/缺测值或改用文件位置采样。")
+
+        max_safe_side = self._max_safe_grid_side(max_rows)
+        requested_side = int(getattr(self, 'large_text_grid_count', 0))
+        auto_side = self._auto_spatial_grid_side(valid_rows, max_rows)
+        if requested_side > 0:
+            grid_side = min(requested_side, max_safe_side)
+            grid_source = f"用户设定 {requested_side}×{requested_side}"
+            if grid_side != requested_side:
+                grid_source += f"，受导入上限约束实际使用 {grid_side}×{grid_side}"
+        else:
+            grid_side = min(auto_side, max_safe_side)
+            grid_source = f"自动 {grid_side}×{grid_side}"
+
+        x_span = x_max - x_min
+        y_span = y_max - y_min
+
+        def cell_index(x, y):
+            if x_span <= 0:
+                ix = 0
+            else:
+                ix = int((x - x_min) / x_span * grid_side)
+                ix = min(max(ix, 0), grid_side - 1)
+            if y_span <= 0:
+                iy = 0
+            else:
+                iy = int((y - y_min) / y_span * grid_side)
+                iy = min(max(iy, 0), grid_side - 1)
+            return iy * grid_side + ix
+
+        cells = {}
+        scanned = 0
+        with open(path, 'r', encoding=enc, errors='ignore') as fh:
+            for line in fh:
+                values = parse_numeric_line(line)
+                if values is None:
+                    continue
+                x, y, z = values[x_idx], values[y_idx], values[z_idx]
+                if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(z)):
+                    continue
+                scanned += 1
+                key = cell_index(x, y)
+                state = cells.get(key)
+                if state is None:
+                    state = {'first': values, 'min_row': values, 'min_z': z, 'max_row': values, 'max_z': z}
+                    cells[key] = state
+                else:
+                    if z < state['min_z']:
+                        state['min_z'] = z
+                        state['min_row'] = values
+                    if z > state['max_z']:
+                        state['max_z'] = z
+                        state['max_row'] = values
+                if scanned % 100000 == 0:
+                    self.statusBar().showMessage(
+                        f"空间网格采样落格: {scanned:,}/{valid_rows:,} | 已占用网格 {len(cells):,}", 1000)
+                    QApplication.processEvents()
+
+        rows = []
+        for key in sorted(cells):
+            state = cells[key]
+            seen_ids = set()
+            for row_key in ('first', 'min_row', 'max_row'):
+                row = state[row_key]
+                if id(row) in seen_ids:
+                    continue
+                seen_ids.add(id(row))
+                rows.append(row)
+
+        if not rows:
+            raise ValueError("空间网格采样未得到有效采样点，请检查文件格式或改用文件位置采样。")
+
+        df = pd.DataFrame(rows, columns=cols)
+        total_cells = grid_side * grid_side
+        self.last_import_note = (
+            f"超大文本已按空间网格均匀采样导入，避免全量读入导致卡死。\n"
+            f"策略模式: {self._bigfile_mode_label()}\n"
+            f"文件大小: {file_size / (1024 * 1024):.1f} MB\n"
+            f"触发阈值: {self.large_text_threshold_mb} MB\n"
+            f"原始有效XYZ点: {valid_rows:,} 点\n"
+            f"网格设置: {grid_source}，总网格 {total_cells:,}，占用网格 {len(cells):,}\n"
+            f"每格保留: 首个代表点 + Z最小点 + Z最大点\n"
+            f"原始Z范围: {z_min:.6g} ~ {z_max:.6g}\n"
+            f"导入上限: {max_rows:,} 行 | 实际导入: {len(df):,} 行\n"
+            f"XYZ推断列: X={cols[x_idx]}, Y={cols[y_idx]}, Z={cols[z_idx]}\n"
+            f"缺测值标记({', '.join(sorted(self.MISSING_TEXT_TOKENS))})已按空值处理。"
+        )
+        self.import_info.update({
+            'strategy': '超大文本空间网格采样导入',
+            'sampled': True,
+            'import_rows': len(df),
+            'source_valid_rows': valid_rows,
+            'large_file_mode': self._bigfile_mode_label(),
+            'sample_method': self._sample_method_label('spatial_grid'),
+            'grid_count': grid_side,
+            'grid_cells': total_cells,
+            'occupied_grid_cells': len(cells),
+            'notes': f"{self._bigfile_mode_label()}模式 | 空间网格 {grid_side}×{grid_side} | 占用 {len(cells):,} 格"
         })
         return df
 
@@ -2579,7 +2857,8 @@ class SurfaceAnalyzerPro(QMainWindow):
         """鲁棒读取表格文件：
         - 文本类(.csv/.txt/.tsv/.dat/.asc/.xyz): 自动尝试 utf-8-sig/gbk/utf-16/latin-1；自动识别分隔符；
           自动跳过#注释行、空行、坏行；识别无表头/普通表头/Zeiss类复杂头。
-        - 超过设定阈值的文本文件可在 pandas 全量读入前预抽样，默认阈值512MB、最多50万行。
+        - 超过设定阈值的文本文件可在 pandas 全量读入前预抽样，默认使用空间网格均匀采样。
+          空间网格采样每格保留代表点、Z最小点和Z最大点；也可在大文件策略中切回文件位置采样。
         - Excel类(.xlsx/.xls/.xlsm): pd.read_excel，不做预抽样。
         """
         self.last_import_note = ""
