@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-面型及Rxy分析工具 V3.7.0
+面型及Rxy分析工具 V3.8.0
 基于 V1 的修复与增强：
   [优化] V3.7.0 (UI优化·方案A): 整理版左栏 + 顶部结果读数条。仅重排界面，不改动任何算法。
          · 结果指标(平均厚度Z/PV/TTV/Rx/Ry+平面方程)上提为绘图区上方常驻读数条，随分析实时刷新。
@@ -48,6 +48,9 @@
          列映射/单位/旋转/滤波设置逐个处理；每个文件输出一张包含主页面全部信息(指标+四视图)的
          报告图 result_<原文件名>.png，并汇总生成 result_batch_summary.csv。
          批量仅用自动滤波(无手动框选)，要求所有文件为同一设备、同样列格式。
+  [增强] V3.8.0: 新增【平行度分析】页：主页面依次写入基准面/测量面，分别拟合平面后输出
+         基准面和测量面的 Rx/Ry/RMS/PV/TTV/平均Z，以及测量面-基准面的 ΔRx/ΔRy 和合成夹角。
+         该功能不做对应点相减，适用于两个测量区域不重叠的双文件平行度比较。
 注意：Rx/Ry 符号约定 (Rx≈+dZ/dY, Ry≈-dZ/dX) 需用已知倾角标准件实测校准一次。
 """
 import sys
@@ -71,6 +74,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QScrollArea, QComboBox, QTabWidget, QDoubleSpinBox,
                              QSpinBox, QCheckBox, QDialog, QDialogButtonBox,
                              QFrame, QSizePolicy, QGraphicsDropShadowEffect,
+                             QStackedWidget,
                              QSizeGrip)
 from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
@@ -138,6 +142,73 @@ class MultiViewCanvas(QWidget):
             c.draw()
 
 
+class ParallelismCanvas(FigureCanvas):
+    """平行度分析专用静态预览：基准面和测量面分成两个 3D 图，避免高度接近时互相遮挡。"""
+    def __init__(self, parent=None):
+        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+        self.fig = Figure(constrained_layout=True)
+        self.ax_base = self.fig.add_subplot(121, projection='3d')
+        self.ax_measure = self.fig.add_subplot(122, projection='3d')
+        super().__init__(self.fig)
+        self.setParent(parent)
+        self.setMinimumHeight(360)
+        self.plot_records(None, None)
+
+    def _empty_axis(self, ax, title):
+        ax.clear()
+        ax.set_title(title)
+        ax.text2D(0.5, 0.5, "等待写入数据", transform=ax.transAxes,
+                  ha='center', va='center', color='#8a94a3')
+        ax.set_axis_off()
+
+    def _draw_record(self, ax, rec, title, color, point_color):
+        if rec is None:
+            self._empty_axis(ax, title)
+            return
+        x, y, z = rec['x'], rec['y'], rec['z']
+        m = rec['metrics']
+        ax.clear()
+        ax.set_axis_on()
+        ax.set_title(f"{title}: {rec['name']}", fontsize=10)
+        ax.set_xlabel("X (mm)")
+        ax.set_ylabel("Y (mm)")
+        ax.set_zlabel("Z (mm)")
+        ax.grid(True, linestyle='-', linewidth=0.6, color='#edf0f3')
+
+        n = len(z)
+        if n > 12000:
+            idx = np.linspace(0, n - 1, 12000, dtype=int)
+            sx, sy, sz = x[idx], y[idx], z[idx]
+        else:
+            sx, sy, sz = x, y, z
+
+        xmin, xmax = float(np.min(x)), float(np.max(x))
+        ymin, ymax = float(np.min(y)), float(np.max(y))
+        if np.isclose(xmin, xmax):
+            xmin -= 0.5; xmax += 0.5
+        if np.isclose(ymin, ymax):
+            ymin -= 0.5; ymax += 0.5
+        xx, yy = np.meshgrid(np.linspace(xmin, xmax, 18), np.linspace(ymin, ymax, 18))
+        zz = m['a'] * xx + m['b'] * yy + m['c']
+        ax.plot_surface(xx, yy, zz, color=color, alpha=0.42, edgecolor='none')
+        ax.scatter(sx, sy, sz, s=4, c=point_color, alpha=0.38, edgecolors='none')
+        ax.view_init(elev=24, azim=-52)
+        try:
+            ax.set_box_aspect((1.35, 1.0, 0.38), zoom=1.10)
+        except TypeError:
+            ax.set_box_aspect((1.35, 1.0, 0.38))
+        for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
+            pane.set_facecolor('#fbfcfd')
+            pane.set_edgecolor('#e6eaee')
+            pane.set_alpha(1.0)
+
+    def plot_records(self, base_rec, measure_rec):
+        self._draw_record(self.ax_base, base_rec, "基准面拟合预览", '#2f6db0', '#1f5f99')
+        self._draw_record(self.ax_measure, measure_rec, "测量面拟合预览", '#f59e0b', '#b45309')
+        self.draw()
+
+
 class SurfaceAnalyzerPro(QMainWindow):
     DISPLAY_POINT_LIMIT = 80000
     LARGE_TEXT_FILE_BYTES = 512 * 1024 * 1024
@@ -146,7 +217,7 @@ class SurfaceAnalyzerPro(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("面型及Rxy分析ZXY版 V3.7.0")
+        self.setWindowTitle("面型及Rxy分析ZXY版 V3.8.0")
         self.resize(1860, 980)
 
         # 数据流
@@ -189,6 +260,11 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.data_base1 = None
         self.data_base2 = None
         self.data_stack = None
+
+        # V3.8.0: 平行度分析寄存器。保存主页面当前已变换、滤波、删点后的参与拟合点。
+        self.parallel_base = None
+        self.parallel_measure = None
+        self.parallel_result = None
 
         self.selectors = []
         self.init_ui()
@@ -344,7 +420,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         ab.setSpacing(9)
         dot = QLabel(); dot.setObjectName("brandDot"); dot.setFixedSize(10, 10)
         app_title = QLabel("面型及 Rxy 分析"); app_title.setObjectName("appTitle")
-        ver_pill = QLabel("V3.7.0"); ver_pill.setObjectName("verPill")
+        ver_pill = QLabel("V3.8.0"); ver_pill.setObjectName("verPill")
         ab.addWidget(dot); ab.addWidget(app_title); ab.addWidget(ver_pill)
         ab.addStretch()
 
@@ -401,8 +477,12 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.setup_math_tab(tab_math)
         self.tabs.addTab(tab_math, "多层胶厚扣减")
 
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
+        tab_parallel = QWidget()
+        self.setup_parallel_tab(tab_parallel)
+        self.parallel_tab_index = self.tabs.addTab(tab_parallel, "平行度分析")
+
+        right_main_panel = QWidget()
+        right_layout = QVBoxLayout(right_main_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(10)
         right_layout.addWidget(self._build_results_strip())
@@ -410,8 +490,13 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.canvas = MultiViewCanvas(self)
         right_layout.addWidget(self.canvas, 1)
 
+        self.right_stack = QStackedWidget()
+        self.right_stack.addWidget(right_main_panel)
+        self.right_stack.addWidget(self._build_parallel_right_panel())
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
         splitter.addWidget(self.tabs)
-        splitter.addWidget(right_panel)
+        splitter.addWidget(self.right_stack)
         splitter.setStretchFactor(1, 4)
         body_l.addWidget(splitter)
         root.addWidget(body, 1)
@@ -866,12 +951,390 @@ class SurfaceAnalyzerPro(QMainWindow):
         parent_widget.layout().addWidget(scroll)
         parent_widget.layout().setContentsMargins(0, 0, 0, 0)
 
+    # ================= 平行度分析 =================
+    def _on_tab_changed(self, index):
+        if hasattr(self, 'right_stack'):
+            self.right_stack.setCurrentIndex(1 if index == getattr(self, 'parallel_tab_index', -1) else 0)
+
+    def setup_parallel_tab(self, parent_widget):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        w = QWidget()
+        ll = QVBoxLayout(w)
+        ll.setContentsMargins(14, 12, 14, 12)
+        ll.setSpacing(10)
+
+        title = QLabel("平行度分析")
+        title.setObjectName("stepTitle")
+        ll.addWidget(title)
+        note = QLabel("从主页面已处理的当前数据写入，保留单位、旋转/翻转、滤波和手动删点结果。")
+        note.setObjectName("mutedNote")
+        note.setWordWrap(True)
+        ll.addWidget(note)
+
+        grp_ref = QGroupBox("基准面")
+        gl_ref = QVBoxLayout(grp_ref)
+        self.lbl_parallel_base_status = QLabel("尚未设置")
+        self.lbl_parallel_base_status.setObjectName("sourceNote")
+        self.lbl_parallel_base_status.setWordWrap(True)
+        btn_ref = QPushButton("设当前数据为基准面")
+        btn_ref.setObjectName("accentSoftBtn")
+        btn_ref.setFixedHeight(35)
+        btn_ref.clicked.connect(lambda: self.set_parallel_surface('base'))
+        gl_ref.addWidget(self.lbl_parallel_base_status)
+        gl_ref.addWidget(btn_ref)
+        ll.addWidget(grp_ref)
+
+        grp_meas = QGroupBox("测量面")
+        gl_meas = QVBoxLayout(grp_meas)
+        self.lbl_parallel_measure_status = QLabel("尚未设置")
+        self.lbl_parallel_measure_status.setObjectName("sourceNote")
+        self.lbl_parallel_measure_status.setWordWrap(True)
+        btn_meas = QPushButton("设当前数据为测量面")
+        btn_meas.setObjectName("accentSoftBtn")
+        btn_meas.setFixedHeight(35)
+        btn_meas.clicked.connect(lambda: self.set_parallel_surface('measure'))
+        gl_meas.addWidget(self.lbl_parallel_measure_status)
+        gl_meas.addWidget(btn_meas)
+        ll.addWidget(grp_meas)
+
+        ops = QHBoxLayout()
+        btn_swap = QPushButton("交换")
+        btn_swap.setFixedHeight(34)
+        btn_swap.clicked.connect(self.swap_parallel_surfaces)
+        btn_clear = QPushButton("清空")
+        btn_clear.setFixedHeight(34)
+        btn_clear.clicked.connect(self.clear_parallel_surfaces)
+        ops.addWidget(btn_swap)
+        ops.addWidget(btn_clear)
+        ll.addLayout(ops)
+
+        btn_calc = QPushButton("计算平行度")
+        btn_calc.setObjectName("accentBtn")
+        btn_calc.setFixedHeight(40)
+        btn_calc.clicked.connect(self.calculate_parallelism)
+        ll.addWidget(btn_calc)
+
+        grp_rule = QGroupBox("计算口径")
+        gr = QVBoxLayout(grp_rule)
+        for text in (
+            "不做对应点相减；两个文件可为空间上不重叠的区域。",
+            "分别拟合 Z = aX + bY + c，再计算 ΔRx / ΔRy = 测量面 - 基准面。",
+            "大文件抽样沿用顶部“大文件策略”；平行度页不单独改变导入方式。"):
+            lab = QLabel(text)
+            lab.setObjectName("mutedNote")
+            lab.setWordWrap(True)
+            gr.addWidget(lab)
+        ll.addWidget(grp_rule)
+
+        exp = QHBoxLayout()
+        btn_export = QPushButton("导出CSV")
+        btn_export.setFixedHeight(34)
+        btn_export.clicked.connect(self.export_parallel_csv)
+        btn_png = QPushButton("导出预览图")
+        btn_png.setFixedHeight(34)
+        btn_png.clicked.connect(self.export_parallel_preview)
+        exp.addWidget(btn_export)
+        exp.addWidget(btn_png)
+        ll.addLayout(exp)
+
+        btn_copy = QPushButton("复制结果")
+        btn_copy.setFixedHeight(34)
+        btn_copy.clicked.connect(self.copy_parallel_result)
+        ll.addWidget(btn_copy)
+
+        warn = QLabel("提示：基准面和测量面需使用同一物料坐标方向；若 X/Y 单位为 µm，需先在主页面选对单位。")
+        warn.setWordWrap(True)
+        warn.setStyleSheet("color: #9a3412; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; padding: 10px;")
+        ll.addWidget(warn)
+        ll.addStretch()
+
+        scroll.setWidget(w)
+        parent_widget.setLayout(QVBoxLayout())
+        parent_widget.layout().addWidget(scroll)
+        parent_widget.layout().setContentsMargins(0, 0, 0, 0)
+
+    def _make_value_card(self, title, label, accent=False):
+        return self._make_metric_card(title, label, accent=accent)
+
+    def _build_parallel_right_panel(self):
+        panel = QWidget()
+        outer = QVBoxLayout(panel)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(10)
+
+        strip = QFrame()
+        strip.setObjectName("resultsStrip")
+        sl = QHBoxLayout(strip)
+        sl.setContentsMargins(10, 4, 10, 8)
+        sl.setSpacing(12)
+        self.lbl_par_drx = QLabel("--")
+        self.lbl_par_dry = QLabel("--")
+        self.lbl_par_angle = QLabel("--")
+        self.lbl_par_state = QLabel("待计算")
+        sl.addWidget(self._make_value_card("平行度 ΔRx (µrad)", self.lbl_par_drx, accent=True), 1)
+        sl.addWidget(self._make_value_card("平行度 ΔRy (µrad)", self.lbl_par_dry, accent=True), 1)
+        sl.addWidget(self._make_value_card("合成夹角 (µrad)", self.lbl_par_angle), 1)
+        sl.addWidget(self._make_value_card("状态", self.lbl_par_state), 1)
+        outer.addWidget(strip)
+
+        self.parallel_canvas = ParallelismCanvas(self)
+        canvas_card = QFrame()
+        canvas_card.setObjectName("plotCard")
+        cv = QVBoxLayout(canvas_card)
+        cv.setContentsMargins(12, 10, 12, 10)
+        cv.setSpacing(6)
+        head = QLabel("静态 3D 预览")
+        head.setObjectName("plotTitle")
+        hint = QLabel("基准面和测量面分成两个图显示，避免高度接近时互相遮挡。")
+        hint.setObjectName("mutedNote")
+        cv.addWidget(head)
+        cv.addWidget(hint)
+        cv.addWidget(self.parallel_canvas, 1)
+        self._add_shadow(canvas_card, blur=20, dy=3, alpha=30)
+        outer.addWidget(canvas_card, 2)
+
+        result_card = QFrame()
+        result_card.setObjectName("plotCard")
+        rl = QVBoxLayout(result_card)
+        rl.setContentsMargins(14, 12, 14, 12)
+        rl.setSpacing(9)
+        title = QLabel("平行度结果")
+        title.setObjectName("plotTitle")
+        rl.addWidget(title)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(8)
+        headers = ["指标", "基准面", "测量面", "差值"]
+        for col, text in enumerate(headers):
+            lab = QLabel(text)
+            lab.setObjectName("mutedNote")
+            grid.addWidget(lab, 0, col)
+        self.parallel_result_labels = {}
+        rows = [
+            ('rx', "Rx (µrad)", True),
+            ('ry', "Ry (µrad)", True),
+            ('rms', "RMS (µm)", False),
+            ('pv', "PV 法向 (µm)", False),
+            ('ttv', "TTV Z极差 (µm)", False),
+            ('mean_z', "平均 Z (mm)", False),
+        ]
+        for r, (key, name, has_delta) in enumerate(rows, start=1):
+            grid.addWidget(QLabel(name), r, 0)
+            base = QLabel("--")
+            meas = QLabel("--")
+            delta = QLabel("--")
+            if has_delta:
+                delta.setObjectName("metricTitleAccent")
+            grid.addWidget(base, r, 1)
+            grid.addWidget(meas, r, 2)
+            grid.addWidget(delta, r, 3)
+            self.parallel_result_labels[key] = (base, meas, delta)
+        rl.addLayout(grid)
+
+        self.lbl_par_eq_base = QLabel("基准面: --")
+        self.lbl_par_eq_measure = QLabel("测量面: --")
+        self.lbl_par_eq_note = QLabel("ΔRx = Rx测量 - Rx基准；ΔRy = Ry测量 - Ry基准")
+        for lab in (self.lbl_par_eq_base, self.lbl_par_eq_measure, self.lbl_par_eq_note):
+            lab.setObjectName("mutedNote")
+            lab.setWordWrap(True)
+            rl.addWidget(lab)
+        self._add_shadow(result_card, blur=20, dy=3, alpha=30)
+        outer.addWidget(result_card, 1)
+        return panel
+
+    def _current_parallel_record(self):
+        if self.df_raw is None or self.active_idx is None:
+            QMessageBox.warning(self, "暂无数据", "请先在主页面导入并处理数据。")
+            return None
+        tx, ty, tz = self.get_final_transformed_data(self.df_raw)
+        fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
+        if len(fz) < 3:
+            QMessageBox.warning(self, "点数不足", "参与拟合点少于 3 个，无法写入平行度分析。")
+            return None
+        metrics = self.compute_plane_metrics(fx, fy, fz)
+        return {
+            'x': fx.copy(),
+            'y': fy.copy(),
+            'z': fz.copy(),
+            'metrics': dict(metrics),
+            'name': self.current_source_name or '--',
+            'n': int(len(fz)),
+            'filter': self.cb_filter.currentText(),
+            'pipeline': " -> ".join(self.transform_pipeline) if self.transform_pipeline else "原始状态",
+            'import_strategy': self.import_info.get('strategy', '--'),
+            'sampled': bool(self.import_info.get('sampled', False)),
+        }
+
+    def set_parallel_surface(self, slot):
+        rec = self._current_parallel_record()
+        if rec is None:
+            return
+        if slot == 'base':
+            self.parallel_base = rec
+        else:
+            self.parallel_measure = rec
+        self.parallel_result = None
+        self._update_parallel_ui()
+        self.statusBar().showMessage(f"已写入{'基准面' if slot == 'base' else '测量面'}: {rec['name']} ({rec['n']:,} 点)", 5000)
+
+    def swap_parallel_surfaces(self):
+        self.parallel_base, self.parallel_measure = self.parallel_measure, self.parallel_base
+        self.parallel_result = None
+        self._update_parallel_ui()
+
+    def clear_parallel_surfaces(self):
+        self.parallel_base = None
+        self.parallel_measure = None
+        self.parallel_result = None
+        self._update_parallel_ui()
+
+    def _slot_status_text(self, rec):
+        if rec is None:
+            return "尚未设置"
+        return (f"来源: {rec['name']}\n"
+                f"参与拟合: {rec['n']:,} 点 | 导入: {rec['import_strategy']} | 抽样: {rec['sampled']}\n"
+                f"Rx {rec['metrics']['rx']:.2f} µrad | Ry {rec['metrics']['ry']:.2f} µrad")
+
+    def _update_parallel_ui(self):
+        if hasattr(self, 'lbl_parallel_base_status'):
+            self.lbl_parallel_base_status.setText(self._slot_status_text(self.parallel_base))
+            self.lbl_parallel_measure_status.setText(self._slot_status_text(self.parallel_measure))
+        if hasattr(self, 'parallel_canvas'):
+            self.parallel_canvas.plot_records(self.parallel_base, self.parallel_measure)
+        self._update_parallel_result_ui()
+
+    def calculate_parallelism(self):
+        if self.parallel_base is None or self.parallel_measure is None:
+            QMessageBox.warning(self, "数据不完整", "请先分别设置基准面和测量面。")
+            return
+        b, m = self.parallel_base['metrics'], self.parallel_measure['metrics']
+        drx = m['rx'] - b['rx']
+        dry = m['ry'] - b['ry']
+        angle = float(np.hypot(drx, dry))
+        self.parallel_result = {'drx': float(drx), 'dry': float(dry), 'angle': angle}
+        self._update_parallel_result_ui()
+        self.statusBar().showMessage(f"平行度已计算: ΔRx={drx:.2f} µrad, ΔRy={dry:.2f} µrad", 6000)
+
+    def _fmt_metric(self, key, value):
+        if key == 'mean_z':
+            return f"{value:.5f}"
+        if key in ('rx', 'ry'):
+            return f"{value:.2f}"
+        return f"{value:.3f}"
+
+    def _update_parallel_result_ui(self):
+        if not hasattr(self, 'parallel_result_labels'):
+            return
+        b = self.parallel_base['metrics'] if self.parallel_base else None
+        m = self.parallel_measure['metrics'] if self.parallel_measure else None
+        for key, labels in self.parallel_result_labels.items():
+            base_lab, meas_lab, delta_lab = labels
+            base_lab.setText(self._fmt_metric(key, b[key]) if b else "--")
+            meas_lab.setText(self._fmt_metric(key, m[key]) if m else "--")
+            if self.parallel_result and key == 'rx':
+                delta_lab.setText(f"{self.parallel_result['drx']:.2f}")
+            elif self.parallel_result and key == 'ry':
+                delta_lab.setText(f"{self.parallel_result['dry']:.2f}")
+            else:
+                delta_lab.setText("--")
+
+        if self.parallel_result:
+            self.lbl_par_drx.setText(f"{self.parallel_result['drx']:.2f}")
+            self.lbl_par_dry.setText(f"{self.parallel_result['dry']:.2f}")
+            self.lbl_par_angle.setText(f"{self.parallel_result['angle']:.2f}")
+            self.lbl_par_state.setText("已计算")
+        else:
+            self.lbl_par_drx.setText("--")
+            self.lbl_par_dry.setText("--")
+            self.lbl_par_angle.setText("--")
+            self.lbl_par_state.setText("待计算")
+
+        if b:
+            self.lbl_par_eq_base.setText(f"基准面: Z = {b['a']:.6e}*X + {b['b']:.6e}*Y + {b['c']:.6e}")
+        else:
+            self.lbl_par_eq_base.setText("基准面: --")
+        if m:
+            self.lbl_par_eq_measure.setText(f"测量面: Z = {m['a']:.6e}*X + {m['b']:.6e}*Y + {m['c']:.6e}")
+        else:
+            self.lbl_par_eq_measure.setText("测量面: --")
+
+    def _parallel_result_text(self):
+        if self.parallel_base is None or self.parallel_measure is None or self.parallel_result is None:
+            return ""
+        rows = [
+            "平行度分析结果",
+            f"基准面: {self.parallel_base['name']} ({self.parallel_base['n']:,} 点)",
+            f"测量面: {self.parallel_measure['name']} ({self.parallel_measure['n']:,} 点)",
+            f"ΔRx = {self.parallel_result['drx']:.2f} µrad",
+            f"ΔRy = {self.parallel_result['dry']:.2f} µrad",
+            f"合成夹角 = {self.parallel_result['angle']:.2f} µrad",
+        ]
+        for label, rec in (("基准面", self.parallel_base), ("测量面", self.parallel_measure)):
+            mm = rec['metrics']
+            rows.append(
+                f"{label}: Rx={mm['rx']:.2f} µrad, Ry={mm['ry']:.2f} µrad, "
+                f"RMS={mm['rms']:.3f} µm, PV={mm['pv']:.3f} µm, "
+                f"TTV={mm['ttv']:.3f} µm, 平均Z={mm['mean_z']:.5f} mm")
+        return "\n".join(rows)
+
+    def copy_parallel_result(self):
+        text = self._parallel_result_text()
+        if not text:
+            QMessageBox.warning(self, "暂无结果", "请先计算平行度。")
+            return
+        QApplication.clipboard().setText(text)
+        self.statusBar().showMessage("平行度结果已复制到剪贴板", 4000)
+
+    def export_parallel_csv(self):
+        if self.parallel_base is None or self.parallel_measure is None or self.parallel_result is None:
+            QMessageBox.warning(self, "暂无结果", "请先计算平行度。")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "导出平行度CSV", "Parallelism_Result.csv", "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            b, m = self.parallel_base['metrics'], self.parallel_measure['metrics']
+            rows = [
+                {'metric': 'Rx_urad', 'base': b['rx'], 'measure': m['rx'], 'delta': self.parallel_result['drx']},
+                {'metric': 'Ry_urad', 'base': b['ry'], 'measure': m['ry'], 'delta': self.parallel_result['dry']},
+                {'metric': 'Angle_urad', 'base': '', 'measure': '', 'delta': self.parallel_result['angle']},
+                {'metric': 'RMS_um', 'base': b['rms'], 'measure': m['rms'], 'delta': ''},
+                {'metric': 'PV_um', 'base': b['pv'], 'measure': m['pv'], 'delta': ''},
+                {'metric': 'TTV_um', 'base': b['ttv'], 'measure': m['ttv'], 'delta': ''},
+                {'metric': 'Mean_Z_mm', 'base': b['mean_z'], 'measure': m['mean_z'], 'delta': ''},
+            ]
+            with open(path, 'w', encoding='utf-8-sig', newline='') as f:
+                f.write("# ===== 平行度分析 V3.8.0 导出 =====\n")
+                f.write(f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+                f.write(f"# 基准面: {self.parallel_base['name']} | 点数: {self.parallel_base['n']}\n")
+                f.write(f"# 测量面: {self.parallel_measure['name']} | 点数: {self.parallel_measure['n']}\n")
+                f.write("# 口径: 不做对应点相减；分别拟合平面后计算 测量面 - 基准面 的 Rx/Ry 差值。\n")
+                pd.DataFrame(rows).to_csv(f, index=False)
+            self.statusBar().showMessage(f"平行度CSV已导出: {path}", 5000)
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+
+    def export_parallel_preview(self):
+        if self.parallel_base is None or self.parallel_measure is None:
+            QMessageBox.warning(self, "暂无数据", "请先设置基准面和测量面。")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "导出平行度预览图", "Parallelism_Preview.png", "PNG 图片 (*.png)")
+        if not path:
+            return
+        try:
+            self.parallel_canvas.fig.savefig(path, dpi=160)
+            self.statusBar().showMessage(f"平行度预览图已导出: {path}", 5000)
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+
     # ================= Recipe 导入 / 导出 =================
     def _current_recipe_dict(self):
         """导出当前界面参数，不包含测量数据本身。"""
         return {
             'recipe_type': 'SurfaceRxyZxyAnalyzerRecipe',
-            'app_version': 'V3.7.0',
+            'app_version': 'V3.8.0',
             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'column_mapping': {
                 'x_col': self.cb_x_col.currentText() if hasattr(self, 'cb_x_col') else '',
@@ -1111,12 +1574,13 @@ class SurfaceAnalyzerPro(QMainWindow):
         normal_factor = np.sqrt(c[0] ** 2 + c[1] ** 2 + 1.0)
         res_normal = res_z / normal_factor
         pv = float((np.max(res_normal) - np.min(res_normal)) * 1000)
+        rms = float(np.sqrt(np.mean(res_normal ** 2)) * 1000)
         # Rx=arctan(+dZ/dY)，Ry=arctan(-dZ/dX)；姿态变换后的 Rx/Ry 物理正确性说明见
         # _apply_transform_pipeline 的文档（本机台 Z=厚度、不变号，旋转/翻面/平移七变换均正确）。
         rx = float(np.arctan(c[1]) * 1e6)
         ry = float(np.arctan(-c[0]) * 1e6)
         return {'a': float(c[0]), 'b': float(c[1]), 'c': float(c[2]), 'coeffs': c,
-                'mean_z': mean_z, 'pv': pv, 'ttv': ttv, 'rx': rx, 'ry': ry}
+                'mean_z': mean_z, 'rms': rms, 'pv': pv, 'ttv': ttv, 'rx': rx, 'ry': ry}
 
     # ================= 撤销 =================
     def undo_transform(self):
@@ -1949,7 +2413,7 @@ class SurfaceAnalyzerPro(QMainWindow):
             mean_z, ttv, pv, rx, ry = m['mean_z'], m['ttv'], m['pv'], m['rx'], m['ry']
 
             self.last_metrics = {'a': m['a'], 'b': m['b'], 'c': m['c'],
-                                 'mean_z': mean_z, 'pv': pv, 'ttv': ttv,
+                                 'mean_z': mean_z, 'rms': m['rms'], 'pv': pv, 'ttv': ttv,
                                  'rx': rx, 'ry': ry}
 
             # UI 更新
@@ -2135,7 +2599,7 @@ class SurfaceAnalyzerPro(QMainWindow):
             elif self.cb_filter.currentIndex() == 3:
                 filter_text += f" (σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})"
             meta = [
-                "# ===== 面型及Rxy分析工具 V3.7.0 导出 =====",
+                "# ===== 面型及Rxy分析工具 V3.8.0 导出 =====",
                 f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
                 f"# 数据来源: {self.current_source_name}",
                 f"# 变换路径: {pipeline_text}",
@@ -2398,7 +2862,7 @@ class SurfaceAnalyzerPro(QMainWindow):
                      va='top', ha='left', fontsize=9, style='italic',
                      color='#7f8c8d', transform=ax_foot.transAxes)
 
-        fig.suptitle(f"面型及Rxy分析报告 (V3.7.0) — {source_name}", fontsize=16, fontweight='bold')
+        fig.suptitle(f"面型及Rxy分析报告 (V3.8.0) — {source_name}", fontsize=16, fontweight='bold')
         return fig
 
 
