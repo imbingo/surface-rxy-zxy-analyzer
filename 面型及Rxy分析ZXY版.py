@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-面型及Rxy分析工具 V3.8.4
+面型及Rxy分析工具 V3.8.6
 基于 V1 的修复与增强：
   [优化] V3.7.0 (UI优化·方案A): 整理版左栏 + 顶部结果读数条。仅重排界面，不改动任何算法。
          · 结果指标(平均厚度Z/PV/TTV/Rx/Ry+平面方程)上提为绘图区上方常驻读数条，随分析实时刷新。
@@ -58,6 +58,8 @@
   [增强] V3.8.3: 大文件默认改为空间网格均匀采样；每格保留代表点、Z最小点和Z最大点，并显示实际网格数。
   [优化] V3.8.3: 平行度报告文字排版改为四段式卡片布局，减少标题、结果卡和表格之间的拥挤。
   [增强] V3.8.4: 主控分析新增 XY ROI 区域功能，支持矩形/圆形 ROI，支持鼠标框选与坐标输入，并写入 Recipe/报告。
+  [优化] V3.8.5: ROI 面板简化为连续框选 + 折叠精确输入，XY 图保留全图背景；左栏禁用横向滚动并阻止滚轮误改数值。
+  [修复] V3.8.6: 下拉框不再被鼠标滚轮误切换；ROI 状态摘要去掉重复的 ROI 列表小字。
 注意：Rx/Ry 符号约定 (Rx≈+dZ/dY, Ry≈-dZ/dX) 需用已知倾角标准件实测校准一次。
 """
 import sys
@@ -87,6 +89,24 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
+
+
+class NoWheelSpinBox(QSpinBox):
+    """SpinBox should not steal scroll-wheel gestures from the left control pane."""
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class NoWheelDoubleSpinBox(QDoubleSpinBox):
+    """DoubleSpinBox should not change values on accidental wheel scroll."""
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class NoWheelComboBox(QComboBox):
+    """ComboBox should not change selection on accidental wheel scroll."""
+    def wheelEvent(self, event):
+        event.ignore()
 
 
 class MultiViewCanvas(QWidget):
@@ -330,7 +350,7 @@ class GapMatchCanvas(FigureCanvas):
 
 
 class SurfaceAnalyzerPro(QMainWindow):
-    APP_VERSION = "V3.8.4"
+    APP_VERSION = "V3.8.6"
     DISPLAY_POINT_LIMIT = 80000
     LARGE_TEXT_FILE_BYTES = 512 * 1024 * 1024
     LARGE_TEXT_IMPORT_LIMIT = 500000
@@ -390,7 +410,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.large_file_mode = 'standard'  # 大文件策略模式：fast / standard / precise / custom
         self.large_file_sample_method = 'spatial_grid'  # V3.8.3 默认：空间网格均匀采样
         self.large_text_grid_count = 0     # 0=自动；>0 为用户指定的 X/Y 单边网格数
-        self.roi_enabled = False           # V3.8.4: XY ROI 保留区域开关
+        self.roi_enabled = False           # V3.8.4+: XY ROI 保留区域开关
         self.roi_shapes = []               # list[dict]，当前物料坐标系 X/Y(mm)
         self.roi_next_id = 1
         self.selection_mode = 'delete'     # delete / roi_rect / roi_circle
@@ -849,9 +869,15 @@ class SurfaceAnalyzerPro(QMainWindow):
         self._add_shadow(btn, blur=14, dy=2, alpha=26)
         return btn
 
+    @staticmethod
+    def _configure_left_scroll(scroll):
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
     def setup_main_tab(self, parent_widget):
         scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        self._configure_left_scroll(scroll)
         w = QWidget()
         ll = QVBoxLayout(w)
         ll.setContentsMargins(14, 12, 14, 12)
@@ -897,10 +923,10 @@ class SurfaceAnalyzerPro(QMainWindow):
         ml.setHorizontalSpacing(8)
         ml.setVerticalSpacing(7)
         ml.setColumnStretch(1, 1)   # 列名下拉自适应拉伸；标签/单位列贴紧内容
-        self.cb_x_col = QComboBox(); self.cb_y_col = QComboBox(); self.cb_z_col = QComboBox()
-        self.cb_x_unit = QComboBox(); self.cb_x_unit.addItems(["mm", "µm"])
-        self.cb_y_unit = QComboBox(); self.cb_y_unit.addItems(["mm", "µm"])
-        self.cb_z_unit = QComboBox(); self.cb_z_unit.addItems(["mm", "µm", "nm"])
+        self.cb_x_col = NoWheelComboBox(); self.cb_y_col = NoWheelComboBox(); self.cb_z_col = NoWheelComboBox()
+        self.cb_x_unit = NoWheelComboBox(); self.cb_x_unit.addItems(["mm", "µm"])
+        self.cb_y_unit = NoWheelComboBox(); self.cb_y_unit.addItems(["mm", "µm"])
+        self.cb_z_unit = NoWheelComboBox(); self.cb_z_unit.addItems(["mm", "µm", "nm"])
         for cb in (self.cb_x_col, self.cb_y_col, self.cb_z_col):
             cb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         for cb in (self.cb_x_unit, self.cb_y_unit, self.cb_z_unit):
@@ -958,7 +984,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         fl = QGridLayout(flt_group)
         fl.setContentsMargins(2, 2, 2, 2)
         fl.addWidget(QLabel("模式:"), 0, 0)
-        self.cb_filter = QComboBox()
+        self.cb_filter = NoWheelComboBox()
         self.cb_filter.addItems(["关闭", "MAD 全局鲁棒滤波", "局部中位数滤波 (邻域比较)",
                                  "迭代σ裁剪 (残差±Nσ重拟合)"])
         self.cb_filter.setToolTip(
@@ -973,26 +999,26 @@ class SurfaceAnalyzerPro(QMainWindow):
         fl.addWidget(self.cb_filter, 0, 1, 1, 3)
         self.lbl_k = QLabel("邻居数 k:")
         fl.addWidget(self.lbl_k, 1, 0)
-        self.spin_k = QSpinBox(); self.spin_k.setRange(3, 200); self.spin_k.setValue(12)
+        self.spin_k = NoWheelSpinBox(); self.spin_k.setRange(3, 200); self.spin_k.setValue(12)
         self.spin_k.setToolTip("邻域比较的最近邻数量，范围 3~200；常用 8~20，点云很密或坏点成片时可适当调大")
         fl.addWidget(self.spin_k, 1, 1)
         self.lbl_thresh = QLabel("阈值 (µm):")
         fl.addWidget(self.lbl_thresh, 1, 2)
-        self.spin_thresh = QDoubleSpinBox()
+        self.spin_thresh = NoWheelDoubleSpinBox()
         self.spin_thresh.setDecimals(2); self.spin_thresh.setRange(0.01, 10000.0)
         self.spin_thresh.setValue(5.00); self.spin_thresh.setSingleStep(0.5)
         self.spin_thresh.setToolTip("局部中位数模式的判异阈值，同时作为全局残差兜底阈值；建议设为已知面型/噪声上限")
         fl.addWidget(self.spin_thresh, 1, 3)
         self.lbl_sigma = QLabel("σ倍数 N:")
         fl.addWidget(self.lbl_sigma, 2, 0)
-        self.spin_sigma = QDoubleSpinBox()
+        self.spin_sigma = NoWheelDoubleSpinBox()
         self.spin_sigma.setDecimals(1); self.spin_sigma.setRange(1.0, 6.0)
         self.spin_sigma.setValue(3.0); self.spin_sigma.setSingleStep(0.5)
         self.spin_sigma.setToolTip("迭代σ裁剪的σ倍数，常用 3.0；越小裁剪越激进")
         fl.addWidget(self.spin_sigma, 2, 1)
         self.lbl_sigma_iter = QLabel("迭代上限:")
         fl.addWidget(self.lbl_sigma_iter, 2, 2)
-        self.spin_sigma_iter = QSpinBox()
+        self.spin_sigma_iter = NoWheelSpinBox()
         self.spin_sigma_iter.setRange(1, 20); self.spin_sigma_iter.setValue(5)
         self.spin_sigma_iter.setToolTip("迭代σ裁剪的最大轮数，达到收敛会提前停止；常用 3~8")
         fl.addWidget(self.spin_sigma_iter, 2, 3)
@@ -1019,65 +1045,74 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.chk_roi_enable = QCheckBox("启用 ROI 分析")
         self.chk_roi_enable.setToolTip("开启后，仅分析启用 ROI 内的点；多个 ROI 按并集合并。ROI 位于当前物料坐标 X/Y(mm)。")
         self.chk_roi_enable.stateChanged.connect(self._on_roi_changed)
-        rg.addWidget(self.chk_roi_enable, 0, 0, 1, 4)
+        rg.addWidget(self.chk_roi_enable, 0, 0, 1, 2)
+        rg.setColumnStretch(1, 1)
 
-        self.cb_roi_shape = QComboBox()
+        self.cb_roi_shape = NoWheelComboBox()
         self.cb_roi_shape.addItems(["矩形 ROI", "圆形 ROI"])
         self.cb_roi_shape.currentIndexChanged.connect(self._sync_roi_input_state)
         rg.addWidget(QLabel("形状:"), 1, 0)
-        rg.addWidget(self.cb_roi_shape, 1, 1, 1, 3)
+        rg.addWidget(self.cb_roi_shape, 1, 1)
 
-        self.spin_roi_cx = QDoubleSpinBox(); self.spin_roi_cy = QDoubleSpinBox()
-        self.spin_roi_w = QDoubleSpinBox(); self.spin_roi_h = QDoubleSpinBox()
-        self.spin_roi_r = QDoubleSpinBox()
-        for sp in (self.spin_roi_cx, self.spin_roi_cy):
-            sp.setDecimals(4); sp.setRange(-1e9, 1e9); sp.setSingleStep(0.1)
-        for sp in (self.spin_roi_w, self.spin_roi_h, self.spin_roi_r):
-            sp.setDecimals(4); sp.setRange(0.0001, 1e9); sp.setSingleStep(0.1); sp.setValue(1.0)
-        rg.addWidget(QLabel("中心X:"), 2, 0); rg.addWidget(self.spin_roi_cx, 2, 1)
-        rg.addWidget(QLabel("中心Y:"), 2, 2); rg.addWidget(self.spin_roi_cy, 2, 3)
-        self.lbl_roi_w = QLabel("宽度:")
-        self.lbl_roi_h = QLabel("高度:")
-        self.lbl_roi_r = QLabel("半径:")
-        rg.addWidget(self.lbl_roi_w, 3, 0); rg.addWidget(self.spin_roi_w, 3, 1)
-        rg.addWidget(self.lbl_roi_h, 3, 2); rg.addWidget(self.spin_roi_h, 3, 3)
-        rg.addWidget(self.lbl_roi_r, 4, 0); rg.addWidget(self.spin_roi_r, 4, 1)
-
-        roi_btn_row = QHBoxLayout()
-        roi_btn_row.setSpacing(8)
-        self.btn_roi_add_input = QPushButton("添加输入ROI")
-        self.btn_roi_add_input.setObjectName("accentSoftBtn")
-        self.btn_roi_add_input.clicked.connect(self.add_roi_from_inputs)
-        self.btn_roi_mouse = QPushButton("鼠标框选ROI")
+        self.btn_roi_mouse = QPushButton("开始框选 ROI")
+        self.btn_roi_mouse.setCheckable(True)
+        self.btn_roi_mouse.setObjectName("accentSoftBtn")
         self.btn_roi_mouse.clicked.connect(self.start_mouse_roi)
-        self.btn_roi_delete_mode = QPushButton("恢复删除框选")
-        self.btn_roi_delete_mode.clicked.connect(self.set_delete_selection_mode)
-        roi_btn_row.addWidget(self.btn_roi_add_input)
-        roi_btn_row.addWidget(self.btn_roi_mouse)
-        roi_btn_row.addWidget(self.btn_roi_delete_mode)
-        rg.addLayout(roi_btn_row, 5, 0, 1, 4)
+        rg.addWidget(self.btn_roi_mouse, 2, 0, 1, 2)
 
-        self.cb_roi_select = QComboBox()
-        rg.addWidget(QLabel("当前ROI:"), 6, 0)
-        rg.addWidget(self.cb_roi_select, 6, 1, 1, 3)
+        self.cb_roi_select = NoWheelComboBox()
+        self.cb_roi_select.setMinimumContentsLength(12)
+        self.cb_roi_select.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        rg.addWidget(QLabel("当前ROI:"), 3, 0)
+        rg.addWidget(self.cb_roi_select, 3, 1)
+
         roi_manage_row = QHBoxLayout()
         roi_manage_row.setSpacing(8)
-        self.btn_roi_toggle = QPushButton("启用/禁用")
-        self.btn_roi_toggle.clicked.connect(self.toggle_selected_roi)
-        self.btn_roi_delete = QPushButton("删除ROI")
+        self.btn_roi_delete = QPushButton("删除当前")
         self.btn_roi_delete.setObjectName("dangerBtn")
         self.btn_roi_delete.clicked.connect(self.delete_selected_roi)
-        self.btn_roi_clear = QPushButton("清空ROI")
+        self.btn_roi_clear = QPushButton("清空全部")
         self.btn_roi_clear.clicked.connect(self.clear_rois)
-        roi_manage_row.addWidget(self.btn_roi_toggle)
         roi_manage_row.addWidget(self.btn_roi_delete)
         roi_manage_row.addWidget(self.btn_roi_clear)
-        rg.addLayout(roi_manage_row, 7, 0, 1, 4)
+        rg.addLayout(roi_manage_row, 4, 0, 1, 2)
 
         self.lbl_roi_info = QLabel("ROI: 关闭 | 未定义")
         self.lbl_roi_info.setObjectName("mutedNote")
         self.lbl_roi_info.setWordWrap(True)
-        rg.addWidget(self.lbl_roi_info, 8, 0, 1, 4)
+        rg.addWidget(self.lbl_roi_info, 5, 0, 1, 2)
+
+        self.chk_roi_advanced = QCheckBox("高级 / 精确输入")
+        self.chk_roi_advanced.setToolTip("展开后可通过中心坐标、宽高或半径精确创建 ROI。")
+        self.chk_roi_advanced.stateChanged.connect(self._sync_roi_input_state)
+        rg.addWidget(self.chk_roi_advanced, 6, 0, 1, 2)
+
+        self.roi_advanced_widget = QWidget()
+        adv = QGridLayout(self.roi_advanced_widget)
+        adv.setContentsMargins(0, 0, 0, 0)
+        adv.setHorizontalSpacing(8)
+        adv.setVerticalSpacing(7)
+
+        self.spin_roi_cx = NoWheelDoubleSpinBox(); self.spin_roi_cy = NoWheelDoubleSpinBox()
+        self.spin_roi_w = NoWheelDoubleSpinBox(); self.spin_roi_h = NoWheelDoubleSpinBox()
+        self.spin_roi_r = NoWheelDoubleSpinBox()
+        for sp in (self.spin_roi_cx, self.spin_roi_cy):
+            sp.setDecimals(4); sp.setRange(-1e9, 1e9); sp.setSingleStep(0.1)
+        for sp in (self.spin_roi_w, self.spin_roi_h, self.spin_roi_r):
+            sp.setDecimals(4); sp.setRange(0.0001, 1e9); sp.setSingleStep(0.1); sp.setValue(1.0)
+        adv.addWidget(QLabel("中心X:"), 0, 0); adv.addWidget(self.spin_roi_cx, 0, 1)
+        adv.addWidget(QLabel("中心Y:"), 1, 0); adv.addWidget(self.spin_roi_cy, 1, 1)
+        self.lbl_roi_w = QLabel("宽度:")
+        self.lbl_roi_h = QLabel("高度:")
+        self.lbl_roi_r = QLabel("半径:")
+        adv.addWidget(self.lbl_roi_w, 2, 0); adv.addWidget(self.spin_roi_w, 2, 1)
+        adv.addWidget(self.lbl_roi_h, 3, 0); adv.addWidget(self.spin_roi_h, 3, 1)
+        adv.addWidget(self.lbl_roi_r, 4, 0); adv.addWidget(self.spin_roi_r, 4, 1)
+        self.btn_roi_add_input = QPushButton("添加输入ROI")
+        self.btn_roi_add_input.setObjectName("accentSoftBtn")
+        self.btn_roi_add_input.clicked.connect(self.add_roi_from_inputs)
+        adv.addWidget(self.btn_roi_add_input, 5, 0, 1, 2)
+        rg.addWidget(self.roi_advanced_widget, 7, 0, 1, 2)
         ll.addWidget(roi_group)
         self._sync_roi_input_state()
         self._refresh_roi_ui(update=False)
@@ -1116,7 +1151,7 @@ class SurfaceAnalyzerPro(QMainWindow):
 
     def setup_math_tab(self, parent_widget):
         scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        self._configure_left_scroll(scroll)
         w = QWidget()
         ll = QVBoxLayout(w)
 
@@ -1177,7 +1212,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         lbl_tol.setStyleSheet("font-weight: bold; color: #2c3e50;")
         hl_tol.addWidget(lbl_tol)
 
-        self.spin_tol = QDoubleSpinBox()
+        self.spin_tol = NoWheelDoubleSpinBox()
         self.spin_tol.setDecimals(3)
         self.spin_tol.setRange(0.001, 10.000)
         self.spin_tol.setSingleStep(0.01)
@@ -1211,7 +1246,7 @@ class SurfaceAnalyzerPro(QMainWindow):
 
     def setup_parallel_tab(self, parent_widget):
         scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        self._configure_left_scroll(scroll)
         w = QWidget()
         ll = QVBoxLayout(w)
         ll.setContentsMargins(14, 12, 14, 12)
@@ -2477,7 +2512,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         grid.addWidget(chk_auto, 0, 0, 1, 2)
 
         grid.addWidget(QLabel("策略模式:"), 1, 0)
-        cb_mode = QComboBox()
+        cb_mode = NoWheelComboBox()
         for key in ('fast', 'standard', 'precise'):
             cb_mode.addItem(f"{self.BIGFILE_MODE_PRESETS[key]['label']}模式", key)
         cb_mode.addItem("自定义", "custom")
@@ -2493,7 +2528,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         grid.addWidget(mode_note, 2, 0, 1, 2)
 
         grid.addWidget(QLabel("采样方式:"), 3, 0)
-        cb_sample_method = QComboBox()
+        cb_sample_method = NoWheelComboBox()
         cb_sample_method.addItem("空间网格均匀采样", "spatial_grid")
         cb_sample_method.addItem("文件位置均匀采样", "file_position")
         sample_idx = cb_sample_method.findData(getattr(self, 'large_file_sample_method', 'spatial_grid'))
@@ -2502,7 +2537,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         grid.addWidget(cb_sample_method, 3, 1)
 
         grid.addWidget(QLabel("空间网格数:"), 4, 0)
-        spin_grid = QSpinBox()
+        spin_grid = NoWheelSpinBox()
         spin_grid.setRange(0, 2000)
         spin_grid.setSingleStep(10)
         spin_grid.setSpecialValueText("自动")
@@ -2511,14 +2546,14 @@ class SurfaceAnalyzerPro(QMainWindow):
         grid.addWidget(spin_grid, 4, 1)
 
         grid.addWidget(QLabel("触发阈值(MB):"), 5, 0)
-        spin_mb = QSpinBox()
+        spin_mb = NoWheelSpinBox()
         spin_mb.setRange(1, 4096)
         spin_mb.setValue(int(self.large_text_threshold_mb))
         spin_mb.setToolTip("文件大小达到该阈值时触发预抽样导入。默认512MB。")
         grid.addWidget(spin_mb, 5, 1)
 
         grid.addWidget(QLabel("导入上限(行):"), 6, 0)
-        spin_import = QSpinBox()
+        spin_import = NoWheelSpinBox()
         spin_import.setRange(10000, 5000000)
         spin_import.setSingleStep(50000)
         spin_import.setValue(int(self.large_text_import_limit))
@@ -2526,7 +2561,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         grid.addWidget(spin_import, 6, 1)
 
         grid.addWidget(QLabel("显示上限(点):"), 7, 0)
-        spin_display = QSpinBox()
+        spin_display = NoWheelSpinBox()
         spin_display.setRange(5000, 1000000)
         spin_display.setSingleStep(5000)
         spin_display.setValue(int(self.display_point_limit))
@@ -3346,10 +3381,16 @@ class SurfaceAnalyzerPro(QMainWindow):
         if not hasattr(self, 'cb_roi_shape'):
             return
         is_circle = self.cb_roi_shape.currentIndex() == 1
+        if hasattr(self, 'roi_advanced_widget'):
+            self.roi_advanced_widget.setVisible(self.chk_roi_advanced.isChecked())
         for w in (self.lbl_roi_w, self.spin_roi_w, self.lbl_roi_h, self.spin_roi_h):
             w.setEnabled(not is_circle)
         for w in (self.lbl_roi_r, self.spin_roi_r):
             w.setEnabled(is_circle)
+        if self.selection_mode in ('roi_rect', 'roi_circle'):
+            self.selection_mode = 'roi_circle' if is_circle else 'roi_rect'
+            self.statusBar().showMessage(
+                f"ROI 连续框选模式: {'圆形' if is_circle else '矩形'}。在 XY 图中继续拖拽添加区域。", 5000)
 
     def _on_roi_changed(self):
         if hasattr(self, 'chk_roi_enable'):
@@ -3371,7 +3412,6 @@ class SurfaceAnalyzerPro(QMainWindow):
             except Exception:
                 tx = ty = None
         enabled_count = 0
-        lines = []
         for roi in self.roi_shapes:
             if roi.get('enabled', True):
                 enabled_count += 1
@@ -3384,7 +3424,6 @@ class SurfaceAnalyzerPro(QMainWindow):
             state = "启用" if roi.get('enabled', True) else "禁用"
             label = f"{state} {self._roi_shape_label(roi)}{count_text}"
             self.cb_roi_select.addItem(label, roi.get('id'))
-            lines.append(label)
         if current is not None:
             idx = self.cb_roi_select.findData(current)
             if idx >= 0:
@@ -3399,11 +3438,11 @@ class SurfaceAnalyzerPro(QMainWindow):
             head = "ROI: 开启 | 尚无启用区域"
         else:
             head = "ROI: 关闭"
-        self.lbl_roi_info.setText(head + ("\n" + "\n".join(lines[:3]) if lines else " | 未定义"))
+        self.lbl_roi_info.setText(head + (" | 未定义" if not self.roi_shapes else ""))
         if update and self.df_raw is not None:
             self.update_analysis()
 
-    def _add_roi_shape(self, roi):
+    def _add_roi_shape(self, roi, keep_roi_mode=False):
         roi['id'] = int(self.roi_next_id)
         roi['name'] = f"ROI {self.roi_next_id}"
         roi['enabled'] = True
@@ -3414,7 +3453,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             self.chk_roi_enable.blockSignals(True)
             self.chk_roi_enable.setChecked(True)
             self.chk_roi_enable.blockSignals(False)
-        self.selection_mode = 'delete'
+        if not keep_roi_mode:
+            self.set_delete_selection_mode(show_message=False)
         self._refresh_roi_ui(update=True)
         self.statusBar().showMessage(f"已添加 {self._roi_shape_label(roi)}", 5000)
 
@@ -3429,13 +3469,27 @@ class SurfaceAnalyzerPro(QMainWindow):
                 'width': float(self.spin_roi_w.value()), 'height': float(self.spin_roi_h.value())
             })
 
-    def start_mouse_roi(self):
+    def start_mouse_roi(self, checked=None):
+        checked = self.btn_roi_mouse.isChecked() if checked is None else bool(checked)
+        if not checked:
+            self.set_delete_selection_mode(show_message=True)
+            return
         self.selection_mode = 'roi_circle' if self.cb_roi_shape.currentIndex() == 1 else 'roi_rect'
-        self.statusBar().showMessage("请在 XY 俯视图中拖拽生成 ROI；XZ/YZ 不生成 ROI。", 8000)
+        self.btn_roi_mouse.setText("退出框选 ROI")
+        if self.temp_selected_mask is not None:
+            self.temp_selected_mask.fill(False)
+            self.update_plots_only()
+        self.statusBar().showMessage("ROI 连续框选模式已开启：请在 XY 俯视图中拖拽，可连续添加多个 ROI。", 8000)
 
-    def set_delete_selection_mode(self):
+    def set_delete_selection_mode(self, show_message=True):
         self.selection_mode = 'delete'
-        self.statusBar().showMessage("已恢复为删除点框选模式。", 4000)
+        if hasattr(self, 'btn_roi_mouse'):
+            self.btn_roi_mouse.blockSignals(True)
+            self.btn_roi_mouse.setChecked(False)
+            self.btn_roi_mouse.setText("开始框选 ROI")
+            self.btn_roi_mouse.blockSignals(False)
+        if show_message:
+            self.statusBar().showMessage("已退出 ROI 框选，恢复为删除点框选模式。", 4000)
 
     def _selected_roi_index(self):
         if not hasattr(self, 'cb_roi_select') or self.cb_roi_select.currentIndex() < 0:
@@ -3464,7 +3518,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.roi_shapes = []
         self.roi_enabled = False
         self.last_roi_keep_count = None
-        self.selection_mode = 'delete'
+        self.set_delete_selection_mode(show_message=False)
         if hasattr(self, 'chk_roi_enable'):
             self.chk_roi_enable.blockSignals(True)
             self.chk_roi_enable.setChecked(False)
@@ -3515,6 +3569,7 @@ class SurfaceAnalyzerPro(QMainWindow):
                 h = float(roi.get('height', 0.0))
                 patch = MplRectangle((cx - w / 2.0, cy - h / 2.0), w, h, fill=False,
                                      edgecolor=edge, linewidth=1.8, linestyle=style, alpha=alpha)
+            patch.set_zorder(3)
             ax.add_patch(patch)
 
     # ================= 核心分析 =================
@@ -3620,6 +3675,13 @@ class SurfaceAnalyzerPro(QMainWindow):
         dx, dy = tx[plot_idx], ty[plot_idx]
         plot_z_all, z_axis_label, z_short_label = self._get_plot_z(tx, ty, tz)
         dz = plot_z_all[plot_idx]
+        bg_x = bg_y = None
+        if self._roi_is_active() and self.manual_mask is not None:
+            bg_idx = np.where(self.manual_mask)[0]
+            if len(bg_idx) > display_limit:
+                pick = np.linspace(0, len(bg_idx) - 1, display_limit, dtype=int)
+                bg_idx = bg_idx[pick]
+            bg_x, bg_y = tx[bg_idx], ty[bg_idx]
 
         axes = [self.canvas.ax3d, self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz]
         lbs = [("X (mm)", "Y (mm)", z_axis_label),
@@ -3643,6 +3705,11 @@ class SurfaceAnalyzerPro(QMainWindow):
 
         self.canvas.set_titles(self.display_detrended)
 
+        if bg_x is not None and len(bg_x) > 0:
+            self.canvas.ax_xy.scatter(
+                bg_x, bg_y, c='#9aa4ae', s=7, alpha=0.22, edgecolors='none',
+                zorder=1, rasterized=True)
+
         if len(dx) == 0:
             self._draw_roi_overlays(self.canvas.ax_xy)
             self.canvas.ax_xy.relim()
@@ -3652,7 +3719,7 @@ class SurfaceAnalyzerPro(QMainWindow):
 
         sc_params = {'c': dz, 'cmap': 'turbo', 's': 14, 'alpha': 0.85, 'edgecolors': 'none'}
         self.canvas.ax3d.scatter(dx, dy, dz, **sc_params)
-        self.canvas.ax_xy.scatter(dx, dy, **sc_params)
+        self.canvas.ax_xy.scatter(dx, dy, **sc_params, zorder=2)
         self._draw_roi_overlays(self.canvas.ax_xy)
         self.canvas.ax_xz.scatter(dx, dz, **sc_params)
         self.canvas.ax_yz.scatter(dy, dz, **sc_params)
@@ -3696,11 +3763,11 @@ class SurfaceAnalyzerPro(QMainWindow):
                 r = max(w, h) / 2.0
                 if r <= 0:
                     return
-                self._add_roi_shape({'type': 'circle', 'cx': cx, 'cy': cy, 'radius': r})
+                self._add_roi_shape({'type': 'circle', 'cx': cx, 'cy': cy, 'radius': r}, keep_roi_mode=True)
             else:
                 if w <= 0 or h <= 0:
                     return
-                self._add_roi_shape({'type': 'rect', 'cx': cx, 'cy': cy, 'width': w, 'height': h})
+                self._add_roi_shape({'type': 'rect', 'cx': cx, 'cy': cy, 'width': w, 'height': h}, keep_roi_mode=True)
             return
 
         tx, ty, tz = self.get_final_transformed_data(self.df_raw)

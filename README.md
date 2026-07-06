@@ -1,24 +1,37 @@
 # Surface Rxy ZXY Analyzer
 
-面型及 Rxy 分析工具，当前主程序已更新到 V3.8.4。
+面型及 Rxy 分析工具，当前主程序已更新到 V3.8.6。
 
 ## 文件
 
-- `面型及Rxy分析ZXY版.py`: PyQt6 GUI 主程序，内容为 V3.8.4 最新版。
-- `start_surface_analyzer_v3_8_4.bat`: 推荐启动脚本，固定使用仓库内 `.venv`，避免换解释器后重复装依赖。
+- `面型及Rxy分析ZXY版.py`: PyQt6 GUI 主程序，内容为 V3.8.6 最新版。
+- `start_surface_analyzer_v3_8_6.bat`: 推荐启动脚本，固定使用仓库内 `.venv`，避免换解释器后重复装依赖。
 - `requirements.txt`: 运行所需 Python 依赖。
 
 ## 运行
 
 ```powershell
-.\start_surface_analyzer_v3_8_4.bat
+.\start_surface_analyzer_v3_8_6.bat
 ```
 
 首次运行会创建 `.venv` 并安装依赖；后续会复用同一个环境。需要只检查环境、不打开 GUI 时：
 
 ```powershell
-.\start_surface_analyzer_v3_8_4.bat --check
+.\start_surface_analyzer_v3_8_6.bat --check
 ```
+
+## V3.8.6 重点
+
+- **下拉框不再被滚轮误切换**：滤波模式、ROI 形状、当前 ROI、列映射/单位和大文件策略下拉框都忽略鼠标滚轮。
+- **ROI 状态摘要更简洁**：去掉状态小字里重复的“启用 ROI 1/2/3...”列表，详细条目只保留在“当前ROI”下拉框。
+
+## V3.8.5 重点
+
+- **左侧不再横向滚动**：主控、多层、平行度页面只保留纵向滚动，避免底部左右滑动条。
+- **滚轮不再误改数值**：滤波参数、ROI 坐标/宽高/半径、大文件策略等数值框不响应鼠标滚轮改值。
+- **ROI 连续框选**：点击“开始框选 ROI”后可在 XY 图连续拖拽添加多个 ROI，直到点击“退出框选 ROI”。
+- **XY 全图背景**：启用 ROI 后，XY 图保留全图淡化背景，ROI 内参与分析点正常高亮，便于继续框选多个区域。
+- **ROI 面板简化**：坐标精确输入默认折叠在“高级 / 精确输入”，常用操作只保留开关、形状、框选、列表、删除和清空。
 
 ## V3.8.4 重点
 
