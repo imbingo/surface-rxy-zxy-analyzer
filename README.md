@@ -1,24 +1,32 @@
 # Surface Rxy ZXY Analyzer
 
-面型及 Rxy 分析工具，当前主程序已更新到 V3.8.3。
+面型及 Rxy 分析工具，当前主程序已更新到 V3.8.4。
 
 ## 文件
 
-- `面型及Rxy分析ZXY版.py`: PyQt6 GUI 主程序，内容为 V3.8.3 最新版。
-- `start_surface_analyzer_v3_8_3.bat`: 推荐启动脚本，固定使用仓库内 `.venv`，避免换解释器后重复装依赖。
+- `面型及Rxy分析ZXY版.py`: PyQt6 GUI 主程序，内容为 V3.8.4 最新版。
+- `start_surface_analyzer_v3_8_4.bat`: 推荐启动脚本，固定使用仓库内 `.venv`，避免换解释器后重复装依赖。
 - `requirements.txt`: 运行所需 Python 依赖。
 
 ## 运行
 
 ```powershell
-.\start_surface_analyzer_v3_8_3.bat
+.\start_surface_analyzer_v3_8_4.bat
 ```
 
 首次运行会创建 `.venv` 并安装依赖；后续会复用同一个环境。需要只检查环境、不打开 GUI 时：
 
 ```powershell
-.\start_surface_analyzer_v3_8_3.bat --check
+.\start_surface_analyzer_v3_8_4.bat --check
 ```
+
+## V3.8.4 重点
+
+- **主控分析新增 ROI 区域**：支持矩形 ROI 和圆形 ROI，只分析 ROI 内数据；多个 ROI 按并集合并。
+- **两种生成方式**：可在 XY 俯视图鼠标框选，也可输入中心坐标、长宽或半径精确创建。
+- **处理顺序固定**：手动删除点 → ROI 保留 → 自动滤波 → 平面拟合，关闭 ROI 时旧文件分析口径不变。
+- **Recipe 与报告记录 ROI**：Recipe 会保存 ROI 开关和形状；CSV 与报告图会写入 ROI 摘要，XY 图会叠加 ROI 边界。
+- **批量处理支持 ROI**：批量处理沿用当前 ROI/Recipe ROI，但仍不包含手动框选删点。
 
 ## V3.8.3 重点
 

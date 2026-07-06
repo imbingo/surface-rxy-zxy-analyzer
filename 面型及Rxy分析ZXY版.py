@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-面型及Rxy分析工具 V3.8.3
+面型及Rxy分析工具 V3.8.4
 基于 V1 的修复与增强：
   [优化] V3.7.0 (UI优化·方案A): 整理版左栏 + 顶部结果读数条。仅重排界面，不改动任何算法。
          · 结果指标(平均厚度Z/PV/TTV/Rx/Ry+平面方程)上提为绘图区上方常驻读数条，随分析实时刷新。
@@ -57,6 +57,7 @@
   [增强] V3.8.2: 多层胶厚扣减新增匹配诊断图，显示未对齐/未参与扣减点。
   [增强] V3.8.3: 大文件默认改为空间网格均匀采样；每格保留代表点、Z最小点和Z最大点，并显示实际网格数。
   [优化] V3.8.3: 平行度报告文字排版改为四段式卡片布局，减少标题、结果卡和表格之间的拥挤。
+  [增强] V3.8.4: 主控分析新增 XY ROI 区域功能，支持矩形/圆形 ROI，支持鼠标框选与坐标输入，并写入 Recipe/报告。
 注意：Rx/Ry 符号约定 (Rx≈+dZ/dY, Ry≈-dZ/dX) 需用已知倾角标准件实测校准一次。
 """
 import sys
@@ -71,7 +72,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
-from matplotlib.patches import FancyBboxPatch
+from matplotlib.patches import FancyBboxPatch, Rectangle as MplRectangle, Circle as MplCircle
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.widgets import RectangleSelector
@@ -329,7 +330,7 @@ class GapMatchCanvas(FigureCanvas):
 
 
 class SurfaceAnalyzerPro(QMainWindow):
-    APP_VERSION = "V3.8.3"
+    APP_VERSION = "V3.8.4"
     DISPLAY_POINT_LIMIT = 80000
     LARGE_TEXT_FILE_BYTES = 512 * 1024 * 1024
     LARGE_TEXT_IMPORT_LIMIT = 500000
@@ -389,6 +390,11 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.large_file_mode = 'standard'  # 大文件策略模式：fast / standard / precise / custom
         self.large_file_sample_method = 'spatial_grid'  # V3.8.3 默认：空间网格均匀采样
         self.large_text_grid_count = 0     # 0=自动；>0 为用户指定的 X/Y 单边网格数
+        self.roi_enabled = False           # V3.8.4: XY ROI 保留区域开关
+        self.roi_shapes = []               # list[dict]，当前物料坐标系 X/Y(mm)
+        self.roi_next_id = 1
+        self.selection_mode = 'delete'     # delete / roi_rect / roi_circle
+        self.last_roi_keep_count = None
         self.import_info = {               # 导入状态：用于UI与导出元数据
             'file_size_bytes': 0,
             'file_size_mb': 0.0,
@@ -586,7 +592,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.btn_import_recipe.setToolTip("读取Recipe并自动写入当前UI参数；若尚未载入数据，列映射会在下次载入后自动应用。")
         self.btn_import_recipe.clicked.connect(self.import_recipe)
         self.btn_export_recipe = QPushButton("导出 Recipe")
-        self.btn_export_recipe.setToolTip("保存当前单位、列映射、物料旋转组合、滤波、大文件显示和Gap参数。")
+        self.btn_export_recipe.setToolTip("保存当前单位、列映射、物料旋转组合、滤波、ROI、大文件显示和Gap参数。")
         self.btn_export_recipe.clicked.connect(self.export_recipe)
         self.btn_bigfile_settings = QPushButton("大文件策略")
         self.btn_bigfile_settings.setToolTip("设置超大TXT预抽样模式、导入上限、绘图显示上限。")
@@ -791,6 +797,13 @@ class SurfaceAnalyzerPro(QMainWindow):
         outer.addLayout(cards)
         return strip
 
+    def _clear_result_labels(self):
+        if not hasattr(self, 'lbl_eqn'):
+            return
+        self.lbl_eqn.setText("--")
+        for lab in (self.lbl_z, self.lbl_pv, self.lbl_ttv, self.lbl_rx, self.lbl_ry):
+            lab.setText("--")
+
     def _step_header(self, num, text, hint=None, active=False):
         """编号分步标题：序号徽章 + 标题 + 可选提示 + 分隔线。"""
         row = QWidget()
@@ -993,6 +1006,81 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.spin_sigma_iter.valueChanged.connect(self._on_filter_param_changed)
         self._sync_filter_enabled()
         ll.addWidget(flt_group)
+
+        # ---------- 5. ROI 区域 ----------
+        ll.addWidget(self._step_header(5, "ROI 区域", hint="XY保留区域"))
+        roi_group = QGroupBox()
+        roi_group.setFlat(True)
+        rg = QGridLayout(roi_group)
+        rg.setContentsMargins(2, 2, 2, 2)
+        rg.setHorizontalSpacing(8)
+        rg.setVerticalSpacing(7)
+
+        self.chk_roi_enable = QCheckBox("启用 ROI 分析")
+        self.chk_roi_enable.setToolTip("开启后，仅分析启用 ROI 内的点；多个 ROI 按并集合并。ROI 位于当前物料坐标 X/Y(mm)。")
+        self.chk_roi_enable.stateChanged.connect(self._on_roi_changed)
+        rg.addWidget(self.chk_roi_enable, 0, 0, 1, 4)
+
+        self.cb_roi_shape = QComboBox()
+        self.cb_roi_shape.addItems(["矩形 ROI", "圆形 ROI"])
+        self.cb_roi_shape.currentIndexChanged.connect(self._sync_roi_input_state)
+        rg.addWidget(QLabel("形状:"), 1, 0)
+        rg.addWidget(self.cb_roi_shape, 1, 1, 1, 3)
+
+        self.spin_roi_cx = QDoubleSpinBox(); self.spin_roi_cy = QDoubleSpinBox()
+        self.spin_roi_w = QDoubleSpinBox(); self.spin_roi_h = QDoubleSpinBox()
+        self.spin_roi_r = QDoubleSpinBox()
+        for sp in (self.spin_roi_cx, self.spin_roi_cy):
+            sp.setDecimals(4); sp.setRange(-1e9, 1e9); sp.setSingleStep(0.1)
+        for sp in (self.spin_roi_w, self.spin_roi_h, self.spin_roi_r):
+            sp.setDecimals(4); sp.setRange(0.0001, 1e9); sp.setSingleStep(0.1); sp.setValue(1.0)
+        rg.addWidget(QLabel("中心X:"), 2, 0); rg.addWidget(self.spin_roi_cx, 2, 1)
+        rg.addWidget(QLabel("中心Y:"), 2, 2); rg.addWidget(self.spin_roi_cy, 2, 3)
+        self.lbl_roi_w = QLabel("宽度:")
+        self.lbl_roi_h = QLabel("高度:")
+        self.lbl_roi_r = QLabel("半径:")
+        rg.addWidget(self.lbl_roi_w, 3, 0); rg.addWidget(self.spin_roi_w, 3, 1)
+        rg.addWidget(self.lbl_roi_h, 3, 2); rg.addWidget(self.spin_roi_h, 3, 3)
+        rg.addWidget(self.lbl_roi_r, 4, 0); rg.addWidget(self.spin_roi_r, 4, 1)
+
+        roi_btn_row = QHBoxLayout()
+        roi_btn_row.setSpacing(8)
+        self.btn_roi_add_input = QPushButton("添加输入ROI")
+        self.btn_roi_add_input.setObjectName("accentSoftBtn")
+        self.btn_roi_add_input.clicked.connect(self.add_roi_from_inputs)
+        self.btn_roi_mouse = QPushButton("鼠标框选ROI")
+        self.btn_roi_mouse.clicked.connect(self.start_mouse_roi)
+        self.btn_roi_delete_mode = QPushButton("恢复删除框选")
+        self.btn_roi_delete_mode.clicked.connect(self.set_delete_selection_mode)
+        roi_btn_row.addWidget(self.btn_roi_add_input)
+        roi_btn_row.addWidget(self.btn_roi_mouse)
+        roi_btn_row.addWidget(self.btn_roi_delete_mode)
+        rg.addLayout(roi_btn_row, 5, 0, 1, 4)
+
+        self.cb_roi_select = QComboBox()
+        rg.addWidget(QLabel("当前ROI:"), 6, 0)
+        rg.addWidget(self.cb_roi_select, 6, 1, 1, 3)
+        roi_manage_row = QHBoxLayout()
+        roi_manage_row.setSpacing(8)
+        self.btn_roi_toggle = QPushButton("启用/禁用")
+        self.btn_roi_toggle.clicked.connect(self.toggle_selected_roi)
+        self.btn_roi_delete = QPushButton("删除ROI")
+        self.btn_roi_delete.setObjectName("dangerBtn")
+        self.btn_roi_delete.clicked.connect(self.delete_selected_roi)
+        self.btn_roi_clear = QPushButton("清空ROI")
+        self.btn_roi_clear.clicked.connect(self.clear_rois)
+        roi_manage_row.addWidget(self.btn_roi_toggle)
+        roi_manage_row.addWidget(self.btn_roi_delete)
+        roi_manage_row.addWidget(self.btn_roi_clear)
+        rg.addLayout(roi_manage_row, 7, 0, 1, 4)
+
+        self.lbl_roi_info = QLabel("ROI: 关闭 | 未定义")
+        self.lbl_roi_info.setObjectName("mutedNote")
+        self.lbl_roi_info.setWordWrap(True)
+        rg.addWidget(self.lbl_roi_info, 8, 0, 1, 4)
+        ll.addWidget(roi_group)
+        self._sync_roi_input_state()
+        self._refresh_roi_ui(update=False)
 
         ll.addStretch()
 
@@ -1778,6 +1866,10 @@ class SurfaceAnalyzerPro(QMainWindow):
             'transform_pipeline': list(self.transform_pipeline),
             'filter': {'mode_index': int(self.cb_filter.currentIndex()), 'mode_text': self.cb_filter.currentText(), 'neighbor_k': int(self.spin_k.value()), 'threshold_um': float(self.spin_thresh.value()), 'sigma_k': float(self.spin_sigma.value()), 'sigma_iters': int(self.spin_sigma_iter.value())},
             'display': {'detrended': bool(self.display_detrended)},
+            'roi': {
+                'enabled': bool(self.roi_enabled),
+                'shapes': [dict(r) for r in self.roi_shapes],
+            },
             'large_file': {
                 'mode': self._matching_bigfile_mode(),
                 'auto_sample': bool(self.auto_sample_large_text),
@@ -1808,7 +1900,7 @@ class SurfaceAnalyzerPro(QMainWindow):
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(self._current_recipe_dict(), f, ensure_ascii=False, indent=2)
             self.statusBar().showMessage(f"Recipe已导出: {path}", 5000)
-            QMessageBox.information(self, "Recipe导出成功", "已保存当前单位、列映射、物料旋转组合、滤波参数、大文件显示策略和Gap容差。")
+            QMessageBox.information(self, "Recipe导出成功", "已保存当前单位、列映射、物料旋转组合、滤波参数、ROI、大文件显示策略和Gap容差。")
         except Exception as e:
             QMessageBox.critical(self, "Recipe导出失败", str(e))
 
@@ -1876,6 +1968,14 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.chk_detrend_display.blockSignals(True); self.chk_detrend_display.setChecked(detrended); self.chk_detrend_display.blockSignals(False)
         self.display_detrended = detrended
         self.lbl_detrend_info.setText("去倾斜残差 µm" if detrended else "原始Z高度 mm")
+        roi = recipe.get('roi', {}) or {}
+        self.roi_enabled = bool(roi.get('enabled', self.roi_enabled))
+        self.roi_shapes = self._clean_roi_shapes(roi.get('shapes', self.roi_shapes))
+        if hasattr(self, 'chk_roi_enable'):
+            self.chk_roi_enable.blockSignals(True)
+            self.chk_roi_enable.setChecked(self.roi_enabled)
+            self.chk_roi_enable.blockSignals(False)
+            self._refresh_roi_ui(update=False)
         self._update_import_status_label()
         if self.df_raw is not None:
             self.update_analysis()
@@ -2208,6 +2308,7 @@ class SurfaceAnalyzerPro(QMainWindow):
             self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
             self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
             self.current_coeffs = None
+            self.clear_rois(update=False)
 
             self.update_analysis()
             self.tabs.setCurrentIndex(self.math_tab_index)
@@ -2248,6 +2349,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.chk_detrend_display.blockSignals(False)
         self.display_detrended = False
         self.lbl_detrend_info.setText("原始Z高度 mm")
+        self.clear_rois(update=False)
         self.update_analysis()
         self.statusBar().showMessage("系统已完全重置（滤波已关闭，去倾斜显示已关闭）", 3000)
 
@@ -3174,6 +3276,247 @@ class SurfaceAnalyzerPro(QMainWindow):
             return plot_z, "Resid / 去倾斜残差 (µm)", "去倾斜残差 (µm)"
         return tz, "Z (mm)", "Z"
 
+    # ================= ROI 区域 =================
+    def _roi_is_active(self, roi_enabled=None, roi_shapes=None):
+        enabled = self.roi_enabled if roi_enabled is None else bool(roi_enabled)
+        shapes = self.roi_shapes if roi_shapes is None else (roi_shapes or [])
+        return enabled and any(bool(r.get('enabled', True)) for r in shapes)
+
+    @staticmethod
+    def _roi_shape_label(roi):
+        name = roi.get('name', 'ROI')
+        if roi.get('type') == 'circle':
+            return (f"{name}: 圆形 cx={roi.get('cx', 0):.4f}, cy={roi.get('cy', 0):.4f}, "
+                    f"r={roi.get('radius', 0):.4f}")
+        return (f"{name}: 矩形 cx={roi.get('cx', 0):.4f}, cy={roi.get('cy', 0):.4f}, "
+                f"w={roi.get('width', 0):.4f}, h={roi.get('height', 0):.4f}")
+
+    def _clean_roi_shapes(self, shapes):
+        cleaned = []
+        max_id = 0
+        for i, raw in enumerate(shapes or [], start=1):
+            try:
+                typ = str(raw.get('type', 'rect'))
+                if typ not in ('rect', 'circle'):
+                    continue
+                roi = {
+                    'id': int(raw.get('id', i)),
+                    'name': str(raw.get('name') or f"ROI {i}"),
+                    'type': typ,
+                    'cx': float(raw.get('cx', 0.0)),
+                    'cy': float(raw.get('cy', 0.0)),
+                    'enabled': bool(raw.get('enabled', True)),
+                }
+                if typ == 'circle':
+                    roi['radius'] = max(float(raw.get('radius', 0.0)), 0.0)
+                    if roi['radius'] <= 0:
+                        continue
+                else:
+                    roi['width'] = max(float(raw.get('width', 0.0)), 0.0)
+                    roi['height'] = max(float(raw.get('height', 0.0)), 0.0)
+                    if roi['width'] <= 0 or roi['height'] <= 0:
+                        continue
+                max_id = max(max_id, roi['id'])
+                cleaned.append(roi)
+            except Exception:
+                continue
+        self.roi_next_id = max(self.roi_next_id, max_id + 1)
+        return cleaned
+
+    def _roi_keep_mask_for_arrays(self, x, y, roi_shapes=None, roi_enabled=None):
+        shapes = self.roi_shapes if roi_shapes is None else (roi_shapes or [])
+        if not self._roi_is_active(roi_enabled, shapes):
+            return np.ones(len(x), dtype=bool)
+        keep = np.zeros(len(x), dtype=bool)
+        for roi in shapes:
+            if not roi.get('enabled', True):
+                continue
+            cx = float(roi.get('cx', 0.0))
+            cy = float(roi.get('cy', 0.0))
+            if roi.get('type') == 'circle':
+                r = float(roi.get('radius', 0.0))
+                keep |= ((x - cx) ** 2 + (y - cy) ** 2) <= (r ** 2)
+            else:
+                hw = float(roi.get('width', 0.0)) / 2.0
+                hh = float(roi.get('height', 0.0)) / 2.0
+                keep |= (x >= cx - hw) & (x <= cx + hw) & (y >= cy - hh) & (y <= cy + hh)
+        return keep
+
+    def _sync_roi_input_state(self):
+        if not hasattr(self, 'cb_roi_shape'):
+            return
+        is_circle = self.cb_roi_shape.currentIndex() == 1
+        for w in (self.lbl_roi_w, self.spin_roi_w, self.lbl_roi_h, self.spin_roi_h):
+            w.setEnabled(not is_circle)
+        for w in (self.lbl_roi_r, self.spin_roi_r):
+            w.setEnabled(is_circle)
+
+    def _on_roi_changed(self):
+        if hasattr(self, 'chk_roi_enable'):
+            self.roi_enabled = self.chk_roi_enable.isChecked()
+        self._refresh_roi_ui(update=False)
+        if self.df_raw is not None:
+            self.update_analysis()
+
+    def _refresh_roi_ui(self, update=False):
+        if not hasattr(self, 'lbl_roi_info'):
+            return
+        current = self.cb_roi_select.currentData()
+        self.cb_roi_select.blockSignals(True)
+        self.cb_roi_select.clear()
+        tx = ty = None
+        if self.df_raw is not None:
+            try:
+                tx, ty, _ = self.get_final_transformed_data(self.df_raw)
+            except Exception:
+                tx = ty = None
+        enabled_count = 0
+        lines = []
+        for roi in self.roi_shapes:
+            if roi.get('enabled', True):
+                enabled_count += 1
+            count_text = ""
+            if tx is not None and ty is not None:
+                count_roi = dict(roi)
+                count_roi['enabled'] = True
+                count = int(self._roi_keep_mask_for_arrays(tx, ty, [count_roi], True).sum())
+                count_text = f" | {count:,}点"
+            state = "启用" if roi.get('enabled', True) else "禁用"
+            label = f"{state} {self._roi_shape_label(roi)}{count_text}"
+            self.cb_roi_select.addItem(label, roi.get('id'))
+            lines.append(label)
+        if current is not None:
+            idx = self.cb_roi_select.findData(current)
+            if idx >= 0:
+                self.cb_roi_select.setCurrentIndex(idx)
+        self.cb_roi_select.blockSignals(False)
+        active = self._roi_is_active()
+        if active and self.last_roi_keep_count is not None:
+            head = f"ROI: 开启 | {enabled_count}/{len(self.roi_shapes)} 个启用 | 合并保留 {self.last_roi_keep_count:,} 点"
+        elif active:
+            head = f"ROI: 开启 | {enabled_count}/{len(self.roi_shapes)} 个启用"
+        elif self.roi_enabled:
+            head = "ROI: 开启 | 尚无启用区域"
+        else:
+            head = "ROI: 关闭"
+        self.lbl_roi_info.setText(head + ("\n" + "\n".join(lines[:3]) if lines else " | 未定义"))
+        if update and self.df_raw is not None:
+            self.update_analysis()
+
+    def _add_roi_shape(self, roi):
+        roi['id'] = int(self.roi_next_id)
+        roi['name'] = f"ROI {self.roi_next_id}"
+        roi['enabled'] = True
+        self.roi_next_id += 1
+        self.roi_shapes.append(roi)
+        self.roi_enabled = True
+        if hasattr(self, 'chk_roi_enable'):
+            self.chk_roi_enable.blockSignals(True)
+            self.chk_roi_enable.setChecked(True)
+            self.chk_roi_enable.blockSignals(False)
+        self.selection_mode = 'delete'
+        self._refresh_roi_ui(update=True)
+        self.statusBar().showMessage(f"已添加 {self._roi_shape_label(roi)}", 5000)
+
+    def add_roi_from_inputs(self):
+        cx = float(self.spin_roi_cx.value())
+        cy = float(self.spin_roi_cy.value())
+        if self.cb_roi_shape.currentIndex() == 1:
+            self._add_roi_shape({'type': 'circle', 'cx': cx, 'cy': cy, 'radius': float(self.spin_roi_r.value())})
+        else:
+            self._add_roi_shape({
+                'type': 'rect', 'cx': cx, 'cy': cy,
+                'width': float(self.spin_roi_w.value()), 'height': float(self.spin_roi_h.value())
+            })
+
+    def start_mouse_roi(self):
+        self.selection_mode = 'roi_circle' if self.cb_roi_shape.currentIndex() == 1 else 'roi_rect'
+        self.statusBar().showMessage("请在 XY 俯视图中拖拽生成 ROI；XZ/YZ 不生成 ROI。", 8000)
+
+    def set_delete_selection_mode(self):
+        self.selection_mode = 'delete'
+        self.statusBar().showMessage("已恢复为删除点框选模式。", 4000)
+
+    def _selected_roi_index(self):
+        if not hasattr(self, 'cb_roi_select') or self.cb_roi_select.currentIndex() < 0:
+            return None
+        roi_id = self.cb_roi_select.currentData()
+        for i, roi in enumerate(self.roi_shapes):
+            if roi.get('id') == roi_id:
+                return i
+        return None
+
+    def toggle_selected_roi(self):
+        idx = self._selected_roi_index()
+        if idx is None:
+            return
+        self.roi_shapes[idx]['enabled'] = not self.roi_shapes[idx].get('enabled', True)
+        self._refresh_roi_ui(update=True)
+
+    def delete_selected_roi(self):
+        idx = self._selected_roi_index()
+        if idx is None:
+            return
+        del self.roi_shapes[idx]
+        self._refresh_roi_ui(update=True)
+
+    def clear_rois(self, update=True):
+        self.roi_shapes = []
+        self.roi_enabled = False
+        self.last_roi_keep_count = None
+        self.selection_mode = 'delete'
+        if hasattr(self, 'chk_roi_enable'):
+            self.chk_roi_enable.blockSignals(True)
+            self.chk_roi_enable.setChecked(False)
+            self.chk_roi_enable.blockSignals(False)
+        self._refresh_roi_ui(update=update)
+
+    def _roi_report_info(self, tx=None, ty=None, roi_enabled=None, roi_shapes=None):
+        shapes = [dict(r) for r in (roi_shapes if roi_shapes is not None else self.roi_shapes)]
+        enabled = self.roi_enabled if roi_enabled is None else bool(roi_enabled)
+        active = self._roi_is_active(enabled, shapes)
+        keep_count = None
+        if active and tx is not None and ty is not None:
+            keep_count = int(self._roi_keep_mask_for_arrays(tx, ty, shapes, enabled).sum())
+        summary = "关闭" if not active else f"开启 | 启用 {sum(bool(r.get('enabled', True)) for r in shapes)}/{len(shapes)} 个"
+        if keep_count is not None:
+            summary += f" | 合并保留 {keep_count:,} 点"
+        shape_lines = [self._roi_shape_label(r) for r in shapes if r.get('enabled', True)]
+        return {
+            'enabled': active,
+            'summary': summary,
+            'shape_lines': shape_lines,
+            'keep_count': keep_count,
+            'shapes': shapes,
+            'roi_enabled': enabled,
+        }
+
+    def _draw_roi_overlays(self, ax, roi_shapes=None, roi_enabled=None, report=False):
+        shapes = roi_shapes if roi_shapes is not None else self.roi_shapes
+        if not shapes:
+            return
+        active = self._roi_is_active(roi_enabled, shapes)
+        if not active and report:
+            return
+        for roi in shapes:
+            enabled = bool(roi.get('enabled', True))
+            if report and not enabled:
+                continue
+            edge = '#2f6db0' if enabled else '#94a3b8'
+            style = '-' if enabled else '--'
+            alpha = 0.95 if enabled else 0.55
+            cx = float(roi.get('cx', 0.0))
+            cy = float(roi.get('cy', 0.0))
+            if roi.get('type') == 'circle':
+                patch = MplCircle((cx, cy), float(roi.get('radius', 0.0)), fill=False,
+                                  edgecolor=edge, linewidth=1.8, linestyle=style, alpha=alpha)
+            else:
+                w = float(roi.get('width', 0.0))
+                h = float(roi.get('height', 0.0))
+                patch = MplRectangle((cx - w / 2.0, cy - h / 2.0), w, h, fill=False,
+                                     edgecolor=edge, linewidth=1.8, linestyle=style, alpha=alpha)
+            ax.add_patch(patch)
+
     # ================= 核心分析 =================
     def update_analysis(self):
         if self.df_raw is None: return
@@ -3181,10 +3524,38 @@ class SurfaceAnalyzerPro(QMainWindow):
             tx, ty, tz = self.get_final_transformed_data(self.df_raw)
             self._update_pipeline_label()
 
+            manual_deleted = int((~self.manual_mask).sum())
             idx = np.where(self.manual_mask)[0]
+            self.last_roi_keep_count = None
             if len(idx) < 3:
+                self.active_idx = idx
+                self.n_filtered = 0
+                self.last_metrics = None
+                self.current_coeffs = None
+                self._clear_result_labels()
                 self.statusBar().showMessage("⚠ 有效点少于 3 个，无法拟合平面。请点击[♻️ 全部重置]恢复数据。", 10000)
+                self.draw_plots(tx, ty, tz)
+                self.setup_selectors()
                 return
+
+            if self._roi_is_active():
+                roi_mask_all = self._roi_keep_mask_for_arrays(tx, ty)
+                idx = idx[roi_mask_all[idx]]
+                self.last_roi_keep_count = int(len(idx))
+                if len(idx) < 3:
+                    self.active_idx = idx
+                    self.n_filtered = 0
+                    self.last_metrics = None
+                    self.current_coeffs = None
+                    self._clear_result_labels()
+                    self.lbl_filter_info.setText(
+                        f"滤波剔除: 0 点 | 手动删除: {manual_deleted} 点 | ROI保留: {len(idx)} 点 | 参与拟合: {len(idx)} 点")
+                    self._refresh_roi_ui(update=False)
+                    self.statusBar().showMessage("⚠ ROI 内有效点少于 3 个，无法拟合平面。请调整或关闭 ROI。", 10000)
+                    self.draw_plots(tx, ty, tz)
+                    self.setup_selectors()
+                    return
+
             xb, yb, zb = tx[idx], ty[idx], tz[idx]
 
             # 1. 滤波（主界面与批量共用同一分发 filter_keep_mask）
@@ -3203,8 +3574,11 @@ class SurfaceAnalyzerPro(QMainWindow):
                 self.active_idx = idx[keep]
                 self.n_filtered = int(len(idx) - keep.sum())
 
-            self.lbl_filter_info.setText(
-                f"滤波剔除: {self.n_filtered} 点 | 手动删除: {int((~self.manual_mask).sum())} 点 | 参与拟合: {len(self.active_idx)} 点")
+            info_parts = [f"滤波剔除: {self.n_filtered} 点", f"手动删除: {manual_deleted} 点"]
+            if self._roi_is_active():
+                info_parts.append(f"ROI保留: {self.last_roi_keep_count} 点")
+            info_parts.append(f"参与拟合: {len(self.active_idx)} 点")
+            self.lbl_filter_info.setText(" | ".join(info_parts))
 
             fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
 
@@ -3226,6 +3600,7 @@ class SurfaceAnalyzerPro(QMainWindow):
             self.lbl_rx.setText(f"{rx:.2f}"); self.lbl_ry.setText(f"{ry:.2f}")
             self.draw_plots(tx, ty, tz)
             self.setup_selectors()
+            self._refresh_roi_ui(update=False)
         except Exception as e:
             self.statusBar().showMessage(f"⚠ 分析出错: {e}", 10000)
 
@@ -3269,12 +3644,16 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.canvas.set_titles(self.display_detrended)
 
         if len(dx) == 0:
+            self._draw_roi_overlays(self.canvas.ax_xy)
+            self.canvas.ax_xy.relim()
+            self.canvas.ax_xy.autoscale_view()
             self.canvas.draw()
             return
 
         sc_params = {'c': dz, 'cmap': 'turbo', 's': 14, 'alpha': 0.85, 'edgecolors': 'none'}
         self.canvas.ax3d.scatter(dx, dy, dz, **sc_params)
         self.canvas.ax_xy.scatter(dx, dy, **sc_params)
+        self._draw_roi_overlays(self.canvas.ax_xy)
         self.canvas.ax_xz.scatter(dx, dz, **sc_params)
         self.canvas.ax_yz.scatter(dy, dz, **sc_params)
 
@@ -3304,6 +3683,25 @@ class SurfaceAnalyzerPro(QMainWindow):
         if self.df_raw is None or self.active_idx is None: return
         x1, y1, x2, y2 = eclick.xdata, eclick.ydata, erelease.xdata, erelease.ydata
         if None in (x1, y1, x2, y2): return
+
+        if self.selection_mode in ('roi_rect', 'roi_circle'):
+            if view_type != 'XY':
+                self.statusBar().showMessage("ROI 只能在 XY 俯视图中框选；XZ/YZ 保留给删除点框选。", 5000)
+                return
+            cx = (x1 + x2) / 2.0
+            cy = (y1 + y2) / 2.0
+            w = abs(x2 - x1)
+            h = abs(y2 - y1)
+            if self.selection_mode == 'roi_circle':
+                r = max(w, h) / 2.0
+                if r <= 0:
+                    return
+                self._add_roi_shape({'type': 'circle', 'cx': cx, 'cy': cy, 'radius': r})
+            else:
+                if w <= 0 or h <= 0:
+                    return
+                self._add_roi_shape({'type': 'rect', 'cx': cx, 'cy': cy, 'width': w, 'height': h})
+            return
 
         tx, ty, tz = self.get_final_transformed_data(self.df_raw)
         plot_z_all, _, _ = self._get_plot_z(tx, ty, tz)
@@ -3370,7 +3768,8 @@ class SurfaceAnalyzerPro(QMainWindow):
                 filter_text += f" (σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})"
             fig = self._render_report_figure(
                 self.current_source_name, tx, ty, tz, self.active_idx, metrics,
-                self.n_filtered, pipeline_text, filter_text, self.import_info, self.display_detrended)
+                self.n_filtered, pipeline_text, filter_text, self.import_info, self.display_detrended,
+                roi_info=self._roi_report_info(tx, ty))
             fig.savefig(path, dpi=150)
             self.statusBar().showMessage(f"已导出报告图: {path}", 6000)
             QMessageBox.information(self, "导出成功", f"测量报告图已导出：\n{path}")
@@ -3400,12 +3799,14 @@ class SurfaceAnalyzerPro(QMainWindow):
                 filter_text += f" (k={self.spin_k.value()}, 局部阈值={self.spin_thresh.value()}µm, 全局兜底阈值={self.spin_thresh.value()}µm)"
             elif self.cb_filter.currentIndex() == 3:
                 filter_text += f" (σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})"
+            roi_info = self._roi_report_info(tx, ty)
             meta = [
                 f"# ===== 面型及Rxy分析工具 {self.APP_VERSION} 导出 =====",
                 f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
                 f"# 数据来源: {self.current_source_name}",
                 f"# 变换路径: {pipeline_text}",
                 f"# 滤波模式: {filter_text}",
+                f"# ROI: {roi_info['summary']}",
                 f"# 滤波剔除点数: {self.n_filtered} | 手动删除点数: {int((~self.manual_mask).sum())} | 导出点数: {len(fz)}",
                 f"# 当前显示模式: {'去倾斜残差显示(仅显示/框选)' if self.display_detrended else '原始Z高度显示'}",
                 f"# 导入方式: {self.import_info.get('strategy', '--')} | 是否抽样: {self.import_info.get('sampled', False)}",
@@ -3419,6 +3820,10 @@ class SurfaceAnalyzerPro(QMainWindow):
                     f"# Rx = {m['rx']:.2f} µrad | Ry = {m['ry']:.2f} µrad (符号约定需标准件校准)",
                     f"# PV(BF平面法向) = {m['pv']:.3f} µm | TTV(原始Z极差) = {m['ttv']:.3f} µm | 平均Z = {m['mean_z']:.5f} mm",
                 ]
+            if roi_info['shape_lines']:
+                meta.append("# ROI形状: " + "；".join(roi_info['shape_lines'][:8]))
+                if len(roi_info['shape_lines']) > 8:
+                    meta.append(f"# ROI形状: 另有 {len(roi_info['shape_lines']) - 8} 个未列出")
             meta.append("# 提示: 用 pandas.read_csv(file, comment='#') 可自动跳过本说明头")
 
             with open(path, 'w', encoding='utf-8-sig', newline='') as f:
@@ -3459,6 +3864,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             'sigma_iters': self.spin_sigma_iter.value(),
             'filter_text': filter_text,
             'display_detrended': self.display_detrended,
+            'roi_enabled': bool(self.roi_enabled),
+            'roi_shapes': [dict(r) for r in self.roi_shapes],
         }
 
     def batch_process(self):
@@ -3483,10 +3890,11 @@ class SurfaceAnalyzerPro(QMainWindow):
             f"列映射: X={p['x_col']}({p['x_unit']})  Y={p['y_col']}({p['y_unit']})  Z={p['z_col']}({p['z_unit']})\n"
             f"变换路径: {p['pipeline_text']}\n"
             f"滤波模式: {p['filter_text']}\n\n"
+            f"ROI: {self._roi_report_info(roi_enabled=p['roi_enabled'], roi_shapes=p['roi_shapes'])['summary']}\n\n"
             f"每个文件输出: result_<原文件名>.png（含主页面指标+四视图）\n"
             f"另生成: result_batch_summary.csv（指标汇总表）\n"
             f"输出目录: {outdir}\n\n"
-            f"注意: 批量仅用自动滤波，不含手动框选删点；\n请确认所有文件为同一设备、同样列格式。")
+            f"注意: 批量仅用自动滤波和当前 ROI，不含手动框选删点；\n请确认所有文件为同一设备、同样列格式。")
         if QMessageBox.question(
                 self, "确认批量处理", confirm,
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
@@ -3536,27 +3944,39 @@ class SurfaceAnalyzerPro(QMainWindow):
                     z = d['Z'].values * params['uz']
                     x, y, z = self._apply_transform_pipeline(x, y, z, params['pipeline'])
                     n_total = len(z)
+                    if self._roi_is_active(params.get('roi_enabled', False), params.get('roi_shapes', [])):
+                        roi_mask = self._roi_keep_mask_for_arrays(
+                            x, y, params.get('roi_shapes', []), params.get('roi_enabled', False))
+                        roi_idx = np.where(roi_mask)[0]
+                        if len(roi_idx) < 3:
+                            raise ValueError("ROI 内有效数据点少于 3 个")
+                    else:
+                        roi_idx = np.arange(n_total)
+                    bx, by, bz = x[roi_idx], y[roi_idx], z[roi_idx]
                     keep = self.filter_keep_mask(
-                        x, y, z, params['mode'],
+                        bx, by, bz, params['mode'],
                         k=params['k'], threshold_mm=params['threshold_mm'],
                         sigma_k=params['sigma_k'], sigma_iters=params['sigma_iters'])
                     if params['mode'] != 0 and keep.sum() < 3:
-                        keep = np.ones(n_total, dtype=bool)
+                        keep = np.ones(len(roi_idx), dtype=bool)
                         n_filtered = 0
                     else:
-                        n_filtered = int(n_total - keep.sum())
-                    active_idx = np.where(keep)[0]
+                        n_filtered = int(len(roi_idx) - keep.sum())
+                    active_idx = roi_idx[keep]
                     fx, fy, fz = x[active_idx], y[active_idx], z[active_idx]
                     metrics = self.compute_plane_metrics(fx, fy, fz)
+                    roi_info = self._roi_report_info(
+                        x, y, params.get('roi_enabled', False), params.get('roi_shapes', []))
                     fig = self._render_report_figure(
                         name, x, y, z, active_idx, metrics, n_filtered,
                         params['pipeline_text'], params['filter_text'],
-                        import_info_snap, params['display_detrended'])
+                        import_info_snap, params['display_detrended'], roi_info=roi_info)
                     out_png = out / f"result_{Path(path).stem}.png"
                     fig.savefig(str(out_png), dpi=150)
                     results.append({'status': 'ok', 'file': name, 'out': str(out_png)})
                     summary_rows.append({
                         '文件': name, '总点数': n_total, '参与拟合': int(len(active_idx)),
+                        'ROI保留': int(len(roi_idx)) if roi_info.get('enabled') else '',
                         '滤波剔除': n_filtered,
                         '平均Z_mm': round(metrics['mean_z'], 6),
                         'PV_um': round(metrics['pv'], 3), 'TTV_um': round(metrics['ttv'], 3),
@@ -3576,7 +3996,7 @@ class SurfaceAnalyzerPro(QMainWindow):
 
     def _render_report_figure(self, source_name, tx, ty, tz, active_idx, metrics,
                               n_filtered, pipeline_text, filter_text,
-                              import_info, display_detrended):
+                              import_info, display_detrended, roi_info=None):
         """生成包含主页面全部信息(指标文本 + 四视图)的报告图，返回 Figure(Agg后端)。"""
         # YaHei 同时含中文与 µ(U+00B5)，避免报告图里 µm/µrad 出现缺字方块；其余字体兜底
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
@@ -3595,6 +4015,8 @@ class SurfaceAnalyzerPro(QMainWindow):
         ax_yz = fig.add_subplot(gs[1, 2])
 
         coeffs = metrics['coeffs']
+        if roi_info is None:
+            roi_info = {'enabled': False, 'summary': '关闭', 'shape_lines': [], 'shapes': [], 'roi_enabled': False}
         # 绘图抽样（与主界面口径一致）；指标仍按全部参与拟合点
         plot_idx = active_idx
         limit = self._display_limit()
@@ -3614,6 +4036,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         ax3d.scatter(dx, dy, dz, **sc)
         ax3d.set_title(ttl3d); ax3d.set_xlabel("X (mm)"); ax3d.set_ylabel("Y (mm)"); ax3d.set_zlabel(zlab)
         m_xy = ax_xy.scatter(dx, dy, **sc); ax_xy.set_title("XY 俯视分布"); ax_xy.set_xlabel("X (mm)"); ax_xy.set_ylabel("Y (mm)")
+        self._draw_roi_overlays(ax_xy, roi_info.get('shapes'), roi_info.get('roi_enabled'), report=True)
         ax_xz.scatter(dx, dz, **sc); ax_xz.set_title(txt); ax_xz.set_xlabel("X (mm)"); ax_xz.set_ylabel(zlab)
         ax_yz.scatter(dy, dz, **sc); ax_yz.set_title(tyt); ax_yz.set_xlabel("Y (mm)"); ax_yz.set_ylabel(zlab)
         for ax in (ax_xy, ax_xz, ax_yz):
@@ -3638,10 +4061,16 @@ class SurfaceAnalyzerPro(QMainWindow):
             f"有效点数: {import_info.get('valid_rows', len(tz))} | 参与拟合: {len(active_idx)} | 滤波剔除: {n_filtered}",
             f"变换路径: {pipeline_text}",
             f"滤波模式: {filter_text}",
+            f"ROI: {roi_info.get('summary', '关闭')}",
             f"显示模式: {'去倾斜残差 (µm)' if display_detrended else '原始Z高度 (mm)'}",
         ]
+        if roi_info.get('shape_lines'):
+            roi_shape_text = "；".join(roi_info['shape_lines'][:4])
+            if len(roi_info['shape_lines']) > 4:
+                roi_shape_text += f"；另 {len(roi_info['shape_lines']) - 4} 个"
+            meta_lines.append(f"ROI形状: {self._short_report_text(roi_shape_text, 70)}")
         ax_meta.text(0.02, 0.98, "\n".join(meta_lines), va='top', ha='left',
-                     fontsize=10.5, linespacing=1.7, color='#34495e', transform=ax_meta.transAxes)
+                     fontsize=10.0, linespacing=1.55, color='#34495e', transform=ax_meta.transAxes)
 
         # 中部：关键结果卡片（大字号 + 高亮底色，手机上一眼可读）
         results_text = (
