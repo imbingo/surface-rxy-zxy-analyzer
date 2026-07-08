@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-面型及Rxy分析工具 V3.8.6
+面型及Rxy分析工具 V3.9.0
 基于 V1 的修复与增强：
   [优化] V3.7.0 (UI优化·方案A): 整理版左栏 + 顶部结果读数条。仅重排界面，不改动任何算法。
          · 结果指标(平均厚度Z/PV/TTV/Rx/Ry+平面方程)上提为绘图区上方常驻读数条，随分析实时刷新。
@@ -60,6 +60,8 @@
   [增强] V3.8.4: 主控分析新增 XY ROI 区域功能，支持矩形/圆形 ROI，支持鼠标框选与坐标输入，并写入 Recipe/报告。
   [优化] V3.8.5: ROI 面板简化为连续框选 + 折叠精确输入，XY 图保留全图背景；左栏禁用横向滚动并阻止滚轮误改数值。
   [修复] V3.8.6: 下拉框不再被鼠标滚轮误切换；ROI 状态摘要去掉重复的 ROI 列表小字。
+  [增强] V3.9.0: 迁移 VR 工具核心功能，新增基恩士/VR 高度矩阵导入与智能抓面 ROI；
+         智能抓面同时支持高度矩阵与 XYZ 点云，并在平行度分析中输出 VR 口径台阶高度差。
 注意：Rx/Ry 符号约定 (Rx≈+dZ/dY, Ry≈-dZ/dX) 需用已知倾角标准件实测校准一次。
 """
 import sys
@@ -68,6 +70,7 @@ import re
 import mmap
 import json
 import tempfile
+from collections import deque
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
@@ -88,6 +91,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QSizeGrip)
 from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
+from scipy import ndimage
 from scipy.spatial import cKDTree
 
 
@@ -350,7 +354,7 @@ class GapMatchCanvas(FigureCanvas):
 
 
 class SurfaceAnalyzerPro(QMainWindow):
-    APP_VERSION = "V3.8.6"
+    APP_VERSION = "V3.9.0"
     DISPLAY_POINT_LIMIT = 80000
     LARGE_TEXT_FILE_BYTES = 512 * 1024 * 1024
     LARGE_TEXT_IMPORT_LIMIT = 500000
@@ -410,10 +414,14 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.large_file_mode = 'standard'  # 大文件策略模式：fast / standard / precise / custom
         self.large_file_sample_method = 'spatial_grid'  # V3.8.3 默认：空间网格均匀采样
         self.large_text_grid_count = 0     # 0=自动；>0 为用户指定的 X/Y 单边网格数
+        self.large_text_stride_n = 10      # 倍率降采样：每 N 行/像素取 1 个
+        self.height_matrix_pitch_x_um = 47.242
+        self.height_matrix_pitch_y_um = 47.242
+        self.height_matrix_z_unit = "µm"
         self.roi_enabled = False           # V3.8.4+: XY ROI 保留区域开关
         self.roi_shapes = []               # list[dict]，当前物料坐标系 X/Y(mm)
         self.roi_next_id = 1
-        self.selection_mode = 'delete'     # delete / roi_rect / roi_circle
+        self.selection_mode = 'delete'     # delete / roi_rect / roi_circle / roi_smart
         self.last_roi_keep_count = None
         self.import_info = {               # 导入状态：用于UI与导出元数据
             'file_size_bytes': 0,
@@ -425,6 +433,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             'large_file_mode': self._bigfile_mode_label(),
             'sample_method': self._sample_method_label(),
             'grid_count': self.large_text_grid_count,
+            'stride_n': self.large_text_stride_n,
+            'height_matrix': False,
             'notes': ''
         }
         # V3.5.1: 大文件策略不再占用左侧UI，改为右侧工具条按钮弹窗设置
@@ -672,6 +682,8 @@ class SurfaceAnalyzerPro(QMainWindow):
         right_layout.addWidget(self._build_results_strip())
 
         self.canvas = MultiViewCanvas(self)
+        self._xy_click_cid = self.canvas.ax_xy.figure.canvas.mpl_connect(
+            'button_press_event', self.on_canvas_click)
         right_layout.addWidget(self.canvas, 1)
 
         self.right_stack = QStackedWidget()
@@ -1049,7 +1061,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         rg.setColumnStretch(1, 1)
 
         self.cb_roi_shape = NoWheelComboBox()
-        self.cb_roi_shape.addItems(["矩形 ROI", "圆形 ROI"])
+        self.cb_roi_shape.addItems(["矩形 ROI", "圆形 ROI", "智能抓面"])
         self.cb_roi_shape.currentIndexChanged.connect(self._sync_roi_input_state)
         rg.addWidget(QLabel("形状:"), 1, 0)
         rg.addWidget(self.cb_roi_shape, 1, 1)
@@ -1096,22 +1108,40 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.spin_roi_cx = NoWheelDoubleSpinBox(); self.spin_roi_cy = NoWheelDoubleSpinBox()
         self.spin_roi_w = NoWheelDoubleSpinBox(); self.spin_roi_h = NoWheelDoubleSpinBox()
         self.spin_roi_r = NoWheelDoubleSpinBox()
+        self.spin_smart_tol = NoWheelDoubleSpinBox()
+        self.spin_smart_dilate = NoWheelSpinBox()
+        self.spin_smart_erode = NoWheelSpinBox()
         for sp in (self.spin_roi_cx, self.spin_roi_cy):
             sp.setDecimals(4); sp.setRange(-1e9, 1e9); sp.setSingleStep(0.1)
         for sp in (self.spin_roi_w, self.spin_roi_h, self.spin_roi_r):
             sp.setDecimals(4); sp.setRange(0.0001, 1e9); sp.setSingleStep(0.1); sp.setValue(1.0)
+        self.spin_smart_tol.setDecimals(4)
+        self.spin_smart_tol.setRange(0.0001, 1000.0)
+        self.spin_smart_tol.setSingleStep(0.01)
+        self.spin_smart_tol.setValue(0.2)
+        self.spin_smart_tol.setToolTip("智能抓面按 |Z-种子点Z| <= 容差 先筛选候选点，单位 mm。")
+        for sp in (self.spin_smart_dilate, self.spin_smart_erode):
+            sp.setRange(0, 20)
+            sp.setValue(0)
+            sp.setToolTip("对智能抓面结果做连通邻域修边；0 表示不处理。")
         adv.addWidget(QLabel("中心X:"), 0, 0); adv.addWidget(self.spin_roi_cx, 0, 1)
         adv.addWidget(QLabel("中心Y:"), 1, 0); adv.addWidget(self.spin_roi_cy, 1, 1)
         self.lbl_roi_w = QLabel("宽度:")
         self.lbl_roi_h = QLabel("高度:")
         self.lbl_roi_r = QLabel("半径:")
+        self.lbl_smart_tol = QLabel("抓面容差:")
+        self.lbl_smart_dilate = QLabel("抓面膨胀:")
+        self.lbl_smart_erode = QLabel("抓面收缩:")
         adv.addWidget(self.lbl_roi_w, 2, 0); adv.addWidget(self.spin_roi_w, 2, 1)
         adv.addWidget(self.lbl_roi_h, 3, 0); adv.addWidget(self.spin_roi_h, 3, 1)
         adv.addWidget(self.lbl_roi_r, 4, 0); adv.addWidget(self.spin_roi_r, 4, 1)
+        adv.addWidget(self.lbl_smart_tol, 5, 0); adv.addWidget(self.spin_smart_tol, 5, 1)
+        adv.addWidget(self.lbl_smart_dilate, 6, 0); adv.addWidget(self.spin_smart_dilate, 6, 1)
+        adv.addWidget(self.lbl_smart_erode, 7, 0); adv.addWidget(self.spin_smart_erode, 7, 1)
         self.btn_roi_add_input = QPushButton("添加输入ROI")
         self.btn_roi_add_input.setObjectName("accentSoftBtn")
         self.btn_roi_add_input.clicked.connect(self.add_roi_from_inputs)
-        adv.addWidget(self.btn_roi_add_input, 5, 0, 1, 2)
+        adv.addWidget(self.btn_roi_add_input, 8, 0, 1, 2)
         rg.addWidget(self.roi_advanced_widget, 7, 0, 1, 2)
         ll.addWidget(roi_group)
         self._sync_roi_input_state()
@@ -1321,6 +1351,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         for text in (
             "不做对应点相减；两个文件可为空间上不重叠的区域。",
             "分别拟合 Z = aX + bY + c，再计算 ΔRx / ΔRy = 测量面 - 基准面。",
+            "台阶高度差按 VR 口径：在两面质心中点处分别代入拟合平面求 Z 后相减。",
             "大文件抽样沿用顶部“大文件策略”；平行度页不单独改变导入方式。"):
             lab = QLabel(text)
             lab.setObjectName("mutedNote")
@@ -1412,10 +1443,12 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.lbl_par_drx = QLabel("--")
         self.lbl_par_dry = QLabel("--")
         self.lbl_par_angle = QLabel("--")
+        self.lbl_par_step = QLabel("--")
         self.lbl_par_state = QLabel("待计算")
         sl.addWidget(self._make_value_card("平行度 ΔRx (µrad)", self.lbl_par_drx, accent=True), 1)
         sl.addWidget(self._make_value_card("平行度 ΔRy (µrad)", self.lbl_par_dry, accent=True), 1)
         sl.addWidget(self._make_value_card("合成夹角 (µrad)", self.lbl_par_angle), 1)
+        sl.addWidget(self._make_value_card("台阶高度差 (mm)", self.lbl_par_step), 1)
         sl.addWidget(self._make_value_card("状态", self.lbl_par_state), 1)
         outer.addWidget(strip)
 
@@ -1551,7 +1584,19 @@ class SurfaceAnalyzerPro(QMainWindow):
         b, m = self.parallel_base['metrics'], self.parallel_measure['metrics']
         drx = m['rx'] - b['rx']
         dry = m['ry'] - b['ry']
-        return {'drx': float(drx), 'dry': float(dry), 'angle': float(np.hypot(drx, dry))}
+        ref_x = (float(np.mean(self.parallel_base['x'])) + float(np.mean(self.parallel_measure['x']))) / 2.0
+        ref_y = (float(np.mean(self.parallel_base['y'])) + float(np.mean(self.parallel_measure['y']))) / 2.0
+        z_base = b['a'] * ref_x + b['b'] * ref_y + b['c']
+        z_measure = m['a'] * ref_x + m['b'] * ref_y + m['c']
+        step_height = z_measure - z_base
+        return {
+            'drx': float(drx),
+            'dry': float(dry),
+            'angle': float(np.hypot(drx, dry)),
+            'step_height': float(step_height),
+            'ref_x': float(ref_x),
+            'ref_y': float(ref_y),
+        }
 
     def calculate_parallelism(self):
         if self.parallel_base is None or self.parallel_measure is None:
@@ -1590,11 +1635,13 @@ class SurfaceAnalyzerPro(QMainWindow):
             self.lbl_par_drx.setText(f"{self.parallel_result['drx']:.2f}")
             self.lbl_par_dry.setText(f"{self.parallel_result['dry']:.2f}")
             self.lbl_par_angle.setText(f"{self.parallel_result['angle']:.2f}")
+            self.lbl_par_step.setText(f"{self.parallel_result['step_height']:.5f}")
             self.lbl_par_state.setText("已计算")
         else:
             self.lbl_par_drx.setText("--")
             self.lbl_par_dry.setText("--")
             self.lbl_par_angle.setText("--")
+            self.lbl_par_step.setText("--")
             self.lbl_par_state.setText("待计算")
 
         if b:
@@ -1616,6 +1663,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             f"ΔRx = {self.parallel_result['drx']:.2f} µrad",
             f"ΔRy = {self.parallel_result['dry']:.2f} µrad",
             f"合成夹角 = {self.parallel_result['angle']:.2f} µrad",
+            f"台阶高度差 = {self.parallel_result['step_height']:.5f} mm "
+            f"(参考点 X={self.parallel_result['ref_x']:.5f}, Y={self.parallel_result['ref_y']:.5f})",
         ]
         for label, rec in (("基准面", self.parallel_base), ("测量面", self.parallel_measure)):
             mm = rec['metrics']
@@ -1646,6 +1695,9 @@ class SurfaceAnalyzerPro(QMainWindow):
                 {'metric': 'Rx_urad', 'base': b['rx'], 'measure': m['rx'], 'delta': self.parallel_result['drx']},
                 {'metric': 'Ry_urad', 'base': b['ry'], 'measure': m['ry'], 'delta': self.parallel_result['dry']},
                 {'metric': 'Angle_urad', 'base': '', 'measure': '', 'delta': self.parallel_result['angle']},
+                {'metric': 'Step_Height_mm', 'base': '', 'measure': '', 'delta': self.parallel_result['step_height']},
+                {'metric': 'Step_Reference_X_mm', 'base': '', 'measure': '', 'delta': self.parallel_result['ref_x']},
+                {'metric': 'Step_Reference_Y_mm', 'base': '', 'measure': '', 'delta': self.parallel_result['ref_y']},
                 {'metric': 'RMS_um', 'base': b['rms'], 'measure': m['rms'], 'delta': ''},
                 {'metric': 'PV_um', 'base': b['pv'], 'measure': m['pv'], 'delta': ''},
                 {'metric': 'TTV_um', 'base': b['ttv'], 'measure': m['ttv'], 'delta': ''},
@@ -1657,6 +1709,7 @@ class SurfaceAnalyzerPro(QMainWindow):
                 f.write(f"# 基准面: {self.parallel_base['name']} | 点数: {self.parallel_base['n']}\n")
                 f.write(f"# 测量面: {self.parallel_measure['name']} | 点数: {self.parallel_measure['n']}\n")
                 f.write("# 口径: 不做对应点相减；分别拟合平面后计算 测量面 - 基准面 的 Rx/Ry 差值。\n")
+                f.write("# 台阶高度差: 在两面质心中点处分别代入拟合平面求Z后相减。\n")
                 pd.DataFrame(rows).to_csv(f, index=False)
             self.statusBar().showMessage(f"平行度CSV已导出: {path}", 5000)
         except Exception as e:
@@ -1797,10 +1850,11 @@ class SurfaceAnalyzerPro(QMainWindow):
             ("ΔRx", f"{r['drx']:.2f}", "µrad"),
             ("ΔRy", f"{r['dry']:.2f}", "µrad"),
             ("合成夹角", f"{r['angle']:.2f}", "µrad"),
+            ("台阶高度差", f"{r['step_height']:.5f}", "mm"),
         ]
-        y0 = 0.61
+        y0 = 0.62
         for i, (name, value, unit) in enumerate(result_rows):
-            y = y0 - i * 0.23
+            y = y0 - i * 0.18
             ax_result.text(0.04, y, name, va='center', ha='left',
                            fontsize=10.2, color='#64748b', transform=ax_result.transAxes, zorder=2)
             ax_result.text(0.40, y, value, va='center', ha='right',
@@ -1849,6 +1903,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         note = (
             "不做对应点相减；两个文件可为空间不重叠区域。\n"
             "分别拟合 Z = aX + bY + c，再计算测量面 - 基准面的 Rx/Ry 差值。\n"
+            f"台阶高度差在两面质心中点处计算，参考点 X={r['ref_x']:.5f}, Y={r['ref_y']:.5f}。\n"
             "Rx/Ry 符号约定需用标准件校准。"
         )
         ax_note.text(0.02, 0.76, note, va='top', ha='left',
@@ -1910,9 +1965,13 @@ class SurfaceAnalyzerPro(QMainWindow):
                 'auto_sample': bool(self.auto_sample_large_text),
                 'sample_method': str(self.large_file_sample_method),
                 'grid_count': int(self.large_text_grid_count),
+                'stride_n': int(self.large_text_stride_n),
                 'threshold_mb': int(self.large_text_threshold_mb),
                 'import_limit': int(self.large_text_import_limit),
-                'display_limit': int(self.display_point_limit)
+                'display_limit': int(self.display_point_limit),
+                'matrix_pitch_x_um': float(self.height_matrix_pitch_x_um),
+                'matrix_pitch_y_um': float(self.height_matrix_pitch_y_um),
+                'matrix_z_unit': str(self.height_matrix_z_unit),
             },
             'gap': {'tolerance_mm': float(self.spin_tol.value()) if hasattr(self, 'spin_tol') else 0.05},
         }
@@ -1973,16 +2032,24 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.large_file_mode = str(lf.get('mode', self.large_file_mode))
         self.auto_sample_large_text = bool(lf.get('auto_sample', self.auto_sample_large_text))
         self.large_file_sample_method = str(lf.get('sample_method', self.large_file_sample_method))
-        if self.large_file_sample_method not in ('spatial_grid', 'file_position'):
+        if self.large_file_sample_method not in ('spatial_grid', 'file_position', 'stride'):
             self.large_file_sample_method = 'spatial_grid'
         self.large_text_grid_count = int(lf.get('grid_count', self.large_text_grid_count))
+        self.large_text_stride_n = int(lf.get('stride_n', self.large_text_stride_n))
         self.large_text_threshold_mb = int(lf.get('threshold_mb', self.large_text_threshold_mb))
         self.large_text_import_limit = int(lf.get('import_limit', self.large_text_import_limit))
         self.display_point_limit = int(lf.get('display_limit', self.display_point_limit))
+        self.height_matrix_pitch_x_um = float(lf.get('matrix_pitch_x_um', self.height_matrix_pitch_x_um))
+        self.height_matrix_pitch_y_um = float(lf.get('matrix_pitch_y_um', self.height_matrix_pitch_y_um))
+        self.height_matrix_z_unit = self._normalize_unit_label(lf.get('matrix_z_unit', self.height_matrix_z_unit), self.height_matrix_z_unit)
         self.large_file_mode = self._matching_bigfile_mode()
         self.import_info['display_limit'] = self.display_point_limit
         self.import_info['sample_method'] = self._sample_method_label()
         self.import_info['grid_count'] = self.large_text_grid_count
+        self.import_info['stride_n'] = self.large_text_stride_n
+        self.import_info['matrix_pitch_x_um'] = self.height_matrix_pitch_x_um
+        self.import_info['matrix_pitch_y_um'] = self.height_matrix_pitch_y_um
+        self.import_info['matrix_z_unit'] = self.height_matrix_z_unit
         gap = recipe.get('gap', {}) or {}
         if hasattr(self, 'spin_tol'):
             self.spin_tol.setValue(float(gap.get('tolerance_mm', self.spin_tol.value())))
@@ -2406,7 +2473,11 @@ class SurfaceAnalyzerPro(QMainWindow):
 
     def _sample_method_label(self, method=None):
         method = method or getattr(self, 'large_file_sample_method', 'spatial_grid')
-        return '空间网格均匀采样' if method == 'spatial_grid' else '文件位置均匀采样'
+        if method == 'spatial_grid':
+            return '空间网格均匀采样'
+        if method == 'stride':
+            return '倍率降采样'
+        return '文件位置均匀采样'
 
     def _grid_count_label(self, grid_count=None):
         grid = int(self.large_text_grid_count if grid_count is None else grid_count)
@@ -2456,6 +2527,11 @@ class SurfaceAnalyzerPro(QMainWindow):
             'large_file_mode': self._bigfile_mode_label(),
             'sample_method': self._sample_method_label(),
             'grid_count': self.large_text_grid_count,
+            'stride_n': self.large_text_stride_n,
+            'height_matrix': False,
+            'matrix_pitch_x_um': self.height_matrix_pitch_x_um,
+            'matrix_pitch_y_um': self.height_matrix_pitch_y_um,
+            'matrix_z_unit': self.height_matrix_z_unit,
             'notes': ''
         }
 
@@ -2482,6 +2558,7 @@ class SurfaceAnalyzerPro(QMainWindow):
                    f"自动抽样: {'开启' if self.auto_sample_large_text else '关闭'}\n"
                    f"采样方式: {self._sample_method_label()}\n"
                    f"空间网格数: {self._grid_count_label()}\n"
+                   f"倍率降采样N: {self.large_text_stride_n}\n"
                    f"触发阈值: {self.large_text_threshold_mb} MB\n"
                    f"导入上限: {self.large_text_import_limit:,} 行\n"
                    f"显示上限: {self.display_point_limit:,} 点\n\n{text}")
@@ -2531,9 +2608,10 @@ class SurfaceAnalyzerPro(QMainWindow):
         cb_sample_method = NoWheelComboBox()
         cb_sample_method.addItem("空间网格均匀采样", "spatial_grid")
         cb_sample_method.addItem("文件位置均匀采样", "file_position")
+        cb_sample_method.addItem("倍率降采样", "stride")
         sample_idx = cb_sample_method.findData(getattr(self, 'large_file_sample_method', 'spatial_grid'))
         cb_sample_method.setCurrentIndex(sample_idx if sample_idx >= 0 else 0)
-        cb_sample_method.setToolTip("空间网格采样按 X/Y 分格，每格保留代表点、Z最小点和Z最大点；文件位置采样为旧版按文件顺序抽行。")
+        cb_sample_method.setToolTip("空间网格采样按 X/Y 分格，每格保留代表点、Z最小点和Z最大点；文件位置采样按文件顺序抽行；倍率降采样按每N行/像素取1个点。")
         grid.addWidget(cb_sample_method, 3, 1)
 
         grid.addWidget(QLabel("空间网格数:"), 4, 0)
@@ -2545,28 +2623,59 @@ class SurfaceAnalyzerPro(QMainWindow):
         spin_grid.setToolTip("0=自动按导入上限计算；自定义时表示 X/Y 单边网格数，例如 300 表示 300×300。每格最多保留3个点。")
         grid.addWidget(spin_grid, 4, 1)
 
-        grid.addWidget(QLabel("触发阈值(MB):"), 5, 0)
+        grid.addWidget(QLabel("倍率降采样N:"), 5, 0)
+        spin_stride = NoWheelSpinBox()
+        spin_stride.setRange(1, 1000000)
+        spin_stride.setSingleStep(1)
+        spin_stride.setValue(int(getattr(self, 'large_text_stride_n', 10)))
+        spin_stride.setToolTip("倍率降采样：N=10 表示每10行/每10个像素取1个点。速度快，但可能丢失局部极值。")
+        grid.addWidget(spin_stride, 5, 1)
+
+        grid.addWidget(QLabel("触发阈值(MB):"), 6, 0)
         spin_mb = NoWheelSpinBox()
         spin_mb.setRange(1, 4096)
         spin_mb.setValue(int(self.large_text_threshold_mb))
         spin_mb.setToolTip("文件大小达到该阈值时触发预抽样导入。默认512MB。")
-        grid.addWidget(spin_mb, 5, 1)
+        grid.addWidget(spin_mb, 6, 1)
 
-        grid.addWidget(QLabel("导入上限(行):"), 6, 0)
+        grid.addWidget(QLabel("导入上限(行):"), 7, 0)
         spin_import = NoWheelSpinBox()
         spin_import.setRange(10000, 5000000)
         spin_import.setSingleStep(50000)
         spin_import.setValue(int(self.large_text_import_limit))
         spin_import.setToolTip("超大文本预抽样最多导入的行数。注意：该上限影响后续拟合/滤波指标。")
-        grid.addWidget(spin_import, 6, 1)
+        grid.addWidget(spin_import, 7, 1)
 
-        grid.addWidget(QLabel("显示上限(点):"), 7, 0)
+        grid.addWidget(QLabel("显示上限(点):"), 8, 0)
         spin_display = NoWheelSpinBox()
         spin_display.setRange(5000, 1000000)
         spin_display.setSingleStep(5000)
         spin_display.setValue(int(self.display_point_limit))
         spin_display.setToolTip("仅限制右侧绘图显示点数，不改变已导入数据和Rx/Ry/PV/TTV计算。")
-        grid.addWidget(spin_display, 7, 1)
+        grid.addWidget(spin_display, 8, 1)
+
+        grid.addWidget(QLabel("矩阵Pitch X(µm):"), 9, 0)
+        spin_pitch_x = NoWheelDoubleSpinBox()
+        spin_pitch_x.setDecimals(4)
+        spin_pitch_x.setRange(0.0001, 1e6)
+        spin_pitch_x.setValue(float(self.height_matrix_pitch_x_um))
+        spin_pitch_x.setToolTip("VR/基恩士高度矩阵无表头或表头未写 Pitch 时，用该 X 像素间距生成 X(mm)。")
+        grid.addWidget(spin_pitch_x, 9, 1)
+
+        grid.addWidget(QLabel("矩阵Pitch Y(µm):"), 10, 0)
+        spin_pitch_y = NoWheelDoubleSpinBox()
+        spin_pitch_y.setDecimals(4)
+        spin_pitch_y.setRange(0.0001, 1e6)
+        spin_pitch_y.setValue(float(self.height_matrix_pitch_y_um))
+        spin_pitch_y.setToolTip("VR/基恩士高度矩阵无表头或表头未写 Pitch 时，用该 Y 像素间距生成 Y(mm)。")
+        grid.addWidget(spin_pitch_y, 10, 1)
+
+        grid.addWidget(QLabel("矩阵Z默认单位:"), 11, 0)
+        cb_matrix_z_unit = NoWheelComboBox()
+        cb_matrix_z_unit.addItems(["µm", "mm"])
+        cb_matrix_z_unit.setCurrentText(self.height_matrix_z_unit)
+        cb_matrix_z_unit.setToolTip("高度矩阵表头未写 Z Unit 时使用；若表头写明 um/mm，会优先采用表头。")
+        grid.addWidget(cb_matrix_z_unit, 11, 1)
 
         applying_preset = {'active': False}
 
@@ -2605,21 +2714,23 @@ class SurfaceAnalyzerPro(QMainWindow):
 
         def update_grid_enabled(*_args):
             spin_grid.setEnabled(cb_sample_method.currentData() == 'spatial_grid')
+            spin_stride.setEnabled(cb_sample_method.currentData() == 'stride')
             sync_mode_from_values()
 
         cb_mode.currentIndexChanged.connect(apply_preset_from_combo)
         chk_auto.toggled.connect(sync_mode_from_values)
         cb_sample_method.currentIndexChanged.connect(update_grid_enabled)
         spin_grid.valueChanged.connect(sync_mode_from_values)
+        spin_stride.valueChanged.connect(sync_mode_from_values)
         spin_mb.valueChanged.connect(sync_mode_from_values)
         spin_import.valueChanged.connect(sync_mode_from_values)
         spin_display.valueChanged.connect(sync_mode_from_values)
         update_grid_enabled()
 
-        note = QLabel("说明：空间网格采样会先扫描全文件确定 X/Y 范围，再按网格保留代表点、Z最小点和Z最大点；导入抽样会影响参与分析的数据量，显示上限只影响绘图。")
+        note = QLabel("说明：空间网格采样会先扫描全文件确定 X/Y 范围，再按网格保留代表点、Z最小点和Z最大点；倍率降采样速度最快但可能丢失极值；导入抽样会影响参与分析的数据量，显示上限只影响绘图。")
         note.setWordWrap(True)
         note.setStyleSheet("color: #7f8c8d; font-size: 11px;")
-        grid.addWidget(note, 8, 0, 1, 2)
+        grid.addWidget(note, 12, 0, 1, 2)
         layout.addWidget(group)
 
         status = QLabel(self.lbl_import_status.text() if hasattr(self, 'lbl_import_status') else "导入状态: --")
@@ -2637,14 +2748,22 @@ class SurfaceAnalyzerPro(QMainWindow):
             self.auto_sample_large_text = chk_auto.isChecked()
             self.large_file_sample_method = str(cb_sample_method.currentData())
             self.large_text_grid_count = int(spin_grid.value())
+            self.large_text_stride_n = int(spin_stride.value())
             self.large_text_threshold_mb = int(spin_mb.value())
             self.large_text_import_limit = int(spin_import.value())
             self.display_point_limit = int(spin_display.value())
+            self.height_matrix_pitch_x_um = float(spin_pitch_x.value())
+            self.height_matrix_pitch_y_um = float(spin_pitch_y.value())
+            self.height_matrix_z_unit = str(cb_matrix_z_unit.currentText())
             self.large_file_mode = self._matching_bigfile_mode()
             self.import_info['display_limit'] = self.display_point_limit
             self.import_info['large_file_mode'] = self._bigfile_mode_label()
             self.import_info['sample_method'] = self._sample_method_label()
             self.import_info['grid_count'] = self.large_text_grid_count
+            self.import_info['stride_n'] = self.large_text_stride_n
+            self.import_info['matrix_pitch_x_um'] = self.height_matrix_pitch_x_um
+            self.import_info['matrix_pitch_y_um'] = self.height_matrix_pitch_y_um
+            self.import_info['matrix_z_unit'] = self.height_matrix_z_unit
             self._update_import_status_label()
             if old_display_limit != self.display_point_limit and self.df_raw is not None and self.active_idx is not None:
                 self.update_plots_only()
@@ -2736,6 +2855,375 @@ class SurfaceAnalyzerPro(QMainWindow):
                 last_sep = sep
         return None
 
+    @staticmethod
+    def _normalize_unit_label(text, default_unit="µm"):
+        raw = str(text or "").strip().lower().replace("μ", "µ")
+        if raw in ("mm", "millimeter", "millimeters"):
+            return "mm"
+        if raw in ("um", "µm", "micron", "microns"):
+            return "µm"
+        return default_unit
+
+    def _height_matrix_header_meta(self, path, enc, data_line_no):
+        pitch_x = float(getattr(self, 'height_matrix_pitch_x_um', 47.242))
+        pitch_y = float(getattr(self, 'height_matrix_pitch_y_um', 47.242))
+        z_unit = str(getattr(self, 'height_matrix_z_unit', "µm"))
+        header_lines = []
+        try:
+            with open(path, 'r', encoding=enc, errors='ignore') as fh:
+                for i, line in enumerate(fh):
+                    if i >= data_line_no:
+                        break
+                    header_lines.append(line.strip())
+        except Exception:
+            return pitch_x, pitch_y, z_unit, "默认"
+
+        meta_source = "默认"
+        for line in header_lines:
+            lowered = line.lower().replace("μ", "µ")
+            parts = re.split(r'[,;\t]+', line)
+            numeric_values = re.findall(r'[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?', line)
+            value = float(numeric_values[-1]) if numeric_values else None
+            if value is not None and "pitch" in lowered and "x" in lowered:
+                pitch_x = value
+                meta_source = "表头"
+            elif value is not None and "pitch" in lowered and "y" in lowered:
+                pitch_y = value
+                meta_source = "表头"
+            if ("z unit" in lowered or ("z" in lowered and "unit" in lowered)) and len(parts) >= 2:
+                z_unit = self._normalize_unit_label(parts[-1], z_unit)
+                meta_source = "表头"
+        return pitch_x, pitch_y, z_unit, meta_source
+
+    def _looks_like_height_matrix_layout(self, path, enc, layout):
+        """判断文本数据是否为二维高度矩阵，而不是普通 XYZ 表格。"""
+        if not layout or int(layout.get('ncols', 0)) < 8:
+            return False
+        header = [str(x).strip().lower() for x in (layout.get('header_tokens') or [])]
+        if header:
+            cleaned = {re.sub(r'[^a-z0-9]+', '', h) for h in header[:8]}
+            if {'x', 'y', 'z'}.issubset(cleaned) or any(h.startswith('x') for h in cleaned):
+                return False
+
+        target_cols = int(layout['ncols'])
+        good_rows = 0
+        scanned = 0
+        try:
+            with open(path, 'r', encoding=enc, errors='ignore') as fh:
+                for line_no, line in enumerate(fh):
+                    if line_no < int(layout['data_line_no']):
+                        continue
+                    stripped = line.strip().lstrip('\ufeff')
+                    if not stripped:
+                        continue
+                    tokens = self._split_text_line(stripped, layout['sep'])
+                    scanned += 1
+                    if len(tokens) == target_cols and self._looks_like_numeric_text_row(tokens):
+                        good_rows += 1
+                    if scanned >= 16:
+                        break
+        except Exception:
+            return False
+        return good_rows >= 4
+
+    def _height_matrix_dataframe(self, z_values, rows_count, cols_count, pitch_x_um, pitch_y_um):
+        arr = np.asarray(z_values, dtype=float)
+        arr[arr < -999] = np.nan
+        valid = np.isfinite(arr)
+        if not np.any(valid):
+            raise ValueError("高度矩阵未识别到有效 Z 数据。")
+        rr, cc = np.nonzero(valid)
+        pitch_x_mm = float(pitch_x_um) / 1000.0
+        pitch_y_mm = float(pitch_y_um) / 1000.0
+        return pd.DataFrame({
+            'X': cc.astype(float) * pitch_x_mm,
+            'Y': (float(rows_count - 1) - rr.astype(float)) * pitch_y_mm,
+            'Z': arr[rr, cc],
+            '_matrix_row': rr.astype(int),
+            '_matrix_col': cc.astype(int),
+        })
+
+    def _sample_large_height_matrix_by_stride(self, path, enc, sep, ncols, data_line_no,
+                                              pitch_x_um, pitch_y_um, z_unit, meta_source):
+        file_size = Path(path).stat().st_size
+        stride = max(1, int(getattr(self, 'large_text_stride_n', 10)))
+        max_rows = self._large_text_import_limit()
+
+        def parse_matrix_line(line):
+            stripped = line.strip().lstrip('\ufeff')
+            if not stripped:
+                return None
+            tokens = self._split_text_line(stripped, sep)
+            if len(tokens) < ncols or not self._looks_like_numeric_text_row(tokens[:ncols]):
+                return None
+            values = np.array([self._token_to_float(t) for t in tokens[:ncols]], dtype=float)
+            values[values < -999] = np.nan
+            return values
+
+        row_count = 0
+        valid_points = 0
+        with open(path, 'r', encoding=enc, errors='ignore') as fh:
+            for line_no, line in enumerate(fh):
+                if line_no < data_line_no:
+                    continue
+                values = parse_matrix_line(line)
+                if values is None:
+                    continue
+                row_count += 1
+                valid_points += int(np.isfinite(values).sum())
+                if row_count % 1000 == 0:
+                    self.statusBar().showMessage(
+                        f"高度矩阵倍率预扫描: {row_count:,} 行 | 有效 {valid_points:,} 点", 1000)
+                    QApplication.processEvents()
+
+        if row_count == 0 or valid_points == 0:
+            raise ValueError("高度矩阵倍率降采样未识别到有效数据。")
+
+        pitch_x_mm = float(pitch_x_um) / 1000.0
+        pitch_y_mm = float(pitch_y_um) / 1000.0
+        rows = []
+        matrix_row = 0
+        z_min = np.inf
+        z_max = -np.inf
+        with open(path, 'r', encoding=enc, errors='ignore') as fh:
+            for line_no, line in enumerate(fh):
+                if line_no < data_line_no:
+                    continue
+                values = parse_matrix_line(line)
+                if values is None:
+                    continue
+                if matrix_row % stride == 0:
+                    for col_idx in range(0, ncols, stride):
+                        z = float(values[col_idx])
+                        if not np.isfinite(z):
+                            continue
+                        x = float(col_idx) * pitch_x_mm
+                        y = float(row_count - 1 - matrix_row) * pitch_y_mm
+                        rows.append([x, y, z, int(matrix_row), int(col_idx)])
+                        z_min = min(z_min, z)
+                        z_max = max(z_max, z)
+                        if len(rows) >= max_rows:
+                            break
+                matrix_row += 1
+                if len(rows) >= max_rows:
+                    break
+                if matrix_row % 1000 == 0:
+                    self.statusBar().showMessage(
+                        f"高度矩阵倍率降采样: {matrix_row:,}/{row_count:,} 行 | 已取 {len(rows):,} 点 | N={stride}", 1000)
+                    QApplication.processEvents()
+
+        if not rows:
+            raise ValueError("高度矩阵倍率降采样未得到有效点，请调小降采样倍率 N。")
+
+        df = pd.DataFrame(rows, columns=['X', 'Y', 'Z', '_matrix_row', '_matrix_col'])
+        self.last_import_note = (
+            f"VR/基恩士高度矩阵已按倍率降采样导入。\n"
+            f"文件大小: {file_size / (1024 * 1024):.1f} MB | 矩阵尺寸: {row_count:,} × {ncols:,}\n"
+            f"降采样倍率: N={stride}（行列每 {stride} 个像素取 1 点）\n"
+            f"Pitch: X={pitch_x_um:g}µm, Y={pitch_y_um:g}µm（{meta_source}）| Z单位: {z_unit}\n"
+            f"有效点: {valid_points:,} | 实际导入: {len(df):,} 点 | Z范围(采样后): {z_min:.6g} ~ {z_max:.6g}\n"
+            f"注意: 倍率降采样不保留每格 Z min/max，PV/TTV 可能低估；最终复核建议使用空间网格采样。"
+        )
+        self.import_info.update({
+            'strategy': '高度矩阵倍率降采样导入',
+            'sampled': True,
+            'height_matrix': True,
+            'import_rows': len(df),
+            'source_valid_rows': valid_points,
+            'matrix_rows': row_count,
+            'matrix_cols': ncols,
+            'matrix_pitch_x_um': float(pitch_x_um),
+            'matrix_pitch_y_um': float(pitch_y_um),
+            'matrix_z_unit': z_unit,
+            'large_file_mode': self._bigfile_mode_label(),
+            'sample_method': self._sample_method_label('stride'),
+            'stride_n': stride,
+            'notes': f"高度矩阵 | 倍率降采样 N={stride} | Pitch {pitch_x_um:g}/{pitch_y_um:g}µm"
+        })
+        return df
+
+    def _sample_large_height_matrix(self, path, enc, sep, ncols, data_line_no,
+                                    pitch_x_um, pitch_y_um, z_unit, meta_source):
+        file_size = Path(path).stat().st_size
+        max_rows = self._large_text_import_limit()
+
+        def parse_matrix_line(line):
+            stripped = line.strip().lstrip('\ufeff')
+            if not stripped:
+                return None
+            tokens = self._split_text_line(stripped, sep)
+            if len(tokens) < ncols or not self._looks_like_numeric_text_row(tokens[:ncols]):
+                return None
+            values = np.array([self._token_to_float(t) for t in tokens[:ncols]], dtype=float)
+            values[values < -999] = np.nan
+            return values
+
+        row_count = 0
+        valid_points = 0
+        z_min = np.inf
+        z_max = -np.inf
+        with open(path, 'r', encoding=enc, errors='ignore') as fh:
+            for line_no, line in enumerate(fh):
+                if line_no < data_line_no:
+                    continue
+                values = parse_matrix_line(line)
+                if values is None:
+                    continue
+                row_count += 1
+                finite = np.isfinite(values)
+                if np.any(finite):
+                    vals = values[finite]
+                    valid_points += int(len(vals))
+                    z_min = min(z_min, float(np.min(vals)))
+                    z_max = max(z_max, float(np.max(vals)))
+                if row_count % 1000 == 0:
+                    self.statusBar().showMessage(
+                        f"高度矩阵预扫描: {row_count:,} 行 | 有效 {valid_points:,} 点", 1000)
+                    QApplication.processEvents()
+
+        if row_count == 0 or valid_points == 0:
+            raise ValueError("高度矩阵大文件采样未识别到有效数据。")
+
+        max_safe_side = self._max_safe_grid_side(max_rows)
+        requested_side = int(getattr(self, 'large_text_grid_count', 0))
+        auto_side = self._auto_spatial_grid_side(valid_points, max_rows)
+        if requested_side > 0:
+            grid_side = min(requested_side, max_safe_side)
+            grid_source = f"用户设定 {requested_side}×{requested_side}"
+            if grid_side != requested_side:
+                grid_source += f"，实际使用 {grid_side}×{grid_side}"
+        else:
+            grid_side = min(auto_side, max_safe_side)
+            grid_source = f"自动 {grid_side}×{grid_side}"
+
+        def cell_index(row_idx, col_idx):
+            ix = int(col_idx / max(1, ncols - 1) * grid_side) if ncols > 1 else 0
+            iy = int(row_idx / max(1, row_count - 1) * grid_side) if row_count > 1 else 0
+            ix = min(max(ix, 0), grid_side - 1)
+            iy = min(max(iy, 0), grid_side - 1)
+            return iy * grid_side + ix
+
+        pitch_x_mm = float(pitch_x_um) / 1000.0
+        pitch_y_mm = float(pitch_y_um) / 1000.0
+        cells = {}
+        matrix_row = 0
+        with open(path, 'r', encoding=enc, errors='ignore') as fh:
+            for line_no, line in enumerate(fh):
+                if line_no < data_line_no:
+                    continue
+                values = parse_matrix_line(line)
+                if values is None:
+                    continue
+                finite_cols = np.where(np.isfinite(values))[0]
+                for col_idx in finite_cols:
+                    z = float(values[col_idx])
+                    x = float(col_idx) * pitch_x_mm
+                    y = (float(row_count - 1 - matrix_row)) * pitch_y_mm
+                    row = [x, y, z, int(matrix_row), int(col_idx)]
+                    key = cell_index(matrix_row, int(col_idx))
+                    state = cells.get(key)
+                    if state is None:
+                        cells[key] = {'first': row, 'min_row': row, 'min_z': z, 'max_row': row, 'max_z': z}
+                    else:
+                        if z < state['min_z']:
+                            state['min_z'] = z
+                            state['min_row'] = row
+                        if z > state['max_z']:
+                            state['max_z'] = z
+                            state['max_row'] = row
+                matrix_row += 1
+                if matrix_row % 1000 == 0:
+                    self.statusBar().showMessage(
+                        f"高度矩阵落格: {matrix_row:,}/{row_count:,} 行 | 占用网格 {len(cells):,}", 1000)
+                    QApplication.processEvents()
+
+        rows = []
+        for key in sorted(cells):
+            state = cells[key]
+            seen = set()
+            for row_key in ('first', 'min_row', 'max_row'):
+                row = state[row_key]
+                row_id = (row[3], row[4])
+                if row_id in seen:
+                    continue
+                seen.add(row_id)
+                rows.append(row)
+        if not rows:
+            raise ValueError("高度矩阵空间采样未得到有效采样点。")
+
+        df = pd.DataFrame(rows, columns=['X', 'Y', 'Z', '_matrix_row', '_matrix_col'])
+        total_cells = grid_side * grid_side
+        self.last_import_note = (
+            f"VR/基恩士高度矩阵已按空间网格采样导入。\n"
+            f"文件大小: {file_size / (1024 * 1024):.1f} MB | 触发阈值: {self.large_text_threshold_mb} MB\n"
+            f"矩阵尺寸: {row_count:,} × {ncols:,} | 有效点: {valid_points:,}\n"
+            f"Pitch: X={pitch_x_um:g}µm, Y={pitch_y_um:g}µm（{meta_source}）| Z单位: {z_unit}\n"
+            f"网格设置: {grid_source}，总网格 {total_cells:,}，占用网格 {len(cells):,}\n"
+            f"每格保留: 首个代表点 + Z最小点 + Z最大点 | Z范围: {z_min:.6g} ~ {z_max:.6g}\n"
+            f"实际导入: {len(df):,} 点。"
+        )
+        self.import_info.update({
+            'strategy': '高度矩阵空间网格采样导入',
+            'sampled': True,
+            'height_matrix': True,
+            'import_rows': len(df),
+            'source_valid_rows': valid_points,
+            'matrix_rows': row_count,
+            'matrix_cols': ncols,
+            'matrix_pitch_x_um': float(pitch_x_um),
+            'matrix_pitch_y_um': float(pitch_y_um),
+            'matrix_z_unit': z_unit,
+            'large_file_mode': self._bigfile_mode_label(),
+            'sample_method': self._sample_method_label('spatial_grid'),
+            'grid_count': grid_side,
+            'grid_cells': total_cells,
+            'occupied_grid_cells': len(cells),
+            'notes': f"高度矩阵 | {grid_side}×{grid_side} 网格 | Pitch {pitch_x_um:g}/{pitch_y_um:g}µm"
+        })
+        return df
+
+    def _read_height_matrix_table(self, path, enc, layout, file_size):
+        sep = layout['sep']
+        ncols = int(layout['ncols'])
+        data_line_no = int(layout['data_line_no'])
+        pitch_x, pitch_y, z_unit, meta_source = self._height_matrix_header_meta(path, enc, data_line_no)
+        auto_sample = bool(getattr(self, 'auto_sample_large_text', True))
+        if auto_sample and file_size >= self._large_text_threshold_bytes():
+            if getattr(self, 'large_file_sample_method', 'spatial_grid') == 'stride':
+                return self._sample_large_height_matrix_by_stride(
+                    path, enc, sep, ncols, data_line_no, pitch_x, pitch_y, z_unit, meta_source)
+            return self._sample_large_height_matrix(
+                path, enc, sep, ncols, data_line_no, pitch_x, pitch_y, z_unit, meta_source)
+
+        raw = pd.read_csv(path, sep=sep, engine='python', encoding=enc,
+                          comment='#', skip_blank_lines=True, on_bad_lines='skip',
+                          header=None, skiprows=data_line_no,
+                          na_values=list(self.MISSING_TEXT_TOKENS),
+                          keep_default_na=True)
+        if raw.shape[1] > ncols:
+            raw = raw.iloc[:, :ncols]
+        z = raw.apply(pd.to_numeric, errors='coerce').to_numpy(dtype=float, copy=True)
+        rows_count, cols_count = z.shape
+        df = self._height_matrix_dataframe(z, rows_count, cols_count, pitch_x, pitch_y)
+        self.import_info.update({
+            'strategy': '高度矩阵全量读取',
+            'sampled': False,
+            'height_matrix': True,
+            'import_rows': len(df),
+            'matrix_rows': int(rows_count),
+            'matrix_cols': int(cols_count),
+            'matrix_pitch_x_um': float(pitch_x),
+            'matrix_pitch_y_um': float(pitch_y),
+            'matrix_z_unit': z_unit,
+            'notes': f"高度矩阵 | Pitch {pitch_x:g}/{pitch_y:g}µm（{meta_source}）| Z单位 {z_unit}"
+        })
+        if meta_source != "表头":
+            self.last_import_note = (
+                f"高度矩阵表头未识别到 Pitch/Z Unit，已使用默认设置：\n"
+                f"Pitch X={pitch_x:g}µm, Pitch Y={pitch_y:g}µm, Z单位={z_unit}。\n"
+                f"如与设备导出不一致，请先在“大文件策略”里调整高度矩阵参数后重新导入。")
+        return df
+
     def _infer_xyz_column_indices(self, column_names, ncols):
         """大文件空间采样发生在列映射 UI 之前，只能按列名/常规 XYZ 顺序推断。"""
         if ncols < 3:
@@ -2768,9 +3256,64 @@ class SurfaceAnalyzerPro(QMainWindow):
 
     def _sample_large_text(self, path, enc, sep, ncols, column_names=None):
         method = getattr(self, 'large_file_sample_method', 'spatial_grid')
+        if method == 'stride':
+            return self._sample_large_text_by_stride(path, enc, sep, ncols, column_names)
         if method == 'file_position':
             return self._sample_large_text_by_position(path, enc, sep, ncols, column_names)
         return self._sample_large_text_by_spatial_grid(path, enc, sep, ncols, column_names)
+
+    def _sample_large_text_by_stride(self, path, enc, sep, ncols, column_names=None):
+        """倍率降采样：按有效数值行每 N 行取 1 行。速度快，但不保留局部 min/max。"""
+        file_size = Path(path).stat().st_size
+        stride = max(1, int(getattr(self, 'large_text_stride_n', 10)))
+        max_rows = self._large_text_import_limit()
+        rows = []
+        valid_rows = 0
+
+        with open(path, 'r', encoding=enc, errors='ignore') as fh:
+            for line in fh:
+                stripped = line.strip().lstrip('\ufeff')
+                if not stripped or stripped.startswith('#'):
+                    continue
+                tokens = self._split_text_line(stripped, sep)
+                if not self._looks_like_numeric_text_row(tokens):
+                    continue
+                values = [self._token_to_float(t) for t in tokens[:ncols]]
+                if len(values) < ncols:
+                    values.extend([np.nan] * (ncols - len(values)))
+                valid_rows += 1
+                if (valid_rows - 1) % stride == 0:
+                    rows.append(values)
+                    if len(rows) >= max_rows:
+                        break
+                if valid_rows % 100000 == 0:
+                    self.statusBar().showMessage(
+                        f"倍率降采样: 已扫描 {valid_rows:,} 行 | 已取 {len(rows):,} 行 | N={stride}", 1000)
+                    QApplication.processEvents()
+
+        if not rows:
+            raise ValueError("倍率降采样未得到有效数值行，请检查文件格式或调小降采样倍率 N。")
+
+        cols = column_names if column_names and len(column_names) == ncols else [f'Col{i+1}' for i in range(ncols)]
+        df = pd.DataFrame(rows, columns=cols)
+        self.last_import_note = (
+            f"超大文本已按倍率降采样导入。\n"
+            f"文件大小: {file_size / (1024 * 1024):.1f} MB | 触发阈值: {self.large_text_threshold_mb} MB\n"
+            f"降采样倍率: N={stride}（每 {stride} 行取 1 行）\n"
+            f"扫描有效行: {valid_rows:,} | 实际导入: {len(df):,} 行 | 导入上限: {max_rows:,}\n"
+            f"注意: 倍率降采样不保留每格 Z min/max，PV/TTV 可能低估；最终复核建议使用空间网格采样。"
+        )
+        self.import_info.update({
+            'strategy': '超大文本倍率降采样导入',
+            'sampled': True,
+            'import_rows': len(df),
+            'source_valid_rows': valid_rows,
+            'large_file_mode': self._bigfile_mode_label(),
+            'sample_method': self._sample_method_label('stride'),
+            'stride_n': stride,
+            'notes': f"{self._bigfile_mode_label()}模式 | 倍率降采样 N={stride}"
+        })
+        return df
 
     def _sample_large_text_by_position(self, path, enc, sep, ncols, column_names=None):
         """旧版超大文本预抽样：按文件字节位置均匀抽取数据行。"""
@@ -3030,6 +3573,11 @@ class SurfaceAnalyzerPro(QMainWindow):
                 sep = layout['sep']
                 ncols = layout['ncols']
                 col_names = layout['header_tokens'] if layout['header_tokens'] else [f'Col{i+1}' for i in range(ncols)]
+                if self._looks_like_height_matrix_layout(path, enc, layout):
+                    df = self._read_height_matrix_table(path, enc, layout, file_size)
+                    self.import_info['display_limit'] = self._display_limit()
+                    self._update_import_status_label()
+                    return df
                 auto_sample = bool(getattr(self, 'auto_sample_large_text', True))
                 if auto_sample and file_size >= self._large_text_threshold_bytes():
                     df = self._sample_large_text(path, enc, sep, ncols, col_names)
@@ -3123,7 +3671,14 @@ class SurfaceAnalyzerPro(QMainWindow):
                     if tc.lower() in col.lower(): return i
                 return di if di < len(cols) else 0
 
-            if len(cols) >= 3 and all(re.fullmatch(r'Col\d+', c) for c in cols):
+            if self.import_info.get('height_matrix') and all(c in cols for c in ('X', 'Y', 'Z')):
+                self.cb_x_col.setCurrentText('X')
+                self.cb_y_col.setCurrentText('Y')
+                self.cb_z_col.setCurrentText('Z')
+                self.cb_x_unit.setCurrentText('mm')
+                self.cb_y_unit.setCurrentText('mm')
+                self.cb_z_unit.setCurrentText(self.import_info.get('matrix_z_unit', self.height_matrix_z_unit))
+            elif len(cols) >= 3 and all(re.fullmatch(r'Col\d+', c) for c in cols):
                 # 无表头 X/Y/Z 文本默认按 Col1/Col2/Col3 映射，适配 Zeiss/XYZ 常见导出
                 self.cb_x_col.setCurrentIndex(0)
                 self.cb_y_col.setCurrentIndex(1)
@@ -3170,7 +3725,10 @@ class SurfaceAnalyzerPro(QMainWindow):
             temp_df['X'] = pd.to_numeric(self.absolute_raw_df[xc], errors='coerce')
             temp_df['Y'] = pd.to_numeric(self.absolute_raw_df[yc], errors='coerce')
             temp_df['Z'] = pd.to_numeric(self.absolute_raw_df[zc], errors='coerce')
-            temp_df = temp_df.dropna()
+            if '_matrix_row' in self.absolute_raw_df.columns and '_matrix_col' in self.absolute_raw_df.columns:
+                temp_df['_matrix_row'] = pd.to_numeric(self.absolute_raw_df['_matrix_row'], errors='coerce')
+                temp_df['_matrix_col'] = pd.to_numeric(self.absolute_raw_df['_matrix_col'], errors='coerce')
+            temp_df = temp_df.dropna(subset=['X', 'Y', 'Z'])
 
             if len(temp_df) < 3:
                 raise ValueError("有效数据点少于 3 个，请检查列映射与单位选择。")
@@ -3180,7 +3738,12 @@ class SurfaceAnalyzerPro(QMainWindow):
             temp_df['Y'] = temp_df['Y'] * unit_m[self.cb_y_unit.currentText()]
             temp_df['Z'] = temp_df['Z'] * unit_m[self.cb_z_unit.currentText()]
 
-            self.df_raw = temp_df[['Z', 'X', 'Y']]
+            out_cols = ['Z', 'X', 'Y']
+            if '_matrix_row' in temp_df.columns and '_matrix_col' in temp_df.columns:
+                temp_df['_matrix_row'] = temp_df['_matrix_row'].astype(int)
+                temp_df['_matrix_col'] = temp_df['_matrix_col'].astype(int)
+                out_cols += ['_matrix_row', '_matrix_col']
+            self.df_raw = temp_df[out_cols]
             self.import_info['valid_rows'] = len(self.df_raw)
             self.import_info['display_limit'] = self._display_limit()
             self._update_import_status_label()
@@ -3323,6 +3886,12 @@ class SurfaceAnalyzerPro(QMainWindow):
         if roi.get('type') == 'circle':
             return (f"{name}: 圆形 cx={roi.get('cx', 0):.4f}, cy={roi.get('cy', 0):.4f}, "
                     f"r={roi.get('radius', 0):.4f}")
+        if roi.get('type') == 'smart_face':
+            conn = "矩阵8邻域" if roi.get('connectivity') == 'matrix8' else "XY自动邻接"
+            radius = float(roi.get('xy_radius_mm', 0.0))
+            radius_text = f", 邻接r={radius:.4f}" if radius > 0 else ""
+            return (f"{name}: 智能抓面 seed=({roi.get('seed_x', 0):.4f}, {roi.get('seed_y', 0):.4f}), "
+                    f"Z={roi.get('seed_z', 0):.5f}, 容差={roi.get('z_tolerance_mm', 0):.4f}mm, {conn}{radius_text}")
         return (f"{name}: 矩形 cx={roi.get('cx', 0):.4f}, cy={roi.get('cy', 0):.4f}, "
                 f"w={roi.get('width', 0):.4f}, h={roi.get('height', 0):.4f}")
 
@@ -3332,21 +3901,36 @@ class SurfaceAnalyzerPro(QMainWindow):
         for i, raw in enumerate(shapes or [], start=1):
             try:
                 typ = str(raw.get('type', 'rect'))
-                if typ not in ('rect', 'circle'):
+                if typ not in ('rect', 'circle', 'smart_face'):
                     continue
                 roi = {
                     'id': int(raw.get('id', i)),
                     'name': str(raw.get('name') or f"ROI {i}"),
                     'type': typ,
-                    'cx': float(raw.get('cx', 0.0)),
-                    'cy': float(raw.get('cy', 0.0)),
                     'enabled': bool(raw.get('enabled', True)),
                 }
+                if typ == 'smart_face':
+                    roi.update({
+                        'seed_x': float(raw.get('seed_x', raw.get('cx', 0.0))),
+                        'seed_y': float(raw.get('seed_y', raw.get('cy', 0.0))),
+                        'seed_z': float(raw.get('seed_z', 0.0)),
+                        'z_tolerance_mm': max(float(raw.get('z_tolerance_mm', 0.2)), 1e-9),
+                        'connectivity': str(raw.get('connectivity', 'auto_xy')),
+                        'xy_radius_mm': max(float(raw.get('xy_radius_mm', 0.0)), 0.0),
+                        'morph_dilate_iters': max(int(raw.get('morph_dilate_iters', 0)), 0),
+                        'morph_erode_iters': max(int(raw.get('morph_erode_iters', 0)), 0),
+                        'point_count_at_create': int(raw.get('point_count_at_create', 0) or 0),
+                    })
+                    if roi['connectivity'] not in ('matrix8', 'auto_xy'):
+                        roi['connectivity'] = 'auto_xy'
+                else:
+                    roi['cx'] = float(raw.get('cx', 0.0))
+                    roi['cy'] = float(raw.get('cy', 0.0))
                 if typ == 'circle':
                     roi['radius'] = max(float(raw.get('radius', 0.0)), 0.0)
                     if roi['radius'] <= 0:
                         continue
-                else:
+                elif typ == 'rect':
                     roi['width'] = max(float(raw.get('width', 0.0)), 0.0)
                     roi['height'] = max(float(raw.get('height', 0.0)), 0.0)
                     if roi['width'] <= 0 or roi['height'] <= 0:
@@ -3358,7 +3942,156 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.roi_next_id = max(self.roi_next_id, max_id + 1)
         return cleaned
 
-    def _roi_keep_mask_for_arrays(self, x, y, roi_shapes=None, roi_enabled=None):
+    @staticmethod
+    def _estimate_xy_neighbor_radius(x, y):
+        xy = np.column_stack([np.asarray(x, dtype=float), np.asarray(y, dtype=float)])
+        finite = np.isfinite(xy).all(axis=1)
+        xy = xy[finite]
+        if len(xy) < 2:
+            return 0.0
+        max_sample = 50000
+        if len(xy) > max_sample:
+            pick = np.linspace(0, len(xy) - 1, max_sample, dtype=int)
+            xy = xy[pick]
+        tree = cKDTree(xy)
+        dist, _ = tree.query(xy, k=2)
+        nn = dist[:, 1]
+        nn = nn[np.isfinite(nn) & (nn > 0)]
+        if len(nn) == 0:
+            return 0.0
+        return float(np.median(nn) * 1.8)
+
+    def _matrix_rc_for_current_data(self):
+        if self.df_raw is None or '_matrix_row' not in self.df_raw.columns or '_matrix_col' not in self.df_raw.columns:
+            return None
+        try:
+            return (self.df_raw['_matrix_row'].to_numpy(dtype=int),
+                    self.df_raw['_matrix_col'].to_numpy(dtype=int))
+        except Exception:
+            return None
+
+    def _smart_face_keep_mask_matrix(self, x, y, z, roi, matrix_rc):
+        row_arr, col_arr = matrix_rc
+        finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+        candidate = finite & (np.abs(z - float(roi.get('seed_z', 0.0))) <= float(roi.get('z_tolerance_mm', 0.2)))
+        cand_idx = np.where(candidate)[0]
+        if len(cand_idx) == 0:
+            return np.zeros(len(z), dtype=bool)
+        seed_dist = (x[cand_idx] - float(roi.get('seed_x', 0.0))) ** 2 + (y[cand_idx] - float(roi.get('seed_y', 0.0))) ** 2
+        seed_idx = int(cand_idx[int(np.argmin(seed_dist))])
+        cell_to_idx = {(int(row_arr[i]), int(col_arr[i])): int(i) for i in cand_idx}
+        start = (int(row_arr[seed_idx]), int(col_arr[seed_idx]))
+        visited = set([start])
+        queue = deque([start])
+        while queue:
+            rr, cc = queue.popleft()
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nb = (rr + dr, cc + dc)
+                    if nb in visited or nb not in cell_to_idx:
+                        continue
+                    visited.add(nb)
+                    queue.append(nb)
+        keep = np.zeros(len(z), dtype=bool)
+        if visited:
+            keep[[cell_to_idx[cell] for cell in visited]] = True
+
+        shape = (int(np.nanmax(row_arr)) + 1, int(np.nanmax(col_arr)) + 1)
+        dilate = int(roi.get('morph_dilate_iters', 0) or 0)
+        erode = int(roi.get('morph_erode_iters', 0) or 0)
+        if (dilate > 0 or erode > 0) and shape[0] * shape[1] <= 20_000_000:
+            grid = np.zeros(shape, dtype=bool)
+            grid[row_arr[keep], col_arr[keep]] = True
+            valid_grid = np.zeros(shape, dtype=bool)
+            valid_grid[row_arr[candidate], col_arr[candidate]] = True
+            struct = ndimage.generate_binary_structure(2, 2)
+            if dilate > 0:
+                grid = ndimage.binary_dilation(grid, structure=struct, iterations=dilate) & valid_grid
+            if erode > 0:
+                grid = ndimage.binary_erosion(grid, structure=struct, iterations=erode) & valid_grid
+            keep = grid[row_arr, col_arr] & candidate
+        return keep
+
+    def _smart_face_keep_mask_auto_xy(self, x, y, z, roi, update_radius=False):
+        finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+        candidate = finite & (np.abs(z - float(roi.get('seed_z', 0.0))) <= float(roi.get('z_tolerance_mm', 0.2)))
+        cand_idx = np.where(candidate)[0]
+        if len(cand_idx) == 0:
+            return np.zeros(len(z), dtype=bool)
+        radius = float(roi.get('xy_radius_mm', 0.0) or 0.0)
+        if radius <= 0:
+            radius = self._estimate_xy_neighbor_radius(x[finite], y[finite])
+            if update_radius:
+                roi['xy_radius_mm'] = float(radius)
+        if radius <= 0:
+            seed_dist = (x[cand_idx] - float(roi.get('seed_x', 0.0))) ** 2 + (y[cand_idx] - float(roi.get('seed_y', 0.0))) ** 2
+            keep = np.zeros(len(z), dtype=bool)
+            keep[int(cand_idx[int(np.argmin(seed_dist))])] = True
+            return keep
+
+        xy = np.column_stack([x[cand_idx], y[cand_idx]])
+        tree = cKDTree(xy)
+        seed_xy = np.array([[float(roi.get('seed_x', 0.0)), float(roi.get('seed_y', 0.0))]])
+        _, seed_local = tree.query(seed_xy, k=1)
+        seed_local = int(np.ravel(seed_local)[0])
+        visited = np.zeros(len(cand_idx), dtype=bool)
+        visited[seed_local] = True
+        queue = deque([seed_local])
+        while queue:
+            loc = queue.popleft()
+            for nb in tree.query_ball_point(xy[loc], r=radius):
+                if visited[nb]:
+                    continue
+                visited[nb] = True
+                queue.append(int(nb))
+        keep = np.zeros(len(z), dtype=bool)
+        keep[cand_idx[visited]] = True
+
+        dilate = int(roi.get('morph_dilate_iters', 0) or 0)
+        erode = int(roi.get('morph_erode_iters', 0) or 0)
+        if dilate > 0 or erode > 0:
+            all_xy = np.column_stack([x[finite], y[finite]])
+            all_idx = np.where(finite)[0]
+            all_tree = cKDTree(all_xy)
+            local_by_global = {int(global_idx): int(local_idx) for local_idx, global_idx in enumerate(all_idx)}
+            for _ in range(dilate):
+                selected = np.where(keep & finite)[0]
+                add = np.zeros(len(z), dtype=bool)
+                for idx in selected:
+                    local = local_by_global.get(int(idx))
+                    if local is None:
+                        continue
+                    add[all_idx[all_tree.query_ball_point(all_xy[local], r=radius)]] = True
+                keep |= add & candidate
+            for _ in range(erode):
+                selected = np.where(keep & finite)[0]
+                eroded = keep.copy()
+                for idx in selected:
+                    local = local_by_global.get(int(idx))
+                    if local is None:
+                        continue
+                    neigh = all_idx[all_tree.query_ball_point(all_xy[local], r=radius)]
+                    if len(neigh) and np.any(~keep[neigh]):
+                        eroded[idx] = False
+                keep = eroded & candidate
+        return keep
+
+    def _smart_face_keep_mask_for_arrays(self, x, y, z, roi, matrix_rc=None, update_radius=False):
+        if z is None:
+            return np.zeros(len(x), dtype=bool)
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        z = np.asarray(z, dtype=float)
+        if roi.get('connectivity') == 'matrix8' and matrix_rc is not None:
+            try:
+                return self._smart_face_keep_mask_matrix(x, y, z, roi, matrix_rc)
+            except Exception:
+                pass
+        return self._smart_face_keep_mask_auto_xy(x, y, z, roi, update_radius=update_radius)
+
+    def _roi_keep_mask_for_arrays(self, x, y, z=None, roi_shapes=None, roi_enabled=None, matrix_rc=None):
         shapes = self.roi_shapes if roi_shapes is None else (roi_shapes or [])
         if not self._roi_is_active(roi_enabled, shapes):
             return np.ones(len(x), dtype=bool)
@@ -3371,6 +4104,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             if roi.get('type') == 'circle':
                 r = float(roi.get('radius', 0.0))
                 keep |= ((x - cx) ** 2 + (y - cy) ** 2) <= (r ** 2)
+            elif roi.get('type') == 'smart_face':
+                keep |= self._smart_face_keep_mask_for_arrays(x, y, z, roi, matrix_rc=matrix_rc)
             else:
                 hw = float(roi.get('width', 0.0)) / 2.0
                 hh = float(roi.get('height', 0.0)) / 2.0
@@ -3380,16 +4115,28 @@ class SurfaceAnalyzerPro(QMainWindow):
     def _sync_roi_input_state(self):
         if not hasattr(self, 'cb_roi_shape'):
             return
-        is_circle = self.cb_roi_shape.currentIndex() == 1
+        shape_idx = self.cb_roi_shape.currentIndex()
+        is_circle = shape_idx == 1
+        is_smart = shape_idx == 2
         if hasattr(self, 'roi_advanced_widget'):
             self.roi_advanced_widget.setVisible(self.chk_roi_advanced.isChecked())
         for w in (self.lbl_roi_w, self.spin_roi_w, self.lbl_roi_h, self.spin_roi_h):
-            w.setEnabled(not is_circle)
+            w.setEnabled((not is_circle) and (not is_smart))
         for w in (self.lbl_roi_r, self.spin_roi_r):
-            w.setEnabled(is_circle)
-        if self.selection_mode in ('roi_rect', 'roi_circle'):
-            self.selection_mode = 'roi_circle' if is_circle else 'roi_rect'
+            w.setEnabled(is_circle and not is_smart)
+        for w in (self.lbl_smart_tol, self.spin_smart_tol, self.lbl_smart_dilate,
+                  self.spin_smart_dilate, self.lbl_smart_erode, self.spin_smart_erode):
+            w.setEnabled(is_smart)
+        self.btn_roi_add_input.setEnabled(not is_smart)
+        if self.btn_roi_mouse.isChecked():
+            self.btn_roi_mouse.setText("退出智能抓面" if is_smart else "退出框选 ROI")
+        else:
+            self.btn_roi_mouse.setText("开始智能抓面" if is_smart else "开始框选 ROI")
+        if self.selection_mode in ('roi_rect', 'roi_circle', 'roi_smart'):
+            self.selection_mode = 'roi_smart' if is_smart else 'roi_circle' if is_circle else 'roi_rect'
             self.statusBar().showMessage(
+                "智能抓面模式：在 XY 图点击种子点，可连续抓取多个同高度连通区域。"
+                if is_smart else
                 f"ROI 连续框选模式: {'圆形' if is_circle else '矩形'}。在 XY 图中继续拖拽添加区域。", 5000)
 
     def _on_roi_changed(self):
@@ -3405,12 +4152,12 @@ class SurfaceAnalyzerPro(QMainWindow):
         current = self.cb_roi_select.currentData()
         self.cb_roi_select.blockSignals(True)
         self.cb_roi_select.clear()
-        tx = ty = None
+        tx = ty = tz = None
         if self.df_raw is not None:
             try:
-                tx, ty, _ = self.get_final_transformed_data(self.df_raw)
+                tx, ty, tz = self.get_final_transformed_data(self.df_raw)
             except Exception:
-                tx = ty = None
+                tx = ty = tz = None
         enabled_count = 0
         for roi in self.roi_shapes:
             if roi.get('enabled', True):
@@ -3419,7 +4166,8 @@ class SurfaceAnalyzerPro(QMainWindow):
             if tx is not None and ty is not None:
                 count_roi = dict(roi)
                 count_roi['enabled'] = True
-                count = int(self._roi_keep_mask_for_arrays(tx, ty, [count_roi], True).sum())
+                count = int(self._roi_keep_mask_for_arrays(
+                    tx, ty, tz, [count_roi], True, self._matrix_rc_for_current_data()).sum())
                 count_text = f" | {count:,}点"
             state = "启用" if roi.get('enabled', True) else "禁用"
             label = f"{state} {self._roi_shape_label(roi)}{count_text}"
@@ -3459,6 +4207,9 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.statusBar().showMessage(f"已添加 {self._roi_shape_label(roi)}", 5000)
 
     def add_roi_from_inputs(self):
+        if self.cb_roi_shape.currentIndex() == 2:
+            self.statusBar().showMessage("智能抓面需要在 XY 图点击种子点生成 ROI。", 5000)
+            return
         cx = float(self.spin_roi_cx.value())
         cy = float(self.spin_roi_cy.value())
         if self.cb_roi_shape.currentIndex() == 1:
@@ -3474,19 +4225,22 @@ class SurfaceAnalyzerPro(QMainWindow):
         if not checked:
             self.set_delete_selection_mode(show_message=True)
             return
-        self.selection_mode = 'roi_circle' if self.cb_roi_shape.currentIndex() == 1 else 'roi_rect'
-        self.btn_roi_mouse.setText("退出框选 ROI")
+        self.selection_mode = 'roi_smart' if self.cb_roi_shape.currentIndex() == 2 else 'roi_circle' if self.cb_roi_shape.currentIndex() == 1 else 'roi_rect'
+        self.btn_roi_mouse.setText("退出智能抓面" if self.selection_mode == 'roi_smart' else "退出框选 ROI")
         if self.temp_selected_mask is not None:
             self.temp_selected_mask.fill(False)
             self.update_plots_only()
-        self.statusBar().showMessage("ROI 连续框选模式已开启：请在 XY 俯视图中拖拽，可连续添加多个 ROI。", 8000)
+        if self.selection_mode == 'roi_smart':
+            self.statusBar().showMessage("智能抓面模式已开启：请在 XY 俯视图中点击种子点，可连续添加多个 ROI。", 8000)
+        else:
+            self.statusBar().showMessage("ROI 连续框选模式已开启：请在 XY 俯视图中拖拽，可连续添加多个 ROI。", 8000)
 
     def set_delete_selection_mode(self, show_message=True):
         self.selection_mode = 'delete'
         if hasattr(self, 'btn_roi_mouse'):
             self.btn_roi_mouse.blockSignals(True)
             self.btn_roi_mouse.setChecked(False)
-            self.btn_roi_mouse.setText("开始框选 ROI")
+            self.btn_roi_mouse.setText("开始智能抓面" if self.cb_roi_shape.currentIndex() == 2 else "开始框选 ROI")
             self.btn_roi_mouse.blockSignals(False)
         if show_message:
             self.statusBar().showMessage("已退出 ROI 框选，恢复为删除点框选模式。", 4000)
@@ -3507,14 +4261,21 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.roi_shapes[idx]['enabled'] = not self.roi_shapes[idx].get('enabled', True)
         self._refresh_roi_ui(update=True)
 
-    def delete_selected_roi(self):
+    def delete_selected_roi(self, *_args):
         idx = self._selected_roi_index()
         if idx is None:
             return
         del self.roi_shapes[idx]
+        if not self.roi_shapes:
+            self.roi_enabled = False
+            self.last_roi_keep_count = None
+            if hasattr(self, 'chk_roi_enable'):
+                self.chk_roi_enable.blockSignals(True)
+                self.chk_roi_enable.setChecked(False)
+                self.chk_roi_enable.blockSignals(False)
         self._refresh_roi_ui(update=True)
 
-    def clear_rois(self, update=True):
+    def clear_rois(self, checked=None, update=True):
         self.roi_shapes = []
         self.roi_enabled = False
         self.last_roi_keep_count = None
@@ -3525,13 +4286,13 @@ class SurfaceAnalyzerPro(QMainWindow):
             self.chk_roi_enable.blockSignals(False)
         self._refresh_roi_ui(update=update)
 
-    def _roi_report_info(self, tx=None, ty=None, roi_enabled=None, roi_shapes=None):
+    def _roi_report_info(self, tx=None, ty=None, tz=None, roi_enabled=None, roi_shapes=None, matrix_rc=None):
         shapes = [dict(r) for r in (roi_shapes if roi_shapes is not None else self.roi_shapes)]
         enabled = self.roi_enabled if roi_enabled is None else bool(roi_enabled)
         active = self._roi_is_active(enabled, shapes)
         keep_count = None
         if active and tx is not None and ty is not None:
-            keep_count = int(self._roi_keep_mask_for_arrays(tx, ty, shapes, enabled).sum())
+            keep_count = int(self._roi_keep_mask_for_arrays(tx, ty, tz, shapes, enabled, matrix_rc).sum())
         summary = "关闭" if not active else f"开启 | 启用 {sum(bool(r.get('enabled', True)) for r in shapes)}/{len(shapes)} 个"
         if keep_count is not None:
             summary += f" | 合并保留 {keep_count:,} 点"
@@ -3564,6 +4325,15 @@ class SurfaceAnalyzerPro(QMainWindow):
             if roi.get('type') == 'circle':
                 patch = MplCircle((cx, cy), float(roi.get('radius', 0.0)), fill=False,
                                   edgecolor=edge, linewidth=1.8, linestyle=style, alpha=alpha)
+            elif roi.get('type') == 'smart_face':
+                sx = float(roi.get('seed_x', 0.0))
+                sy = float(roi.get('seed_y', 0.0))
+                ax.scatter([sx], [sy], marker='x', s=80, c=edge, linewidths=2.0,
+                           alpha=alpha, zorder=4)
+                radius = float(roi.get('xy_radius_mm', 0.0) or 0.0)
+                patch = MplCircle((sx, sy), max(radius, 0.02), fill=False,
+                                  edgecolor=edge, linewidth=1.4, linestyle=':',
+                                  alpha=min(alpha, 0.75))
             else:
                 w = float(roi.get('width', 0.0))
                 h = float(roi.get('height', 0.0))
@@ -3594,7 +4364,8 @@ class SurfaceAnalyzerPro(QMainWindow):
                 return
 
             if self._roi_is_active():
-                roi_mask_all = self._roi_keep_mask_for_arrays(tx, ty)
+                roi_mask_all = self._roi_keep_mask_for_arrays(
+                    tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data())
                 idx = idx[roi_mask_all[idx]]
                 self.last_roi_keep_count = int(len(idx))
                 if len(idx) < 3:
@@ -3675,13 +4446,13 @@ class SurfaceAnalyzerPro(QMainWindow):
         dx, dy = tx[plot_idx], ty[plot_idx]
         plot_z_all, z_axis_label, z_short_label = self._get_plot_z(tx, ty, tz)
         dz = plot_z_all[plot_idx]
-        bg_x = bg_y = None
+        bg_x = bg_y = bg_z = None
         if self._roi_is_active() and self.manual_mask is not None:
             bg_idx = np.where(self.manual_mask)[0]
             if len(bg_idx) > display_limit:
                 pick = np.linspace(0, len(bg_idx) - 1, display_limit, dtype=int)
                 bg_idx = bg_idx[pick]
-            bg_x, bg_y = tx[bg_idx], ty[bg_idx]
+            bg_x, bg_y, bg_z = tx[bg_idx], ty[bg_idx], plot_z_all[bg_idx]
 
         axes = [self.canvas.ax3d, self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz]
         lbs = [("X (mm)", "Y (mm)", z_axis_label),
@@ -3706,18 +4477,28 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.canvas.set_titles(self.display_detrended)
 
         if bg_x is not None and len(bg_x) > 0:
+            bg_params = {'c': '#8f9aa6', 's': 6, 'alpha': 0.16, 'edgecolors': 'none', 'rasterized': True}
+            self.canvas.ax3d.scatter(bg_x, bg_y, bg_z, **bg_params)
             self.canvas.ax_xy.scatter(
-                bg_x, bg_y, c='#9aa4ae', s=7, alpha=0.22, edgecolors='none',
+                bg_x, bg_y, c='#8f9aa6', s=7, alpha=0.20, edgecolors='none',
                 zorder=1, rasterized=True)
+            self.canvas.ax_xz.scatter(bg_x, bg_z, **bg_params)
+            self.canvas.ax_yz.scatter(bg_y, bg_z, **bg_params)
 
         if len(dx) == 0:
             self._draw_roi_overlays(self.canvas.ax_xy)
+            if bg_x is not None and len(bg_x) > 0:
+                for ax in (self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz):
+                    ax.relim()
+                    ax.autoscale_view()
             self.canvas.ax_xy.relim()
             self.canvas.ax_xy.autoscale_view()
             self.canvas.draw()
             return
 
-        sc_params = {'c': dz, 'cmap': 'turbo', 's': 14, 'alpha': 0.85, 'edgecolors': 'none'}
+        point_size = 18 if self._roi_is_active() else 14
+        point_alpha = 0.92 if self._roi_is_active() else 0.85
+        sc_params = {'c': dz, 'cmap': 'turbo', 's': point_size, 'alpha': point_alpha, 'edgecolors': 'none'}
         self.canvas.ax3d.scatter(dx, dy, dz, **sc_params)
         self.canvas.ax_xy.scatter(dx, dy, **sc_params, zorder=2)
         self._draw_roi_overlays(self.canvas.ax_xy)
@@ -3746,10 +4527,61 @@ class SurfaceAnalyzerPro(QMainWindow):
 
         self.canvas.draw()
 
+    def on_canvas_click(self, event):
+        if self.selection_mode != 'roi_smart' or self.df_raw is None:
+            return
+        if event.inaxes != self.canvas.ax_xy or event.xdata is None or event.ydata is None:
+            return
+        if getattr(event, 'button', 1) != 1:
+            return
+        self.add_smart_face_roi_from_seed(float(event.xdata), float(event.ydata))
+
+    def add_smart_face_roi_from_seed(self, px, py):
+        if self.df_raw is None:
+            return
+        tx, ty, tz = self.get_final_transformed_data(self.df_raw)
+        base_mask = self.manual_mask if self.manual_mask is not None else np.ones(len(tz), dtype=bool)
+        finite_idx = np.where(base_mask & np.isfinite(tx) & np.isfinite(ty) & np.isfinite(tz))[0]
+        if len(finite_idx) < 3:
+            self.statusBar().showMessage("有效点不足，无法智能抓面。", 6000)
+            return
+        dist2 = (tx[finite_idx] - px) ** 2 + (ty[finite_idx] - py) ** 2
+        seed_idx = int(finite_idx[int(np.argmin(dist2))])
+        connectivity = 'matrix8' if self._matrix_rc_for_current_data() is not None else 'auto_xy'
+        roi = {
+            'type': 'smart_face',
+            'seed_x': float(tx[seed_idx]),
+            'seed_y': float(ty[seed_idx]),
+            'seed_z': float(tz[seed_idx]),
+            'z_tolerance_mm': float(self.spin_smart_tol.value()),
+            'connectivity': connectivity,
+            'xy_radius_mm': 0.0,
+            'morph_dilate_iters': int(self.spin_smart_dilate.value()),
+            'morph_erode_iters': int(self.spin_smart_erode.value()),
+        }
+        matrix_rc = self._matrix_rc_for_current_data()
+        keep = self._smart_face_keep_mask_for_arrays(
+            tx, ty, tz, roi, matrix_rc=matrix_rc, update_radius=True) & base_mask
+        count = int(np.sum(keep))
+        if count < 3:
+            self.statusBar().showMessage(
+                f"智能抓面只得到 {count} 点，未添加。请调大抓面容差或点击面内更稳定的位置。", 8000)
+            return
+        roi['point_count_at_create'] = count
+        self._add_roi_shape(roi, keep_roi_mode=True)
+        conn_text = "矩阵8邻域" if roi['connectivity'] == 'matrix8' else f"XY邻接r={roi.get('xy_radius_mm', 0):.4f}mm"
+        self.statusBar().showMessage(
+            f"已添加智能抓面 ROI: {count:,} 点 | 容差 {roi['z_tolerance_mm']:.4f} mm | "
+            f"{conn_text}",
+            8000)
+
     def on_select(self, eclick, erelease, view_type):
         if self.df_raw is None or self.active_idx is None: return
         x1, y1, x2, y2 = eclick.xdata, eclick.ydata, erelease.xdata, erelease.ydata
         if None in (x1, y1, x2, y2): return
+
+        if self.selection_mode == 'roi_smart':
+            return
 
         if self.selection_mode in ('roi_rect', 'roi_circle'):
             if view_type != 'XY':
@@ -3836,7 +4668,7 @@ class SurfaceAnalyzerPro(QMainWindow):
             fig = self._render_report_figure(
                 self.current_source_name, tx, ty, tz, self.active_idx, metrics,
                 self.n_filtered, pipeline_text, filter_text, self.import_info, self.display_detrended,
-                roi_info=self._roi_report_info(tx, ty))
+                roi_info=self._roi_report_info(tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data()))
             fig.savefig(path, dpi=150)
             self.statusBar().showMessage(f"已导出报告图: {path}", 6000)
             QMessageBox.information(self, "导出成功", f"测量报告图已导出：\n{path}")
@@ -3866,7 +4698,7 @@ class SurfaceAnalyzerPro(QMainWindow):
                 filter_text += f" (k={self.spin_k.value()}, 局部阈值={self.spin_thresh.value()}µm, 全局兜底阈值={self.spin_thresh.value()}µm)"
             elif self.cb_filter.currentIndex() == 3:
                 filter_text += f" (σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})"
-            roi_info = self._roi_report_info(tx, ty)
+            roi_info = self._roi_report_info(tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data())
             meta = [
                 f"# ===== 面型及Rxy分析工具 {self.APP_VERSION} 导出 =====",
                 f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
@@ -4003,17 +4835,24 @@ class SurfaceAnalyzerPro(QMainWindow):
                         'X': pd.to_numeric(df_raw[params['x_col']], errors='coerce'),
                         'Y': pd.to_numeric(df_raw[params['y_col']], errors='coerce'),
                         'Z': pd.to_numeric(df_raw[params['z_col']], errors='coerce'),
-                    }).dropna()
+                    })
+                    if '_matrix_row' in df_raw.columns and '_matrix_col' in df_raw.columns:
+                        d['_matrix_row'] = pd.to_numeric(df_raw['_matrix_row'], errors='coerce')
+                        d['_matrix_col'] = pd.to_numeric(df_raw['_matrix_col'], errors='coerce')
+                    d = d.dropna(subset=['X', 'Y', 'Z'])
                     if len(d) < 3:
                         raise ValueError("有效数据点少于 3 个")
                     x = d['X'].values * params['ux']
                     y = d['Y'].values * params['uy']
                     z = d['Z'].values * params['uz']
                     x, y, z = self._apply_transform_pipeline(x, y, z, params['pipeline'])
+                    matrix_rc = None
+                    if '_matrix_row' in d.columns and '_matrix_col' in d.columns:
+                        matrix_rc = (d['_matrix_row'].to_numpy(dtype=int), d['_matrix_col'].to_numpy(dtype=int))
                     n_total = len(z)
                     if self._roi_is_active(params.get('roi_enabled', False), params.get('roi_shapes', [])):
                         roi_mask = self._roi_keep_mask_for_arrays(
-                            x, y, params.get('roi_shapes', []), params.get('roi_enabled', False))
+                            x, y, z, params.get('roi_shapes', []), params.get('roi_enabled', False), matrix_rc)
                         roi_idx = np.where(roi_mask)[0]
                         if len(roi_idx) < 3:
                             raise ValueError("ROI 内有效数据点少于 3 个")
@@ -4033,7 +4872,7 @@ class SurfaceAnalyzerPro(QMainWindow):
                     fx, fy, fz = x[active_idx], y[active_idx], z[active_idx]
                     metrics = self.compute_plane_metrics(fx, fy, fz)
                     roi_info = self._roi_report_info(
-                        x, y, params.get('roi_enabled', False), params.get('roi_shapes', []))
+                        x, y, z, params.get('roi_enabled', False), params.get('roi_shapes', []), matrix_rc)
                     fig = self._render_report_figure(
                         name, x, y, z, active_idx, metrics, n_filtered,
                         params['pipeline_text'], params['filter_text'],

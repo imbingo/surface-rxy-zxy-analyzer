@@ -1,0 +1,15 @@
+V3.9 Step demo data
+===================
+1. V3.9_StepDemo_VR_height_matrix.csv
+   - VR/Keyence-like height matrix, GBK encoding, Z unit um.
+   - Two separated rectangular platforms: base about 120 um, measure about 155 um.
+   - Parallelism step height expected around 0.035 mm.
+
+2. V3.9_StepDemo_XYZ_points.csv
+   - Same data expanded to XYZ point cloud. X/Y unit mm, Z unit um.
+   - Use it to test XYZ smart-face ROI.
+
+Suggested check flow:
+- Import the height-matrix demo. The app should map X/Y as mm and Z as um.
+- Choose ROI shape Smart Face, use tolerance 0.02 mm, click the two platforms separately.
+- Set them as base/measure in Parallelism Analysis and check step height.
