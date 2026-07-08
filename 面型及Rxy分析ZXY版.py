@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-面型及Rxy分析工具 V3.9.2
+面型及Rxy分析工具 V3.9.3
 基于 V1 的修复与增强：
   [优化] V3.7.0 (UI优化·方案A): 整理版左栏 + 顶部结果读数条。仅重排界面，不改动任何算法。
          · 结果指标(平均厚度Z/PV/TTV/Rx/Ry+平面方程)上提为绘图区上方常驻读数条，随分析实时刷新。
@@ -63,6 +63,7 @@
   [增强] V3.9.0: 迁移 VR 工具核心功能，新增基恩士/VR 高度矩阵导入与智能抓面 ROI；
          智能抓面同时支持高度矩阵与 XYZ 点云，并在平行度分析中输出 VR 口径台阶高度差。
   [优化] V3.9.2: 大文件默认改为文件位置均匀抽样并降低默认点数；智能 ROI 新增同平面残差抓取与推荐容差，不做补洞连缝。
+  [优化] V3.9.3: ROI 精确输入列宽更紧凑；文本导入可跳过菲索干涉仪多行参数头，定位后续连续 XYZ 数据块。
 注意：Rx/Ry 符号约定 (Rx≈+dZ/dY, Ry≈-dZ/dX) 需用已知倾角标准件实测校准一次。
 """
 import sys
@@ -354,7 +355,7 @@ class GapMatchCanvas(FigureCanvas):
 
 
 class SurfaceAnalyzerPro(QMainWindow):
-    APP_VERSION = "V3.9.2"
+    APP_VERSION = "V3.9.3"
     DISPLAY_POINT_LIMIT = 30000
     LARGE_TEXT_FILE_BYTES = 64 * 1024 * 1024
     LARGE_TEXT_IMPORT_LIMIT = 100000
@@ -1102,8 +1103,11 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.roi_advanced_widget = QWidget()
         adv = QGridLayout(self.roi_advanced_widget)
         adv.setContentsMargins(0, 0, 0, 0)
-        adv.setHorizontalSpacing(8)
+        adv.setHorizontalSpacing(6)
         adv.setVerticalSpacing(7)
+        adv.setColumnMinimumWidth(0, 58)
+        adv.setColumnStretch(0, 0)
+        adv.setColumnStretch(1, 1)
 
         self.spin_roi_cx = NoWheelDoubleSpinBox(); self.spin_roi_cy = NoWheelDoubleSpinBox()
         self.spin_roi_w = NoWheelDoubleSpinBox(); self.spin_roi_h = NoWheelDoubleSpinBox()
@@ -1130,8 +1134,10 @@ class SurfaceAnalyzerPro(QMainWindow):
             sp.setEnabled(False)
             sp.setVisible(False)
             sp.setToolTip("V3.9.2 起不允许自动补洞/连缝，避免跨缝抓错面。")
-        adv.addWidget(QLabel("中心X:"), 0, 0); adv.addWidget(self.spin_roi_cx, 0, 1)
-        adv.addWidget(QLabel("中心Y:"), 1, 0); adv.addWidget(self.spin_roi_cy, 1, 1)
+        self.lbl_roi_cx = QLabel("中心X:")
+        self.lbl_roi_cy = QLabel("中心Y:")
+        adv.addWidget(self.lbl_roi_cx, 0, 0); adv.addWidget(self.spin_roi_cx, 0, 1)
+        adv.addWidget(self.lbl_roi_cy, 1, 0); adv.addWidget(self.spin_roi_cy, 1, 1)
         self.lbl_roi_w = QLabel("宽度:")
         self.lbl_roi_h = QLabel("高度:")
         self.lbl_roi_r = QLabel("半径:")
@@ -1143,6 +1149,9 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.lbl_smart_tol_hint.setObjectName("mutedNote")
         self.lbl_smart_dilate.setVisible(False)
         self.lbl_smart_erode.setVisible(False)
+        for lab in (self.lbl_roi_cx, self.lbl_roi_cy, self.lbl_roi_w, self.lbl_roi_h, self.lbl_roi_r,
+                    self.lbl_smart_mode, self.lbl_smart_tol):
+            lab.setFixedWidth(58)
         adv.addWidget(self.lbl_roi_w, 2, 0); adv.addWidget(self.spin_roi_w, 2, 1)
         adv.addWidget(self.lbl_roi_h, 3, 0); adv.addWidget(self.spin_roi_h, 3, 1)
         adv.addWidget(self.lbl_roi_r, 4, 0); adv.addWidget(self.spin_roi_r, 4, 1)
@@ -2821,12 +2830,14 @@ class SurfaceAnalyzerPro(QMainWindow):
             return np.nan
 
     @classmethod
-    def _detect_text_layout(cls, path, enc, max_scan_lines=5000):
+    def _detect_text_layout(cls, path, enc, max_scan_lines=50000):
         """扫描文本开头，识别第一行有效数值数据、分隔符、列数和可选表头。
-        兼容 Zeiss 类导出：前面可能有仪器信息/单位信息，只要后面存在 X/Y/Z 数值行即可。"""
+        兼容 Zeiss/菲索类导出：前面可能有仪器信息、波长等参数说明，只要后面存在连续 X/Y/Z 数值块即可。"""
         last_tokens = None
         last_line_no = None
         last_sep = None
+        run = None
+        min_data_rows = 3
         with open(path, 'r', encoding=enc, errors='ignore') as fh:
             for line_no, line in enumerate(fh):
                 if line_no >= max_scan_lines:
@@ -2836,21 +2847,36 @@ class SurfaceAnalyzerPro(QMainWindow):
                     continue
                 sep = cls._detect_sep_from_line(stripped)
                 tokens = cls._split_text_line(stripped, sep)
-                if cls._looks_like_numeric_text_row(tokens):
-                    header_tokens = None
-                    if last_tokens and len(last_tokens) == len(tokens) and not cls._looks_like_numeric_text_row(last_tokens):
-                        header_tokens = [str(t).replace('\ufeff', '').strip() or f'Col{i+1}'
-                                         for i, t in enumerate(last_tokens)]
-                    return {
-                        'encoding': enc,
-                        'sep': sep,
-                        'ncols': len(tokens),
-                        'data_line_no': line_no,
-                        'header_tokens': header_tokens,
-                        'first_numeric_line': stripped,
-                        'header_line_no': last_line_no,
-                        'header_sep': last_sep,
-                    }
+                is_numeric = cls._looks_like_numeric_text_row(tokens) and len(tokens) >= 3
+                if is_numeric:
+                    same_run = (
+                        run is not None and run['sep'] == sep and run['ncols'] == len(tokens)
+                        and line_no == run['last_line_no'] + 1
+                    )
+                    if not same_run:
+                        header_tokens = None
+                        if last_tokens and len(last_tokens) == len(tokens) and not cls._looks_like_numeric_text_row(last_tokens):
+                            header_tokens = [str(t).replace('\ufeff', '').strip() or f'Col{i+1}'
+                                             for i, t in enumerate(last_tokens)]
+                        run = {
+                            'encoding': enc,
+                            'sep': sep,
+                            'ncols': len(tokens),
+                            'data_line_no': line_no,
+                            'header_tokens': header_tokens,
+                            'first_numeric_line': stripped,
+                            'header_line_no': last_line_no,
+                            'header_sep': last_sep,
+                            'count': 1,
+                            'last_line_no': line_no,
+                        }
+                    else:
+                        run['count'] += 1
+                        run['last_line_no'] = line_no
+                    if run['count'] >= min_data_rows:
+                        return {k: v for k, v in run.items() if k not in ('count', 'last_line_no')}
+                    continue
+                run = None
                 last_tokens = tokens
                 last_line_no = line_no
                 last_sep = sep
