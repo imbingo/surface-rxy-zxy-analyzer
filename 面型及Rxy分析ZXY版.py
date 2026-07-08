@@ -3973,24 +3973,29 @@ class SurfaceAnalyzerPro(QMainWindow):
     def _smart_face_keep_mask_matrix(self, x, y, z, roi, matrix_rc):
         row_arr, col_arr = matrix_rc
         finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
-        candidate = finite & (np.abs(z - float(roi.get('seed_z', 0.0))) <= float(roi.get('z_tolerance_mm', 0.2)))
-        cand_idx = np.where(candidate)[0]
-        if len(cand_idx) == 0:
+        valid_idx = np.where(finite)[0]
+        if len(valid_idx) == 0:
             return np.zeros(len(z), dtype=bool)
-        seed_dist = (x[cand_idx] - float(roi.get('seed_x', 0.0))) ** 2 + (y[cand_idx] - float(roi.get('seed_y', 0.0))) ** 2
-        seed_idx = int(cand_idx[int(np.argmin(seed_dist))])
-        cell_to_idx = {(int(row_arr[i]), int(col_arr[i])): int(i) for i in cand_idx}
+        tol = float(roi.get('z_tolerance_mm', 0.2))
+        seed_z = float(roi.get('seed_z', 0.0))
+        seed_dist = (x[valid_idx] - float(roi.get('seed_x', 0.0))) ** 2 + (y[valid_idx] - float(roi.get('seed_y', 0.0))) ** 2
+        seed_idx = int(valid_idx[int(np.argmin(seed_dist))])
+        cell_to_idx = {(int(row_arr[i]), int(col_arr[i])): int(i) for i in valid_idx}
         start = (int(row_arr[seed_idx]), int(col_arr[seed_idx]))
         visited = set([start])
         queue = deque([start])
         while queue:
             rr, cc = queue.popleft()
+            cur_idx = cell_to_idx[(rr, cc)]
             for dr in (-1, 0, 1):
                 for dc in (-1, 0, 1):
                     if dr == 0 and dc == 0:
                         continue
                     nb = (rr + dr, cc + dc)
                     if nb in visited or nb not in cell_to_idx:
+                        continue
+                    nb_idx = cell_to_idx[nb]
+                    if abs(float(z[nb_idx]) - float(z[cur_idx])) > tol and abs(float(z[nb_idx]) - seed_z) > tol:
                         continue
                     visited.add(nb)
                     queue.append(nb)
@@ -4005,38 +4010,39 @@ class SurfaceAnalyzerPro(QMainWindow):
             grid = np.zeros(shape, dtype=bool)
             grid[row_arr[keep], col_arr[keep]] = True
             valid_grid = np.zeros(shape, dtype=bool)
-            valid_grid[row_arr[candidate], col_arr[candidate]] = True
+            valid_grid[row_arr[finite], col_arr[finite]] = True
             struct = ndimage.generate_binary_structure(2, 2)
             if dilate > 0:
                 grid = ndimage.binary_dilation(grid, structure=struct, iterations=dilate) & valid_grid
             if erode > 0:
                 grid = ndimage.binary_erosion(grid, structure=struct, iterations=erode) & valid_grid
-            keep = grid[row_arr, col_arr] & candidate
+            keep = grid[row_arr, col_arr] & finite
         return keep
 
     def _smart_face_keep_mask_auto_xy(self, x, y, z, roi, update_radius=False):
         finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
-        candidate = finite & (np.abs(z - float(roi.get('seed_z', 0.0))) <= float(roi.get('z_tolerance_mm', 0.2)))
-        cand_idx = np.where(candidate)[0]
-        if len(cand_idx) == 0:
+        finite_idx = np.where(finite)[0]
+        if len(finite_idx) == 0:
             return np.zeros(len(z), dtype=bool)
+        tol = float(roi.get('z_tolerance_mm', 0.2))
+        seed_z = float(roi.get('seed_z', 0.0))
         radius = float(roi.get('xy_radius_mm', 0.0) or 0.0)
         if radius <= 0:
             radius = self._estimate_xy_neighbor_radius(x[finite], y[finite])
             if update_radius:
                 roi['xy_radius_mm'] = float(radius)
         if radius <= 0:
-            seed_dist = (x[cand_idx] - float(roi.get('seed_x', 0.0))) ** 2 + (y[cand_idx] - float(roi.get('seed_y', 0.0))) ** 2
+            seed_dist = (x[finite_idx] - float(roi.get('seed_x', 0.0))) ** 2 + (y[finite_idx] - float(roi.get('seed_y', 0.0))) ** 2
             keep = np.zeros(len(z), dtype=bool)
-            keep[int(cand_idx[int(np.argmin(seed_dist))])] = True
+            keep[int(finite_idx[int(np.argmin(seed_dist))])] = True
             return keep
 
-        xy = np.column_stack([x[cand_idx], y[cand_idx]])
+        xy = np.column_stack([x[finite_idx], y[finite_idx]])
         tree = cKDTree(xy)
         seed_xy = np.array([[float(roi.get('seed_x', 0.0)), float(roi.get('seed_y', 0.0))]])
         _, seed_local = tree.query(seed_xy, k=1)
         seed_local = int(np.ravel(seed_local)[0])
-        visited = np.zeros(len(cand_idx), dtype=bool)
+        visited = np.zeros(len(finite_idx), dtype=bool)
         visited[seed_local] = True
         queue = deque([seed_local])
         while queue:
@@ -4044,10 +4050,14 @@ class SurfaceAnalyzerPro(QMainWindow):
             for nb in tree.query_ball_point(xy[loc], r=radius):
                 if visited[nb]:
                     continue
+                cur_idx = finite_idx[loc]
+                nb_idx = finite_idx[nb]
+                if abs(float(z[nb_idx]) - float(z[cur_idx])) > tol and abs(float(z[nb_idx]) - seed_z) > tol:
+                    continue
                 visited[nb] = True
                 queue.append(int(nb))
         keep = np.zeros(len(z), dtype=bool)
-        keep[cand_idx[visited]] = True
+        keep[finite_idx[visited]] = True
 
         dilate = int(roi.get('morph_dilate_iters', 0) or 0)
         erode = int(roi.get('morph_erode_iters', 0) or 0)
@@ -4064,7 +4074,7 @@ class SurfaceAnalyzerPro(QMainWindow):
                     if local is None:
                         continue
                     add[all_idx[all_tree.query_ball_point(all_xy[local], r=radius)]] = True
-                keep |= add & candidate
+                keep |= add & finite
             for _ in range(erode):
                 selected = np.where(keep & finite)[0]
                 eroded = keep.copy()
@@ -4075,7 +4085,7 @@ class SurfaceAnalyzerPro(QMainWindow):
                     neigh = all_idx[all_tree.query_ball_point(all_xy[local], r=radius)]
                     if len(neigh) and np.any(~keep[neigh]):
                         eroded[idx] = False
-                keep = eroded & candidate
+                keep = eroded & finite
         return keep
 
     def _smart_face_keep_mask_for_arrays(self, x, y, z, roi, matrix_rc=None, update_radius=False):
@@ -4432,13 +4442,24 @@ class SurfaceAnalyzerPro(QMainWindow):
 
     # ================= 绘图与交互 =================
     def draw_plots(self, tx, ty, tz):
+        roi_active = self._roi_is_active()
         plot_idx = self.active_idx
+        roi_plot_idx = None
+        if roi_active and self.manual_mask is not None:
+            all_idx = np.where(self.manual_mask)[0]
+            roi_mask_all = self._roi_keep_mask_for_arrays(
+                tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data())
+            roi_plot_idx = all_idx[roi_mask_all[all_idx]]
+            plot_idx = all_idx
         display_limit = self._display_limit()
         if len(plot_idx) > display_limit:
             pick = np.linspace(0, len(plot_idx) - 1, display_limit, dtype=int)
             plot_idx = plot_idx[pick]
             self.statusBar().showMessage(
                 f"数据共 {len(self.active_idx):,} 点；绘图抽样显示 {len(plot_idx):,} 点，指标仍按当前导入后的分析数据计算。", 5000)
+        if roi_plot_idx is not None and len(roi_plot_idx) > display_limit:
+            pick = np.linspace(0, len(roi_plot_idx) - 1, display_limit, dtype=int)
+            roi_plot_idx = roi_plot_idx[pick]
 
         self.last_displayed_points = len(plot_idx)
         self._update_import_status_label()
@@ -4446,13 +4467,9 @@ class SurfaceAnalyzerPro(QMainWindow):
         dx, dy = tx[plot_idx], ty[plot_idx]
         plot_z_all, z_axis_label, z_short_label = self._get_plot_z(tx, ty, tz)
         dz = plot_z_all[plot_idx]
-        bg_x = bg_y = bg_z = None
-        if self._roi_is_active() and self.manual_mask is not None:
-            bg_idx = np.where(self.manual_mask)[0]
-            if len(bg_idx) > display_limit:
-                pick = np.linspace(0, len(bg_idx) - 1, display_limit, dtype=int)
-                bg_idx = bg_idx[pick]
-            bg_x, bg_y, bg_z = tx[bg_idx], ty[bg_idx], plot_z_all[bg_idx]
+        roi_x = roi_y = roi_z = None
+        if roi_plot_idx is not None and len(roi_plot_idx) > 0:
+            roi_x, roi_y, roi_z = tx[roi_plot_idx], ty[roi_plot_idx], plot_z_all[roi_plot_idx]
 
         axes = [self.canvas.ax3d, self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz]
         lbs = [("X (mm)", "Y (mm)", z_axis_label),
@@ -4476,39 +4493,36 @@ class SurfaceAnalyzerPro(QMainWindow):
 
         self.canvas.set_titles(self.display_detrended)
 
-        if bg_x is not None and len(bg_x) > 0:
-            bg_params = {'c': '#8f9aa6', 's': 6, 'alpha': 0.16, 'edgecolors': 'none', 'rasterized': True}
-            self.canvas.ax3d.scatter(bg_x, bg_y, bg_z, **bg_params)
-            self.canvas.ax_xy.scatter(
-                bg_x, bg_y, c='#8f9aa6', s=7, alpha=0.20, edgecolors='none',
-                zorder=1, rasterized=True)
-            self.canvas.ax_xz.scatter(bg_x, bg_z, **bg_params)
-            self.canvas.ax_yz.scatter(bg_y, bg_z, **bg_params)
-
         if len(dx) == 0:
             self._draw_roi_overlays(self.canvas.ax_xy)
-            if bg_x is not None and len(bg_x) > 0:
-                for ax in (self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz):
-                    ax.relim()
-                    ax.autoscale_view()
             self.canvas.ax_xy.relim()
             self.canvas.ax_xy.autoscale_view()
             self.canvas.draw()
             return
 
-        point_size = 18 if self._roi_is_active() else 14
-        point_alpha = 0.92 if self._roi_is_active() else 0.85
-        sc_params = {'c': dz, 'cmap': 'turbo', 's': point_size, 'alpha': point_alpha, 'edgecolors': 'none'}
+        sc_params = {'c': dz, 'cmap': 'turbo', 's': 14, 'alpha': 0.85, 'edgecolors': 'none'}
         self.canvas.ax3d.scatter(dx, dy, dz, **sc_params)
         self.canvas.ax_xy.scatter(dx, dy, **sc_params, zorder=2)
         self._draw_roi_overlays(self.canvas.ax_xy)
         self.canvas.ax_xz.scatter(dx, dz, **sc_params)
         self.canvas.ax_yz.scatter(dy, dz, **sc_params)
 
+        if roi_x is not None and len(roi_x) > 0:
+            roi_params = {
+                'c': '#6b7280', 's': 24, 'alpha': 0.72,
+                'edgecolors': '#f8fafc', 'linewidths': 0.25, 'rasterized': True
+            }
+            self.canvas.ax3d.scatter(roi_x, roi_y, roi_z, **roi_params)
+            self.canvas.ax_xy.scatter(roi_x, roi_y, zorder=4, **roi_params)
+            self.canvas.ax_xz.scatter(roi_x, roi_z, zorder=4, **roi_params)
+            self.canvas.ax_yz.scatter(roi_y, roi_z, zorder=4, **roi_params)
+
         # 3D 视图渲染参考平面：原始模式显示最佳拟合平面；去倾斜模式显示残差零平面
         if self.current_coeffs is not None:
             c = self.current_coeffs
-            xx, yy = np.meshgrid(np.linspace(dx.min(), dx.max(), 10), np.linspace(dy.min(), dy.max(), 10))
+            fit_idx = self.active_idx if len(self.active_idx) >= 3 else plot_idx
+            fxp, fyp = tx[fit_idx], ty[fit_idx]
+            xx, yy = np.meshgrid(np.linspace(fxp.min(), fxp.max(), 10), np.linspace(fyp.min(), fyp.max(), 10))
             if self.display_detrended:
                 zz = np.zeros_like(xx)
             else:
