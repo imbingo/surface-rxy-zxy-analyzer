@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-面型及Rxy分析工具 V3.9.0
+面型及Rxy分析工具 V3.9.1
 基于 V1 的修复与增强：
   [优化] V3.7.0 (UI优化·方案A): 整理版左栏 + 顶部结果读数条。仅重排界面，不改动任何算法。
          · 结果指标(平均厚度Z/PV/TTV/Rx/Ry+平面方程)上提为绘图区上方常驻读数条，随分析实时刷新。
@@ -354,7 +354,7 @@ class GapMatchCanvas(FigureCanvas):
 
 
 class SurfaceAnalyzerPro(QMainWindow):
-    APP_VERSION = "V3.9.0"
+    APP_VERSION = "V3.9.1"
     DISPLAY_POINT_LIMIT = 80000
     LARGE_TEXT_FILE_BYTES = 512 * 1024 * 1024
     LARGE_TEXT_IMPORT_LIMIT = 500000
@@ -4443,30 +4443,41 @@ class SurfaceAnalyzerPro(QMainWindow):
     # ================= 绘图与交互 =================
     def draw_plots(self, tx, ty, tz):
         roi_active = self._roi_is_active()
-        plot_idx = self.active_idx
+        xy_plot_idx = self.active_idx
+        detail_plot_idx = self.active_idx
         roi_plot_idx = None
         if roi_active and self.manual_mask is not None:
             all_idx = np.where(self.manual_mask)[0]
             roi_mask_all = self._roi_keep_mask_for_arrays(
                 tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data())
             roi_plot_idx = all_idx[roi_mask_all[all_idx]]
-            plot_idx = all_idx
+            xy_plot_idx = all_idx
+            detail_plot_idx = self.active_idx
         display_limit = self._display_limit()
-        if len(plot_idx) > display_limit:
-            pick = np.linspace(0, len(plot_idx) - 1, display_limit, dtype=int)
-            plot_idx = plot_idx[pick]
+
+        def sample_for_display(source_idx):
+            if len(source_idx) > display_limit:
+                pick = np.linspace(0, len(source_idx) - 1, display_limit, dtype=int)
+                return source_idx[pick], True
+            return source_idx, False
+
+        xy_plot_idx, xy_sampled = sample_for_display(xy_plot_idx)
+        detail_plot_idx, detail_sampled = sample_for_display(detail_plot_idx)
+        if xy_sampled or detail_sampled:
             self.statusBar().showMessage(
-                f"数据共 {len(self.active_idx):,} 点；绘图抽样显示 {len(plot_idx):,} 点，指标仍按当前导入后的分析数据计算。", 5000)
+                f"数据共 {len(self.active_idx):,} 点；XY显示 {len(xy_plot_idx):,} 点，3D/XZ/YZ显示 {len(detail_plot_idx):,} 点，指标仍按当前分析数据计算。", 5000)
         if roi_plot_idx is not None and len(roi_plot_idx) > display_limit:
             pick = np.linspace(0, len(roi_plot_idx) - 1, display_limit, dtype=int)
             roi_plot_idx = roi_plot_idx[pick]
 
-        self.last_displayed_points = len(plot_idx)
+        self.last_displayed_points = len(detail_plot_idx) if roi_active else len(xy_plot_idx)
         self._update_import_status_label()
 
-        dx, dy = tx[plot_idx], ty[plot_idx]
         plot_z_all, z_axis_label, z_short_label = self._get_plot_z(tx, ty, tz)
-        dz = plot_z_all[plot_idx]
+        xy_x, xy_y, xy_z = tx[xy_plot_idx], ty[xy_plot_idx], plot_z_all[xy_plot_idx]
+        detail_x = detail_y = detail_z = np.array([])
+        if detail_plot_idx is not None and len(detail_plot_idx) > 0:
+            detail_x, detail_y, detail_z = tx[detail_plot_idx], ty[detail_plot_idx], plot_z_all[detail_plot_idx]
         roi_x = roi_y = roi_z = None
         if roi_plot_idx is not None and len(roi_plot_idx) > 0:
             roi_x, roi_y, roi_z = tx[roi_plot_idx], ty[roi_plot_idx], plot_z_all[roi_plot_idx]
@@ -4493,34 +4504,33 @@ class SurfaceAnalyzerPro(QMainWindow):
 
         self.canvas.set_titles(self.display_detrended)
 
-        if len(dx) == 0:
+        if len(xy_x) == 0 and len(detail_x) == 0:
             self._draw_roi_overlays(self.canvas.ax_xy)
             self.canvas.ax_xy.relim()
             self.canvas.ax_xy.autoscale_view()
             self.canvas.draw()
             return
 
-        sc_params = {'c': dz, 'cmap': 'turbo', 's': 14, 'alpha': 0.85, 'edgecolors': 'none'}
-        self.canvas.ax3d.scatter(dx, dy, dz, **sc_params)
-        self.canvas.ax_xy.scatter(dx, dy, **sc_params, zorder=2)
+        sc_params = {'cmap': 'turbo', 's': 14, 'alpha': 0.85, 'edgecolors': 'none'}
+        if len(xy_x) > 0:
+            self.canvas.ax_xy.scatter(xy_x, xy_y, c=xy_z, **sc_params, zorder=2)
         self._draw_roi_overlays(self.canvas.ax_xy)
-        self.canvas.ax_xz.scatter(dx, dz, **sc_params)
-        self.canvas.ax_yz.scatter(dy, dz, **sc_params)
+        if len(detail_x) > 0:
+            self.canvas.ax3d.scatter(detail_x, detail_y, detail_z, c=detail_z, **sc_params)
+            self.canvas.ax_xz.scatter(detail_x, detail_z, c=detail_z, **sc_params)
+            self.canvas.ax_yz.scatter(detail_y, detail_z, c=detail_z, **sc_params)
 
         if roi_x is not None and len(roi_x) > 0:
             roi_params = {
                 'c': '#6b7280', 's': 24, 'alpha': 0.72,
                 'edgecolors': '#f8fafc', 'linewidths': 0.25, 'rasterized': True
             }
-            self.canvas.ax3d.scatter(roi_x, roi_y, roi_z, **roi_params)
             self.canvas.ax_xy.scatter(roi_x, roi_y, zorder=4, **roi_params)
-            self.canvas.ax_xz.scatter(roi_x, roi_z, zorder=4, **roi_params)
-            self.canvas.ax_yz.scatter(roi_y, roi_z, zorder=4, **roi_params)
 
         # 3D 视图渲染参考平面：原始模式显示最佳拟合平面；去倾斜模式显示残差零平面
         if self.current_coeffs is not None:
             c = self.current_coeffs
-            fit_idx = self.active_idx if len(self.active_idx) >= 3 else plot_idx
+            fit_idx = self.active_idx if len(self.active_idx) >= 3 else detail_plot_idx
             fxp, fyp = tx[fit_idx], ty[fit_idx]
             xx, yy = np.meshgrid(np.linspace(fxp.min(), fxp.max(), 10), np.linspace(fyp.min(), fyp.max(), 10))
             if self.display_detrended:
