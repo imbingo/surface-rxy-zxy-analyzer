@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-面型及Rxy分析工具 V3.9.1
+面型及Rxy分析工具 V3.9.2
 基于 V1 的修复与增强：
   [优化] V3.7.0 (UI优化·方案A): 整理版左栏 + 顶部结果读数条。仅重排界面，不改动任何算法。
          · 结果指标(平均厚度Z/PV/TTV/Rx/Ry+平面方程)上提为绘图区上方常驻读数条，随分析实时刷新。
@@ -62,6 +62,7 @@
   [修复] V3.8.6: 下拉框不再被鼠标滚轮误切换；ROI 状态摘要去掉重复的 ROI 列表小字。
   [增强] V3.9.0: 迁移 VR 工具核心功能，新增基恩士/VR 高度矩阵导入与智能抓面 ROI；
          智能抓面同时支持高度矩阵与 XYZ 点云，并在平行度分析中输出 VR 口径台阶高度差。
+  [优化] V3.9.2: 大文件默认改为文件位置均匀抽样并降低默认点数；智能 ROI 新增同平面残差抓取与推荐容差，不做补洞连缝。
 注意：Rx/Ry 符号约定 (Rx≈+dZ/dY, Ry≈-dZ/dX) 需用已知倾角标准件实测校准一次。
 """
 import sys
@@ -91,7 +92,6 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QSizeGrip)
 from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
-from scipy import ndimage
 from scipy.spatial import cKDTree
 
 
@@ -354,37 +354,37 @@ class GapMatchCanvas(FigureCanvas):
 
 
 class SurfaceAnalyzerPro(QMainWindow):
-    APP_VERSION = "V3.9.1"
-    DISPLAY_POINT_LIMIT = 80000
-    LARGE_TEXT_FILE_BYTES = 512 * 1024 * 1024
-    LARGE_TEXT_IMPORT_LIMIT = 500000
+    APP_VERSION = "V3.9.2"
+    DISPLAY_POINT_LIMIT = 30000
+    LARGE_TEXT_FILE_BYTES = 64 * 1024 * 1024
+    LARGE_TEXT_IMPORT_LIMIT = 100000
     BIGFILE_MODE_PRESETS = {
         'fast': {
             'label': '快速',
             'auto_sample': True,
-            'threshold_mb': 128,
-            'import_limit': 150000,
-            'display_limit': 40000,
-            'sample_method': 'spatial_grid',
+            'threshold_mb': 64,
+            'import_limit': 60000,
+            'display_limit': 20000,
+            'sample_method': 'file_position',
             'grid_count': 0,
             'description': '优先不卡顿：较早触发抽样，适合先快速判断面型趋势和导入格式。'
         },
         'standard': {
             'label': '标准',
             'auto_sample': True,
-            'threshold_mb': 512,
-            'import_limit': 500000,
-            'display_limit': 80000,
-            'sample_method': 'spatial_grid',
+            'threshold_mb': 64,
+            'import_limit': 100000,
+            'display_limit': 30000,
+            'sample_method': 'file_position',
             'grid_count': 0,
-            'description': '默认推荐：延续 V3.8.0 口径，兼顾速度和拟合稳定性。'
+            'description': '默认推荐：按文件位置均匀抽样，优先保证普通电脑流畅导入和交互。'
         },
         'precise': {
             'label': '精确',
             'auto_sample': True,
-            'threshold_mb': 512,
-            'import_limit': 1500000,
-            'display_limit': 150000,
+            'threshold_mb': 256,
+            'import_limit': 300000,
+            'display_limit': 60000,
             'sample_method': 'spatial_grid',
             'grid_count': 0,
             'description': '保留更多点参与拟合，导入和绘图会更慢，适合最终复核。'
@@ -412,7 +412,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.last_import_note = ""        # 最近一次导入说明
         self.last_displayed_points = 0     # 最近一次绘图实际显示点数
         self.large_file_mode = 'standard'  # 大文件策略模式：fast / standard / precise / custom
-        self.large_file_sample_method = 'spatial_grid'  # V3.8.3 默认：空间网格均匀采样
+        self.large_file_sample_method = 'file_position'  # V3.9.2 默认：文件位置均匀抽样，优先流畅
         self.large_text_grid_count = 0     # 0=自动；>0 为用户指定的 X/Y 单边网格数
         self.large_text_stride_n = 10      # 倍率降采样：每 N 行/像素取 1 个
         self.height_matrix_pitch_x_um = 47.242
@@ -1108,6 +1108,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.spin_roi_cx = NoWheelDoubleSpinBox(); self.spin_roi_cy = NoWheelDoubleSpinBox()
         self.spin_roi_w = NoWheelDoubleSpinBox(); self.spin_roi_h = NoWheelDoubleSpinBox()
         self.spin_roi_r = NoWheelDoubleSpinBox()
+        self.cb_smart_mode = NoWheelComboBox()
         self.spin_smart_tol = NoWheelDoubleSpinBox()
         self.spin_smart_dilate = NoWheelSpinBox()
         self.spin_smart_erode = NoWheelSpinBox()
@@ -1118,26 +1119,36 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.spin_smart_tol.setDecimals(4)
         self.spin_smart_tol.setRange(0.0001, 1000.0)
         self.spin_smart_tol.setSingleStep(0.01)
-        self.spin_smart_tol.setValue(0.2)
-        self.spin_smart_tol.setToolTip("智能抓面按 |Z-种子点Z| <= 容差 先筛选候选点，单位 mm。")
+        self.spin_smart_tol.setValue(0.02)
+        self.spin_smart_tol.setToolTip("智能抓面容差，单位 mm。导入文件后会按当前 Z 分布给出推荐值。")
+        self.cb_smart_mode.addItem("同平面抓取", "plane_residual")
+        self.cb_smart_mode.addItem("连通抓取", "connected")
+        self.cb_smart_mode.setToolTip("同平面抓取按种子附近局部平面残差筛选，不做补洞；连通抓取按 XY 邻接和高度连续扩展。")
         for sp in (self.spin_smart_dilate, self.spin_smart_erode):
             sp.setRange(0, 20)
             sp.setValue(0)
-            sp.setToolTip("对智能抓面结果做连通邻域修边；0 表示不处理。")
+            sp.setEnabled(False)
+            sp.setVisible(False)
+            sp.setToolTip("V3.9.2 起不允许自动补洞/连缝，避免跨缝抓错面。")
         adv.addWidget(QLabel("中心X:"), 0, 0); adv.addWidget(self.spin_roi_cx, 0, 1)
         adv.addWidget(QLabel("中心Y:"), 1, 0); adv.addWidget(self.spin_roi_cy, 1, 1)
         self.lbl_roi_w = QLabel("宽度:")
         self.lbl_roi_h = QLabel("高度:")
         self.lbl_roi_r = QLabel("半径:")
+        self.lbl_smart_mode = QLabel("抓面模式:")
         self.lbl_smart_tol = QLabel("抓面容差:")
         self.lbl_smart_dilate = QLabel("抓面膨胀:")
         self.lbl_smart_erode = QLabel("抓面收缩:")
+        self.lbl_smart_tol_hint = QLabel("推荐: --")
+        self.lbl_smart_tol_hint.setObjectName("mutedNote")
+        self.lbl_smart_dilate.setVisible(False)
+        self.lbl_smart_erode.setVisible(False)
         adv.addWidget(self.lbl_roi_w, 2, 0); adv.addWidget(self.spin_roi_w, 2, 1)
         adv.addWidget(self.lbl_roi_h, 3, 0); adv.addWidget(self.spin_roi_h, 3, 1)
         adv.addWidget(self.lbl_roi_r, 4, 0); adv.addWidget(self.spin_roi_r, 4, 1)
-        adv.addWidget(self.lbl_smart_tol, 5, 0); adv.addWidget(self.spin_smart_tol, 5, 1)
-        adv.addWidget(self.lbl_smart_dilate, 6, 0); adv.addWidget(self.spin_smart_dilate, 6, 1)
-        adv.addWidget(self.lbl_smart_erode, 7, 0); adv.addWidget(self.spin_smart_erode, 7, 1)
+        adv.addWidget(self.lbl_smart_mode, 5, 0); adv.addWidget(self.cb_smart_mode, 5, 1)
+        adv.addWidget(self.lbl_smart_tol, 6, 0); adv.addWidget(self.spin_smart_tol, 6, 1)
+        adv.addWidget(self.lbl_smart_tol_hint, 7, 0, 1, 2)
         self.btn_roi_add_input = QPushButton("添加输入ROI")
         self.btn_roi_add_input.setObjectName("accentSoftBtn")
         self.btn_roi_add_input.clicked.connect(self.add_roi_from_inputs)
@@ -2032,8 +2043,10 @@ class SurfaceAnalyzerPro(QMainWindow):
         self.large_file_mode = str(lf.get('mode', self.large_file_mode))
         self.auto_sample_large_text = bool(lf.get('auto_sample', self.auto_sample_large_text))
         self.large_file_sample_method = str(lf.get('sample_method', self.large_file_sample_method))
-        if self.large_file_sample_method not in ('spatial_grid', 'file_position', 'stride'):
-            self.large_file_sample_method = 'spatial_grid'
+        if self.large_file_sample_method == 'stride':
+            self.large_file_sample_method = 'file_position'
+        if self.large_file_sample_method not in ('spatial_grid', 'file_position'):
+            self.large_file_sample_method = 'file_position'
         self.large_text_grid_count = int(lf.get('grid_count', self.large_text_grid_count))
         self.large_text_stride_n = int(lf.get('stride_n', self.large_text_stride_n))
         self.large_text_threshold_mb = int(lf.get('threshold_mb', self.large_text_threshold_mb))
@@ -2472,11 +2485,9 @@ class SurfaceAnalyzerPro(QMainWindow):
         return '手动参数：当前阈值、导入上限或显示上限与三档预设不完全一致。'
 
     def _sample_method_label(self, method=None):
-        method = method or getattr(self, 'large_file_sample_method', 'spatial_grid')
+        method = method or getattr(self, 'large_file_sample_method', 'file_position')
         if method == 'spatial_grid':
             return '空间网格均匀采样'
-        if method == 'stride':
-            return '倍率降采样'
         return '文件位置均匀采样'
 
     def _grid_count_label(self, grid_count=None):
@@ -2496,7 +2507,7 @@ class SurfaceAnalyzerPro(QMainWindow):
                     and threshold == int(preset['threshold_mb'])
                     and rows == int(preset['import_limit'])
                     and shown == int(preset['display_limit'])
-                    and method == str(preset.get('sample_method', 'spatial_grid'))
+                    and ('file_position' if method == 'stride' else method) == str(preset.get('sample_method', 'file_position'))
                     and grid == int(preset.get('grid_count', 0))):
                 return key
         return 'custom'
@@ -2558,7 +2569,6 @@ class SurfaceAnalyzerPro(QMainWindow):
                    f"自动抽样: {'开启' if self.auto_sample_large_text else '关闭'}\n"
                    f"采样方式: {self._sample_method_label()}\n"
                    f"空间网格数: {self._grid_count_label()}\n"
-                   f"倍率降采样N: {self.large_text_stride_n}\n"
                    f"触发阈值: {self.large_text_threshold_mb} MB\n"
                    f"导入上限: {self.large_text_import_limit:,} 行\n"
                    f"显示上限: {self.display_point_limit:,} 点\n\n{text}")
@@ -2606,12 +2616,14 @@ class SurfaceAnalyzerPro(QMainWindow):
 
         grid.addWidget(QLabel("采样方式:"), 3, 0)
         cb_sample_method = NoWheelComboBox()
-        cb_sample_method.addItem("空间网格均匀采样", "spatial_grid")
         cb_sample_method.addItem("文件位置均匀采样", "file_position")
-        cb_sample_method.addItem("倍率降采样", "stride")
-        sample_idx = cb_sample_method.findData(getattr(self, 'large_file_sample_method', 'spatial_grid'))
+        cb_sample_method.addItem("空间网格均匀采样", "spatial_grid")
+        current_method = getattr(self, 'large_file_sample_method', 'file_position')
+        if current_method == 'stride':
+            current_method = 'file_position'
+        sample_idx = cb_sample_method.findData(current_method)
         cb_sample_method.setCurrentIndex(sample_idx if sample_idx >= 0 else 0)
-        cb_sample_method.setToolTip("空间网格采样按 X/Y 分格，每格保留代表点、Z最小点和Z最大点；文件位置采样按文件顺序抽行；倍率降采样按每N行/像素取1个点。")
+        cb_sample_method.setToolTip("文件位置采样按文件字节位置均匀抽取有效行，优先流畅；空间网格采样按 X/Y 分格，每格保留代表点、Z最小点和Z最大点。")
         grid.addWidget(cb_sample_method, 3, 1)
 
         grid.addWidget(QLabel("空间网格数:"), 4, 0)
@@ -2623,59 +2635,51 @@ class SurfaceAnalyzerPro(QMainWindow):
         spin_grid.setToolTip("0=自动按导入上限计算；自定义时表示 X/Y 单边网格数，例如 300 表示 300×300。每格最多保留3个点。")
         grid.addWidget(spin_grid, 4, 1)
 
-        grid.addWidget(QLabel("倍率降采样N:"), 5, 0)
-        spin_stride = NoWheelSpinBox()
-        spin_stride.setRange(1, 1000000)
-        spin_stride.setSingleStep(1)
-        spin_stride.setValue(int(getattr(self, 'large_text_stride_n', 10)))
-        spin_stride.setToolTip("倍率降采样：N=10 表示每10行/每10个像素取1个点。速度快，但可能丢失局部极值。")
-        grid.addWidget(spin_stride, 5, 1)
-
-        grid.addWidget(QLabel("触发阈值(MB):"), 6, 0)
+        grid.addWidget(QLabel("触发阈值(MB):"), 5, 0)
         spin_mb = NoWheelSpinBox()
         spin_mb.setRange(1, 4096)
         spin_mb.setValue(int(self.large_text_threshold_mb))
-        spin_mb.setToolTip("文件大小达到该阈值时触发预抽样导入。默认512MB。")
-        grid.addWidget(spin_mb, 6, 1)
+        spin_mb.setToolTip("文件大小达到该阈值时触发预抽样导入。V3.9.2 默认64MB，优先保证流畅。")
+        grid.addWidget(spin_mb, 5, 1)
 
-        grid.addWidget(QLabel("导入上限(行):"), 7, 0)
+        grid.addWidget(QLabel("导入上限(行):"), 6, 0)
         spin_import = NoWheelSpinBox()
         spin_import.setRange(10000, 5000000)
         spin_import.setSingleStep(50000)
         spin_import.setValue(int(self.large_text_import_limit))
         spin_import.setToolTip("超大文本预抽样最多导入的行数。注意：该上限影响后续拟合/滤波指标。")
-        grid.addWidget(spin_import, 7, 1)
+        grid.addWidget(spin_import, 6, 1)
 
-        grid.addWidget(QLabel("显示上限(点):"), 8, 0)
+        grid.addWidget(QLabel("显示上限(点):"), 7, 0)
         spin_display = NoWheelSpinBox()
         spin_display.setRange(5000, 1000000)
         spin_display.setSingleStep(5000)
         spin_display.setValue(int(self.display_point_limit))
         spin_display.setToolTip("仅限制右侧绘图显示点数，不改变已导入数据和Rx/Ry/PV/TTV计算。")
-        grid.addWidget(spin_display, 8, 1)
+        grid.addWidget(spin_display, 7, 1)
 
-        grid.addWidget(QLabel("矩阵Pitch X(µm):"), 9, 0)
+        grid.addWidget(QLabel("矩阵Pitch X(µm):"), 8, 0)
         spin_pitch_x = NoWheelDoubleSpinBox()
         spin_pitch_x.setDecimals(4)
         spin_pitch_x.setRange(0.0001, 1e6)
         spin_pitch_x.setValue(float(self.height_matrix_pitch_x_um))
         spin_pitch_x.setToolTip("VR/基恩士高度矩阵无表头或表头未写 Pitch 时，用该 X 像素间距生成 X(mm)。")
-        grid.addWidget(spin_pitch_x, 9, 1)
+        grid.addWidget(spin_pitch_x, 8, 1)
 
-        grid.addWidget(QLabel("矩阵Pitch Y(µm):"), 10, 0)
+        grid.addWidget(QLabel("矩阵Pitch Y(µm):"), 9, 0)
         spin_pitch_y = NoWheelDoubleSpinBox()
         spin_pitch_y.setDecimals(4)
         spin_pitch_y.setRange(0.0001, 1e6)
         spin_pitch_y.setValue(float(self.height_matrix_pitch_y_um))
         spin_pitch_y.setToolTip("VR/基恩士高度矩阵无表头或表头未写 Pitch 时，用该 Y 像素间距生成 Y(mm)。")
-        grid.addWidget(spin_pitch_y, 10, 1)
+        grid.addWidget(spin_pitch_y, 9, 1)
 
-        grid.addWidget(QLabel("矩阵Z默认单位:"), 11, 0)
+        grid.addWidget(QLabel("矩阵Z默认单位:"), 10, 0)
         cb_matrix_z_unit = NoWheelComboBox()
         cb_matrix_z_unit.addItems(["µm", "mm"])
         cb_matrix_z_unit.setCurrentText(self.height_matrix_z_unit)
         cb_matrix_z_unit.setToolTip("高度矩阵表头未写 Z Unit 时使用；若表头写明 um/mm，会优先采用表头。")
-        grid.addWidget(cb_matrix_z_unit, 11, 1)
+        grid.addWidget(cb_matrix_z_unit, 10, 1)
 
         applying_preset = {'active': False}
 
@@ -2702,7 +2706,7 @@ class SurfaceAnalyzerPro(QMainWindow):
             applying_preset['active'] = True
             try:
                 chk_auto.setChecked(bool(preset['auto_sample']))
-                idx = cb_sample_method.findData(str(preset.get('sample_method', 'spatial_grid')))
+                idx = cb_sample_method.findData(str(preset.get('sample_method', 'file_position')))
                 cb_sample_method.setCurrentIndex(idx if idx >= 0 else 0)
                 spin_grid.setValue(int(preset.get('grid_count', 0)))
                 spin_mb.setValue(int(preset['threshold_mb']))
@@ -2714,20 +2718,18 @@ class SurfaceAnalyzerPro(QMainWindow):
 
         def update_grid_enabled(*_args):
             spin_grid.setEnabled(cb_sample_method.currentData() == 'spatial_grid')
-            spin_stride.setEnabled(cb_sample_method.currentData() == 'stride')
             sync_mode_from_values()
 
         cb_mode.currentIndexChanged.connect(apply_preset_from_combo)
         chk_auto.toggled.connect(sync_mode_from_values)
         cb_sample_method.currentIndexChanged.connect(update_grid_enabled)
         spin_grid.valueChanged.connect(sync_mode_from_values)
-        spin_stride.valueChanged.connect(sync_mode_from_values)
         spin_mb.valueChanged.connect(sync_mode_from_values)
         spin_import.valueChanged.connect(sync_mode_from_values)
         spin_display.valueChanged.connect(sync_mode_from_values)
         update_grid_enabled()
 
-        note = QLabel("说明：空间网格采样会先扫描全文件确定 X/Y 范围，再按网格保留代表点、Z最小点和Z最大点；倍率降采样速度最快但可能丢失极值；导入抽样会影响参与分析的数据量，显示上限只影响绘图。")
+        note = QLabel("说明：文件位置采样优先保证导入和交互流畅；空间网格采样会先扫描全文件确定 X/Y 范围，再按网格保留代表点、Z最小点和Z最大点。导入抽样会影响参与分析的数据量，显示上限只影响绘图。")
         note.setWordWrap(True)
         note.setStyleSheet("color: #7f8c8d; font-size: 11px;")
         grid.addWidget(note, 12, 0, 1, 2)
@@ -2748,7 +2750,6 @@ class SurfaceAnalyzerPro(QMainWindow):
             self.auto_sample_large_text = chk_auto.isChecked()
             self.large_file_sample_method = str(cb_sample_method.currentData())
             self.large_text_grid_count = int(spin_grid.value())
-            self.large_text_stride_n = int(spin_stride.value())
             self.large_text_threshold_mb = int(spin_mb.value())
             self.large_text_import_limit = int(spin_import.value())
             self.display_point_limit = int(spin_display.value())
@@ -3189,9 +3190,6 @@ class SurfaceAnalyzerPro(QMainWindow):
         pitch_x, pitch_y, z_unit, meta_source = self._height_matrix_header_meta(path, enc, data_line_no)
         auto_sample = bool(getattr(self, 'auto_sample_large_text', True))
         if auto_sample and file_size >= self._large_text_threshold_bytes():
-            if getattr(self, 'large_file_sample_method', 'spatial_grid') == 'stride':
-                return self._sample_large_height_matrix_by_stride(
-                    path, enc, sep, ncols, data_line_no, pitch_x, pitch_y, z_unit, meta_source)
             return self._sample_large_height_matrix(
                 path, enc, sep, ncols, data_line_no, pitch_x, pitch_y, z_unit, meta_source)
 
@@ -3257,7 +3255,7 @@ class SurfaceAnalyzerPro(QMainWindow):
     def _sample_large_text(self, path, enc, sep, ncols, column_names=None):
         method = getattr(self, 'large_file_sample_method', 'spatial_grid')
         if method == 'stride':
-            return self._sample_large_text_by_stride(path, enc, sep, ncols, column_names)
+            method = 'file_position'
         if method == 'file_position':
             return self._sample_large_text_by_position(path, enc, sep, ncols, column_names)
         return self._sample_large_text_by_spatial_grid(path, enc, sep, ncols, column_names)
@@ -3744,6 +3742,8 @@ class SurfaceAnalyzerPro(QMainWindow):
                 temp_df['_matrix_col'] = temp_df['_matrix_col'].astype(int)
                 out_cols += ['_matrix_row', '_matrix_col']
             self.df_raw = temp_df[out_cols]
+            self._update_smart_tolerance_recommendation(self.df_raw['Z'].to_numpy(dtype=float),
+                                                        apply_value=not preserve_analysis_settings)
             self.import_info['valid_rows'] = len(self.df_raw)
             self.import_info['display_limit'] = self._display_limit()
             self._update_import_status_label()
@@ -3887,11 +3887,13 @@ class SurfaceAnalyzerPro(QMainWindow):
             return (f"{name}: 圆形 cx={roi.get('cx', 0):.4f}, cy={roi.get('cy', 0):.4f}, "
                     f"r={roi.get('radius', 0):.4f}")
         if roi.get('type') == 'smart_face':
+            mode = str(roi.get('smart_mode', 'plane_residual'))
+            mode_text = "同平面" if mode == 'plane_residual' else "连通"
             conn = "矩阵8邻域" if roi.get('connectivity') == 'matrix8' else "XY自动邻接"
             radius = float(roi.get('xy_radius_mm', 0.0))
             radius_text = f", 邻接r={radius:.4f}" if radius > 0 else ""
             return (f"{name}: 智能抓面 seed=({roi.get('seed_x', 0):.4f}, {roi.get('seed_y', 0):.4f}), "
-                    f"Z={roi.get('seed_z', 0):.5f}, 容差={roi.get('z_tolerance_mm', 0):.4f}mm, {conn}{radius_text}")
+                    f"Z={roi.get('seed_z', 0):.5f}, 容差={roi.get('z_tolerance_mm', 0):.4f}mm, {mode_text}, {conn}{radius_text}")
         return (f"{name}: 矩形 cx={roi.get('cx', 0):.4f}, cy={roi.get('cy', 0):.4f}, "
                 f"w={roi.get('width', 0):.4f}, h={roi.get('height', 0):.4f}")
 
@@ -3915,12 +3917,15 @@ class SurfaceAnalyzerPro(QMainWindow):
                         'seed_y': float(raw.get('seed_y', raw.get('cy', 0.0))),
                         'seed_z': float(raw.get('seed_z', 0.0)),
                         'z_tolerance_mm': max(float(raw.get('z_tolerance_mm', 0.2)), 1e-9),
+                        'smart_mode': str(raw.get('smart_mode', 'plane_residual')),
                         'connectivity': str(raw.get('connectivity', 'auto_xy')),
                         'xy_radius_mm': max(float(raw.get('xy_radius_mm', 0.0)), 0.0),
-                        'morph_dilate_iters': max(int(raw.get('morph_dilate_iters', 0)), 0),
-                        'morph_erode_iters': max(int(raw.get('morph_erode_iters', 0)), 0),
+                        'morph_dilate_iters': 0,
+                        'morph_erode_iters': 0,
                         'point_count_at_create': int(raw.get('point_count_at_create', 0) or 0),
                     })
+                    if roi['smart_mode'] not in ('plane_residual', 'connected'):
+                        roi['smart_mode'] = 'plane_residual'
                     if roi['connectivity'] not in ('matrix8', 'auto_xy'):
                         roi['connectivity'] = 'auto_xy'
                 else:
@@ -3970,6 +3975,33 @@ class SurfaceAnalyzerPro(QMainWindow):
         except Exception:
             return None
 
+    @staticmethod
+    def _recommend_smart_tolerance_mm(z):
+        values = np.asarray(z, dtype=float)
+        values = values[np.isfinite(values)]
+        if len(values) == 0:
+            return 0.02
+        if len(values) > 100000:
+            pick = np.linspace(0, len(values) - 1, 100000, dtype=int)
+            values = values[pick]
+        p05, p95 = np.percentile(values, [5, 95])
+        p01, p99 = np.percentile(values, [1, 99])
+        span = max(float(p95 - p05), float(p99 - p01) * 0.35, 1e-6)
+        return float(np.clip(span * 0.03, 0.002, 0.05))
+
+    def _update_smart_tolerance_recommendation(self, z=None, apply_value=False):
+        if z is None:
+            if self.df_raw is None or 'Z' not in self.df_raw.columns:
+                return
+            z = self.df_raw['Z'].to_numpy(dtype=float)
+        tol = self._recommend_smart_tolerance_mm(z)
+        if hasattr(self, 'lbl_smart_tol_hint'):
+            self.lbl_smart_tol_hint.setText(f"推荐: {tol:.4f} mm（按当前文件 Z 分布估算）")
+        if apply_value and hasattr(self, 'spin_smart_tol'):
+            self.spin_smart_tol.blockSignals(True)
+            self.spin_smart_tol.setValue(tol)
+            self.spin_smart_tol.blockSignals(False)
+
     def _smart_face_keep_mask_matrix(self, x, y, z, roi, matrix_rc):
         row_arr, col_arr = matrix_rc
         finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
@@ -4003,20 +4035,6 @@ class SurfaceAnalyzerPro(QMainWindow):
         if visited:
             keep[[cell_to_idx[cell] for cell in visited]] = True
 
-        shape = (int(np.nanmax(row_arr)) + 1, int(np.nanmax(col_arr)) + 1)
-        dilate = int(roi.get('morph_dilate_iters', 0) or 0)
-        erode = int(roi.get('morph_erode_iters', 0) or 0)
-        if (dilate > 0 or erode > 0) and shape[0] * shape[1] <= 20_000_000:
-            grid = np.zeros(shape, dtype=bool)
-            grid[row_arr[keep], col_arr[keep]] = True
-            valid_grid = np.zeros(shape, dtype=bool)
-            valid_grid[row_arr[finite], col_arr[finite]] = True
-            struct = ndimage.generate_binary_structure(2, 2)
-            if dilate > 0:
-                grid = ndimage.binary_dilation(grid, structure=struct, iterations=dilate) & valid_grid
-            if erode > 0:
-                grid = ndimage.binary_erosion(grid, structure=struct, iterations=erode) & valid_grid
-            keep = grid[row_arr, col_arr] & finite
         return keep
 
     def _smart_face_keep_mask_auto_xy(self, x, y, z, roi, update_radius=False):
@@ -4059,33 +4077,44 @@ class SurfaceAnalyzerPro(QMainWindow):
         keep = np.zeros(len(z), dtype=bool)
         keep[finite_idx[visited]] = True
 
-        dilate = int(roi.get('morph_dilate_iters', 0) or 0)
-        erode = int(roi.get('morph_erode_iters', 0) or 0)
-        if dilate > 0 or erode > 0:
-            all_xy = np.column_stack([x[finite], y[finite]])
-            all_idx = np.where(finite)[0]
-            all_tree = cKDTree(all_xy)
-            local_by_global = {int(global_idx): int(local_idx) for local_idx, global_idx in enumerate(all_idx)}
-            for _ in range(dilate):
-                selected = np.where(keep & finite)[0]
-                add = np.zeros(len(z), dtype=bool)
-                for idx in selected:
-                    local = local_by_global.get(int(idx))
-                    if local is None:
-                        continue
-                    add[all_idx[all_tree.query_ball_point(all_xy[local], r=radius)]] = True
-                keep |= add & finite
-            for _ in range(erode):
-                selected = np.where(keep & finite)[0]
-                eroded = keep.copy()
-                for idx in selected:
-                    local = local_by_global.get(int(idx))
-                    if local is None:
-                        continue
-                    neigh = all_idx[all_tree.query_ball_point(all_xy[local], r=radius)]
-                    if len(neigh) and np.any(~keep[neigh]):
-                        eroded[idx] = False
-                keep = eroded & finite
+        return keep
+
+    def _smart_face_keep_mask_plane_residual(self, x, y, z, roi, update_radius=False):
+        finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+        finite_idx = np.where(finite)[0]
+        if len(finite_idx) < 3:
+            return np.zeros(len(z), dtype=bool)
+        tol = float(roi.get('z_tolerance_mm', 0.02))
+        radius = float(roi.get('xy_radius_mm', 0.0) or 0.0)
+        if radius <= 0:
+            radius = self._estimate_xy_neighbor_radius(x[finite], y[finite])
+            if update_radius:
+                roi['xy_radius_mm'] = float(radius)
+
+        xy = np.column_stack([x[finite_idx], y[finite_idx]])
+        tree = cKDTree(xy)
+        seed_xy = np.array([[float(roi.get('seed_x', 0.0)), float(roi.get('seed_y', 0.0))]])
+        _, seed_local = tree.query(seed_xy, k=1)
+        seed_local = int(np.ravel(seed_local)[0])
+
+        k = min(len(finite_idx), max(30, min(300, int(np.sqrt(len(finite_idx))) * 2)))
+        if radius > 0:
+            local = tree.query_ball_point(xy[seed_local], r=radius * 8.0)
+            if len(local) < 12:
+                _, local = tree.query(xy[seed_local], k=k)
+        else:
+            _, local = tree.query(xy[seed_local], k=k)
+        local = np.asarray(local, dtype=int).ravel()
+        local_idx = finite_idx[local]
+        if len(local_idx) < 3:
+            return np.zeros(len(z), dtype=bool)
+
+        try:
+            coeffs = self.fit_plane(x[local_idx], y[local_idx], z[local_idx])
+        except Exception:
+            return np.zeros(len(z), dtype=bool)
+        residual = z - (coeffs[0] * x + coeffs[1] * y + coeffs[2])
+        keep = finite & (np.abs(residual) <= tol)
         return keep
 
     def _smart_face_keep_mask_for_arrays(self, x, y, z, roi, matrix_rc=None, update_radius=False):
@@ -4094,6 +4123,8 @@ class SurfaceAnalyzerPro(QMainWindow):
         x = np.asarray(x, dtype=float)
         y = np.asarray(y, dtype=float)
         z = np.asarray(z, dtype=float)
+        if str(roi.get('smart_mode', 'plane_residual')) == 'plane_residual':
+            return self._smart_face_keep_mask_plane_residual(x, y, z, roi, update_radius=update_radius)
         if roi.get('connectivity') == 'matrix8' and matrix_rc is not None:
             try:
                 return self._smart_face_keep_mask_matrix(x, y, z, roi, matrix_rc)
@@ -4134,9 +4165,11 @@ class SurfaceAnalyzerPro(QMainWindow):
             w.setEnabled((not is_circle) and (not is_smart))
         for w in (self.lbl_roi_r, self.spin_roi_r):
             w.setEnabled(is_circle and not is_smart)
-        for w in (self.lbl_smart_tol, self.spin_smart_tol, self.lbl_smart_dilate,
-                  self.spin_smart_dilate, self.lbl_smart_erode, self.spin_smart_erode):
+        for w in (self.lbl_smart_mode, self.cb_smart_mode, self.lbl_smart_tol,
+                  self.spin_smart_tol, self.lbl_smart_tol_hint):
             w.setEnabled(is_smart)
+        for w in (self.lbl_smart_dilate, self.spin_smart_dilate, self.lbl_smart_erode, self.spin_smart_erode):
+            w.setEnabled(False)
         self.btn_roi_add_input.setEnabled(not is_smart)
         if self.btn_roi_mouse.isChecked():
             self.btn_roi_mouse.setText("退出智能抓面" if is_smart else "退出框选 ROI")
@@ -4145,7 +4178,7 @@ class SurfaceAnalyzerPro(QMainWindow):
         if self.selection_mode in ('roi_rect', 'roi_circle', 'roi_smart'):
             self.selection_mode = 'roi_smart' if is_smart else 'roi_circle' if is_circle else 'roi_rect'
             self.statusBar().showMessage(
-                "智能抓面模式：在 XY 图点击种子点，可连续抓取多个同高度连通区域。"
+                "智能抓面模式：在 XY 图点击种子点；默认按同平面残差抓取，不自动补洞。"
                 if is_smart else
                 f"ROI 连续框选模式: {'圆形' if is_circle else '矩形'}。在 XY 图中继续拖拽添加区域。", 5000)
 
@@ -4578,10 +4611,11 @@ class SurfaceAnalyzerPro(QMainWindow):
             'seed_y': float(ty[seed_idx]),
             'seed_z': float(tz[seed_idx]),
             'z_tolerance_mm': float(self.spin_smart_tol.value()),
+            'smart_mode': str(self.cb_smart_mode.currentData()) if hasattr(self, 'cb_smart_mode') else 'plane_residual',
             'connectivity': connectivity,
             'xy_radius_mm': 0.0,
-            'morph_dilate_iters': int(self.spin_smart_dilate.value()),
-            'morph_erode_iters': int(self.spin_smart_erode.value()),
+            'morph_dilate_iters': 0,
+            'morph_erode_iters': 0,
         }
         matrix_rc = self._matrix_rc_for_current_data()
         keep = self._smart_face_keep_mask_for_arrays(
@@ -4593,10 +4627,11 @@ class SurfaceAnalyzerPro(QMainWindow):
             return
         roi['point_count_at_create'] = count
         self._add_roi_shape(roi, keep_roi_mode=True)
+        mode_text = "同平面残差" if roi.get('smart_mode') == 'plane_residual' else "连通抓取"
         conn_text = "矩阵8邻域" if roi['connectivity'] == 'matrix8' else f"XY邻接r={roi.get('xy_radius_mm', 0):.4f}mm"
         self.statusBar().showMessage(
             f"已添加智能抓面 ROI: {count:,} 点 | 容差 {roi['z_tolerance_mm']:.4f} mm | "
-            f"{conn_text}",
+            f"{mode_text} | {conn_text}",
             8000)
 
     def on_select(self, eclick, erelease, view_type):
