@@ -101,6 +101,7 @@ class ReportingMixin:
                 f"# 滤波模式: {filter_text}",
                 f"# ROI: {roi_info['summary']}",
                 f"# 滤波剔除点数: {self.n_filtered} | 手动删除点数: {int((~self.manual_mask).sum())} | 导出点数: {len(fz)}",
+                f"# 手动删除重放: {self._manual_deletion_summary()}",
                 f"# 当前显示模式: {'去倾斜残差显示(仅显示/框选)' if self.display_detrended else '原始Z高度显示'}",
                 f"# 导入方式: {self.import_info.get('strategy', '--')} | 是否抽样: {self.import_info.get('sampled', False)}",
                 f"# 结果质量: {quality['label']}",
@@ -368,6 +369,7 @@ class ReportingMixin:
             f"变换路径: {pipeline_text}",
             f"滤波模式: {filter_text}",
             f"ROI: {roi_info.get('summary', '关闭')}",
+            f"手动删除: {self._manual_deletion_summary()}",
             f"显示模式: {'去倾斜残差 (µm)' if display_detrended else '原始Z高度 (mm)'}",
         ]
         if roi_info.get('shape_lines'):

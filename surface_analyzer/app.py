@@ -67,6 +67,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.df_raw = None
         self.manual_mask = None
         self.temp_selected_mask = None
+        self.manual_delete_operations = []
+        self.pending_delete_operation = None
         self.active_idx = None
         self.transform_pipeline = []
         self.current_coeffs = None
@@ -91,6 +93,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.import_info = {               # 导入状态：用于UI与导出元数据
             'file_size_bytes': 0,
             'file_size_mb': 0.0,
+            'source_path': '',
+            'source_sha256': '',
             'strategy': '--',
             'sampled': False,
             'sample_method_key': 'full',
@@ -1226,6 +1230,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.transform_pipeline = []
         self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
         self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
+        self.manual_delete_operations = []
+        self.pending_delete_operation = None
         self.current_coeffs = None
         self.cb_filter.blockSignals(True)
         self.cb_filter.setCurrentIndex(0)

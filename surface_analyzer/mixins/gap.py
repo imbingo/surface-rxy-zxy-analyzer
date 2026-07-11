@@ -190,6 +190,8 @@ class GapAnalysisMixin:
             self.import_info = {
                 'file_size_bytes': 0,
                 'file_size_mb': 0.0,
+                'source_path': '',
+                'source_sha256': '',
                 'strategy': 'Gap计算结果',
                 'sampled': any(rec.get('sampled', False) for rec in
                                (self.data_stack, self.data_base1, self.data_base2) if rec is not None),
@@ -206,6 +208,8 @@ class GapAnalysisMixin:
             self.transform_pipeline = []
             self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
             self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
+            self.manual_delete_operations = []
+            self.pending_delete_operation = None
             self.current_coeffs = None
             self.clear_rois(update=False)
 

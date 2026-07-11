@@ -6,6 +6,7 @@ import re
 import mmap
 import json
 import tempfile
+import hashlib
 from collections import deque
 from pathlib import Path
 from datetime import datetime
@@ -86,6 +87,34 @@ class DataIOMixin:
     def _display_limit(self):
         return int(getattr(self, 'display_point_limit', self.DISPLAY_POINT_LIMIT))
 
+    def _ensure_source_sha256(self):
+        info = getattr(self, 'import_info', {}) or {}
+        cached = str(info.get('source_sha256') or '').lower()
+        if len(cached) == 64:
+            return cached
+        source_path = str(info.get('source_path') or '')
+        if not source_path or not Path(source_path).is_file():
+            return ''
+        total = Path(source_path).stat().st_size
+        digest = hashlib.sha256()
+        read_bytes = 0
+        with open(source_path, 'rb') as handle:
+            while True:
+                chunk = handle.read(8 * 1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                read_bytes += len(chunk)
+                if read_bytes % (256 * 1024 * 1024) < len(chunk):
+                    self.statusBar().showMessage(
+                        f"正在计算源文件SHA-256: {read_bytes / (1024 * 1024):.0f}/{total / (1024 * 1024):.0f} MB",
+                        1000)
+                    QApplication.processEvents()
+        value = digest.hexdigest().lower()
+        self.import_info['source_sha256'] = value
+        self.statusBar().showMessage(f"源文件SHA-256已计算: {value[:12]}…", 5000)
+        return value
+
     @staticmethod
     def _metric_quality_from_import(import_info=None):
         info = import_info or {}
@@ -140,6 +169,8 @@ class DataIOMixin:
         self.import_info = {
             'file_size_bytes': size,
             'file_size_mb': size / (1024 * 1024) if size else 0.0,
+            'source_path': str(Path(path).expanduser().resolve()) if path else '',
+            'source_sha256': '',
             'strategy': '--',
             'sampled': False,
             'sample_method_key': 'full',
@@ -1409,6 +1440,8 @@ class DataIOMixin:
             if preserve_analysis_settings:
                 self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
                 self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
+                self.manual_delete_operations = []
+                self.pending_delete_operation = None
                 self.current_coeffs = None
                 self._trans_cache_key = None
                 self._trans_cache_data = None

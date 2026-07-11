@@ -36,6 +36,7 @@ class RecipeMixin:
         """导出当前界面参数，不包含测量数据本身。"""
         return {
             'recipe_type': 'SurfaceRxyZxyAnalyzerRecipe',
+            'schema_version': 2,
             'app_version': self.APP_VERSION,
             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'column_mapping': {
@@ -51,6 +52,7 @@ class RecipeMixin:
                 'enabled': bool(self.roi_enabled),
                 'shapes': [dict(r) for r in self.roi_shapes],
             },
+            'manual_deletion': self._manual_deletion_recipe_dict(),
             'large_file': {
                 'mode': self._matching_bigfile_mode(),
                 'auto_sample': bool(self.auto_sample_large_text),
@@ -85,7 +87,10 @@ class RecipeMixin:
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(self._current_recipe_dict(), f, ensure_ascii=False, indent=2)
             self.statusBar().showMessage(f"Recipe已导出: {path}", 5000)
-            QMessageBox.information(self, "Recipe导出成功", "已保存当前单位、列映射、物料旋转组合、滤波参数、ROI、大文件显示策略和Gap容差。")
+            QMessageBox.information(
+                self, "Recipe导出成功",
+                "已保存单位、列映射、物料旋转、滤波、ROI、大文件策略、Gap容差和手动删除操作。\n"
+                f"{self._manual_deletion_summary()}")
         except Exception as e:
             QMessageBox.critical(self, "Recipe导出失败", str(e))
 
@@ -171,6 +176,10 @@ class RecipeMixin:
             self.chk_roi_enable.setChecked(self.roi_enabled)
             self.chk_roi_enable.blockSignals(False)
             self._refresh_roi_ui(update=False)
+        deletion_result = {'status': 'pending' if self.df_raw is None else 'empty'}
+        if self.df_raw is not None:
+            deletion_result = self._restore_manual_deletions(
+                recipe.get('manual_deletion', {}) or {}, show_message=True)
         self._update_import_status_label()
         if self.df_raw is not None:
             self.update_analysis()
@@ -180,5 +189,10 @@ class RecipeMixin:
             msg += " 当前尚未载入数据，列映射将在下一次载入文件后自动尝试匹配。"
         elif applied_cols:
             msg += f" 已匹配列映射: {', '.join(applied_cols)}。"
+        if deletion_result.get('status') == 'ok':
+            msg += (f" 已重放 {deletion_result['operations']} 次手动删除，"
+                    f"共删除 {deletion_result['deleted']:,} 点。")
+        elif deletion_result.get('status') not in ('empty', 'pending'):
+            msg += " 手动删除操作因校验未通过而未重放。"
         self.statusBar().showMessage(msg, 8000)
         QMessageBox.information(self, "Recipe导入完成", msg)

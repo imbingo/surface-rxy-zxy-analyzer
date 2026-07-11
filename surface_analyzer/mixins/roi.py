@@ -459,6 +459,7 @@ class ROIMixin:
 
     def set_delete_selection_mode(self, show_message=True):
         self.selection_mode = 'delete'
+        self.pending_delete_operation = None
         if hasattr(self, 'btn_roi_mouse'):
             self.btn_roi_mouse.blockSignals(True)
             self.btn_roi_mouse.setChecked(False)
@@ -564,6 +565,232 @@ class ROIMixin:
             patch.set_zorder(3)
             ax.add_patch(patch)
 
+    def _manual_delete_sample_signature(self):
+        info = getattr(self, 'import_info', {}) or {}
+        return {
+            'file_size_bytes': int(info.get('file_size_bytes', 0) or 0),
+            'import_rows': int(info.get('import_rows', 0) or 0),
+            'valid_rows': int(info.get('valid_rows', len(self.df_raw) if self.df_raw is not None else 0) or 0),
+            'sampled': bool(info.get('sampled', False)),
+            'sample_method_key': str(info.get('sample_method_key', 'full')),
+            'grid_count': int(info.get('grid_count', 0) or 0),
+            'stride_n': int(info.get('stride_n', 0) or 0),
+        }
+
+    def _build_manual_delete_operation(self, view_type, x1, y1, x2, y2):
+        coeffs = None
+        if self.display_detrended and self.current_coeffs is not None:
+            coeffs = [float(v) for v in self.current_coeffs]
+        return {
+            'schema_version': 1,
+            'operation_id': len(getattr(self, 'manual_delete_operations', [])) + 1,
+            'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'view': str(view_type).upper(),
+            'bounds': {
+                'x_min': float(min(x1, x2)),
+                'x_max': float(max(x1, x2)),
+                'y_min': float(min(y1, y2)),
+                'y_max': float(max(y1, y2)),
+            },
+            'axis_units': 'mm/mm' if str(view_type).upper() == 'XY' else
+                          ('mm/µm' if self.display_detrended else 'mm/mm'),
+            'transform_pipeline': list(self.transform_pipeline),
+            'display_mode': 'detrended_um' if self.display_detrended else 'raw_z_mm',
+            'display_plane_coeffs': coeffs,
+            'filter': {
+                'mode_index': int(self.cb_filter.currentIndex()),
+                'neighbor_k': int(self.spin_k.value()),
+                'threshold_um': float(self.spin_thresh.value()),
+                'sigma_k': float(self.spin_sigma.value()),
+                'sigma_iters': int(self.spin_sigma_iter.value()),
+            },
+            'roi': {
+                'enabled': bool(self.roi_enabled),
+                'shapes': [dict(r) for r in self.roi_shapes],
+            },
+            'sample_signature': self._manual_delete_sample_signature(),
+            'source_name': str(self.current_source_name or ''),
+            'source_sha256': '',
+            'selected_count': 0,
+        }
+
+    def _clean_manual_delete_operations(self, operations):
+        cleaned = []
+        valid_actions = {'CW90', 'CCW90', 'ROT180', 'SWAP', 'FLIPX', 'FLIPY', 'ORIGIN(0,0)'}
+        for raw in operations or []:
+            if not isinstance(raw, dict):
+                continue
+            view = str(raw.get('view', '')).upper()
+            if view not in ('XY', 'XZ', 'YZ'):
+                continue
+            bounds = raw.get('bounds', {}) or {}
+            try:
+                x_min = float(bounds['x_min']); x_max = float(bounds['x_max'])
+                y_min = float(bounds['y_min']); y_max = float(bounds['y_max'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not np.isfinite([x_min, x_max, y_min, y_max]).all():
+                continue
+            coeffs = raw.get('display_plane_coeffs')
+            if coeffs is not None:
+                try:
+                    coeffs = [float(v) for v in coeffs]
+                except (TypeError, ValueError):
+                    coeffs = None
+                if coeffs is not None and (len(coeffs) != 3 or not np.isfinite(coeffs).all()):
+                    coeffs = None
+            flt = raw.get('filter', {}) or {}
+            roi = raw.get('roi', {}) or {}
+            cleaned.append({
+                'schema_version': 1,
+                'operation_id': int(raw.get('operation_id', len(cleaned) + 1)),
+                'created_at': str(raw.get('created_at', '')),
+                'view': view,
+                'bounds': {'x_min': min(x_min, x_max), 'x_max': max(x_min, x_max),
+                           'y_min': min(y_min, y_max), 'y_max': max(y_min, y_max)},
+                'axis_units': str(raw.get('axis_units', 'mm/mm')),
+                'transform_pipeline': [a for a in (raw.get('transform_pipeline', []) or []) if a in valid_actions],
+                'display_mode': 'detrended_um' if raw.get('display_mode') == 'detrended_um' else 'raw_z_mm',
+                'display_plane_coeffs': coeffs,
+                'filter': {
+                    'mode_index': max(0, min(3, int(flt.get('mode_index', 0)))),
+                    'neighbor_k': max(3, int(flt.get('neighbor_k', 12))),
+                    'threshold_um': max(0.0, float(flt.get('threshold_um', 5.0))),
+                    'sigma_k': max(0.1, float(flt.get('sigma_k', 3.0))),
+                    'sigma_iters': max(1, int(flt.get('sigma_iters', 5))),
+                },
+                'roi': {
+                    'enabled': bool(roi.get('enabled', False)),
+                    'shapes': self._clean_roi_shapes(roi.get('shapes', [])),
+                },
+                'sample_signature': dict(raw.get('sample_signature', {}) or {}),
+                'source_name': str(raw.get('source_name', '')),
+                'source_sha256': str(raw.get('source_sha256', '')).lower(),
+                'selected_count': max(0, int(raw.get('selected_count', 0) or 0)),
+            })
+        return cleaned
+
+    def _manual_delete_mask_for_operation(self, operation, current_manual_mask=None):
+        if self.df_raw is None:
+            return np.array([], dtype=bool)
+        op = self._clean_manual_delete_operations([operation])
+        if not op:
+            return np.zeros(len(self.df_raw), dtype=bool)
+        op = op[0]
+        x = self.df_raw['X'].to_numpy(dtype=float)
+        y = self.df_raw['Y'].to_numpy(dtype=float)
+        z = self.df_raw['Z'].to_numpy(dtype=float)
+        tx, ty, tz = self._apply_transform_pipeline(x, y, z, op['transform_pipeline'])
+        scope = np.asarray(current_manual_mask if current_manual_mask is not None else
+                           np.ones(len(z), dtype=bool), dtype=bool).copy()
+        scope &= np.isfinite(tx) & np.isfinite(ty) & np.isfinite(tz)
+        roi = op['roi']
+        if self._roi_is_active(roi.get('enabled'), roi.get('shapes')):
+            scope &= self._roi_keep_mask_for_arrays(
+                tx, ty, tz, roi.get('shapes'), roi.get('enabled'), self._matrix_rc_for_current_data())
+        idx = np.flatnonzero(scope)
+        if len(idx) == 0:
+            return np.zeros(len(z), dtype=bool)
+        flt = op['filter']
+        keep = self.filter_keep_mask(
+            tx[idx], ty[idx], tz[idx], flt['mode_index'],
+            k=flt['neighbor_k'], threshold_mm=flt['threshold_um'] * 1e-3,
+            sigma_k=flt['sigma_k'], sigma_iters=flt['sigma_iters'])
+        filtered_scope = np.zeros(len(z), dtype=bool)
+        filtered_scope[idx[keep]] = True
+
+        plot_z = tz
+        if op['display_mode'] == 'detrended_um' and op['display_plane_coeffs'] is not None:
+            c = op['display_plane_coeffs']
+            plot_z = (tz - (c[0] * tx + c[1] * ty + c[2])) * 1000.0
+        b = op['bounds']
+        if op['view'] == 'XY':
+            in_box = (tx >= b['x_min']) & (tx <= b['x_max']) & (ty >= b['y_min']) & (ty <= b['y_max'])
+        elif op['view'] == 'XZ':
+            in_box = (tx >= b['x_min']) & (tx <= b['x_max']) & (plot_z >= b['y_min']) & (plot_z <= b['y_max'])
+        else:
+            in_box = (ty >= b['x_min']) & (ty <= b['x_max']) & (plot_z >= b['y_min']) & (plot_z <= b['y_max'])
+        return filtered_scope & in_box
+
+    def _manual_deletion_recipe_dict(self):
+        operations = self._clean_manual_delete_operations(getattr(self, 'manual_delete_operations', []))
+        source_hash = self._ensure_source_sha256() if operations else str(
+            (getattr(self, 'import_info', {}) or {}).get('source_sha256') or '')
+        for operation in operations:
+            operation['source_sha256'] = source_hash
+        return {
+            'schema_version': 1,
+            'source_name': str(self.current_source_name or ''),
+            'source_sha256': source_hash,
+            'source_size_bytes': int((getattr(self, 'import_info', {}) or {}).get('file_size_bytes', 0) or 0),
+            'sample_signature': self._manual_delete_sample_signature(),
+            'operations': operations,
+        }
+
+    def _manual_deletion_summary(self):
+        operations = getattr(self, 'manual_delete_operations', []) or []
+        deleted = int((~self.manual_mask).sum()) if self.manual_mask is not None else 0
+        source_hash = str((getattr(self, 'import_info', {}) or {}).get('source_sha256') or '')
+        return f"{len(operations)} 次操作 | 删除 {deleted:,} 点 | SHA-256 {source_hash[:12] + '…' if source_hash else '未记录'}"
+
+    def _restore_manual_deletions(self, block, show_message=True):
+        operations = self._clean_manual_delete_operations((block or {}).get('operations', []))
+        self.manual_delete_operations = []
+        self.pending_delete_operation = None
+        if self.df_raw is None or not operations:
+            return {'status': 'empty', 'operations': 0, 'deleted': 0}
+        expected_hash = str((block or {}).get('source_sha256') or operations[0].get('source_sha256') or '').lower()
+        actual_hash = self._ensure_source_sha256()
+        if not expected_hash or not actual_hash or expected_hash != actual_hash:
+            self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
+            msg = ("Recipe中的手动删除未重放：源文件SHA-256不一致或缺失。\n"
+                   f"Recipe: {expected_hash[:12] or '--'}\n当前: {actual_hash[:12] or '--'}")
+            if show_message:
+                QMessageBox.warning(self, '手动删除未重放', msg)
+            return {'status': 'hash_mismatch', 'operations': 0, 'deleted': 0, 'message': msg}
+
+        expected_signature = dict((block or {}).get('sample_signature', {}) or {})
+        current_signature = self._manual_delete_sample_signature()
+        signature_keys = ('file_size_bytes', 'import_rows', 'valid_rows', 'sampled',
+                          'sample_method_key', 'grid_count', 'stride_n')
+        mismatch = [key for key in signature_keys if key in expected_signature and
+                    expected_signature.get(key) != current_signature.get(key)]
+        if mismatch:
+            self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
+            msg = f"Recipe中的手动删除未重放：导入/抽样签名不同（{', '.join(mismatch)}）。"
+            if show_message:
+                QMessageBox.warning(self, '手动删除未重放', msg)
+            return {'status': 'sample_mismatch', 'operations': 0, 'deleted': 0, 'message': msg}
+
+        replay_mask = np.ones(len(self.df_raw), dtype=bool)
+        replayed = []
+        for operation in operations:
+            if operation.get('source_sha256') and operation['source_sha256'] != actual_hash:
+                replay_mask[:] = True
+                return {'status': 'operation_hash_mismatch', 'operations': 0, 'deleted': 0}
+            selected = self._manual_delete_mask_for_operation(operation, replay_mask)
+            count = int(selected.sum())
+            expected_count = int(operation.get('selected_count', 0) or 0)
+            if expected_count and count != expected_count:
+                self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
+                msg = (f"Recipe中的手动删除未重放：第 {operation['operation_id']} 次操作点数不一致，"
+                       f"原记录 {expected_count}，当前 {count}。")
+                if show_message:
+                    QMessageBox.warning(self, '手动删除未重放', msg)
+                return {'status': 'count_mismatch', 'operations': 0, 'deleted': 0, 'message': msg}
+            if int((replay_mask & ~selected).sum()) < 3:
+                self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
+                return {'status': 'too_few_points', 'operations': 0, 'deleted': 0}
+            replay_mask &= ~selected
+            operation['selected_count'] = count
+            operation['source_sha256'] = actual_hash
+            replayed.append(operation)
+        self.manual_mask = replay_mask
+        self.manual_delete_operations = replayed
+        deleted = int((~replay_mask).sum())
+        self.statusBar().showMessage(f"Recipe已重放 {len(replayed)} 次手动删除，共删除 {deleted:,} 点", 10000)
+        return {'status': 'ok', 'operations': len(replayed), 'deleted': deleted}
+
     def on_canvas_click(self, event):
         if self.selection_mode != 'roi_smart' or self.df_raw is None:
             return
@@ -650,6 +877,8 @@ class ROIMixin:
         else: return
         self.temp_selected_mask.fill(False)
         self.temp_selected_mask[self.active_idx[in_box]] = True
+        self.pending_delete_operation = self._build_manual_delete_operation(view_type, x1, y1, x2, y2)
+        self.pending_delete_operation['selected_count'] = int(in_box.sum())
         self.update_plots_only()
 
     def setup_selectors(self):
@@ -671,6 +900,24 @@ class ROIMixin:
         if (self.manual_mask & ~self.temp_selected_mask).sum() < 3:
             QMessageBox.warning(self, "无法删除", "删除后有效点将少于 3 个，无法拟合平面。已取消本次删除。")
             return
+        operation = dict(self.pending_delete_operation or {})
+        source_path = str((getattr(self, 'import_info', {}) or {}).get('source_path') or '')
+        if source_path:
+            try:
+                source_hash = self._ensure_source_sha256()
+            except Exception as exc:
+                QMessageBox.critical(self, '无法记录删除操作', f"源文件SHA-256计算失败：{exc}")
+                return
+            if not source_hash:
+                QMessageBox.critical(self, '无法记录删除操作', '未能取得源文件SHA-256，已取消删除。')
+                return
+            operation['source_sha256'] = source_hash
+        operation['selected_count'] = int(self.temp_selected_mask.sum())
         self.manual_mask &= (~self.temp_selected_mask)
+        if operation:
+            self.manual_delete_operations.append(operation)
+        self.pending_delete_operation = None
         self.temp_selected_mask.fill(False)
         self.update_analysis()
+        self.statusBar().showMessage(
+            f"已记录第 {len(self.manual_delete_operations)} 次手动删除；{self._manual_deletion_summary()}", 8000)
