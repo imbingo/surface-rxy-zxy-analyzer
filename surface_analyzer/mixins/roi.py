@@ -271,7 +271,29 @@ class ROIMixin:
         except Exception:
             return np.zeros(len(z), dtype=bool)
         residual = z - (coeffs[0] * x + coeffs[1] * y + coeffs[2])
-        keep = finite & (np.abs(residual) <= tol)
+        candidate = finite & (np.abs(residual) <= tol)
+        candidate_idx = np.flatnonzero(candidate)
+        if len(candidate_idx) == 0 or radius <= 0:
+            return np.zeros(len(z), dtype=bool)
+
+        # 平面残差只能判断“像不像同一平面”，不能判断 XY 上是否属于同一片区域。
+        # 再取种子所在的连通分量，防止跨越狭缝选中远处共面孤岛。
+        candidate_xy = np.column_stack([x[candidate_idx], y[candidate_idx]])
+        candidate_tree = cKDTree(candidate_xy)
+        _, start_local = candidate_tree.query(seed_xy, k=1)
+        start_local = int(np.ravel(start_local)[0])
+        visited = np.zeros(len(candidate_idx), dtype=bool)
+        visited[start_local] = True
+        queue = deque([start_local])
+        while queue:
+            loc = queue.popleft()
+            for nb in candidate_tree.query_ball_point(candidate_xy[loc], r=radius):
+                if visited[nb]:
+                    continue
+                visited[nb] = True
+                queue.append(int(nb))
+        keep = np.zeros(len(z), dtype=bool)
+        keep[candidate_idx[visited]] = True
         return keep
 
     def _smart_face_keep_mask_for_arrays(self, x, y, z, roi, matrix_rc=None, update_radius=False):

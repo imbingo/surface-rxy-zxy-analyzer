@@ -5,6 +5,13 @@ from pathlib import Path
 import numpy as np
 
 from surface_analyzer import AnalysisOptions, analyze_file, analyze_xyz, compare_plane_results
+from surface_analyzer.mixins.analysis import AnalysisMixin
+from surface_analyzer.mixins.data_io import DataIOMixin
+from surface_analyzer.mixins.roi import ROIMixin
+
+
+class _RoiHarness(ROIMixin, AnalysisMixin):
+    pass
 
 
 class V4ApiTests(unittest.TestCase):
@@ -36,6 +43,36 @@ class V4ApiTests(unittest.TestCase):
         parallel = compare_plane_results(base, measure)
         self.assertAlmostEqual(parallel["delta_ry_urad"], -20.0, places=5)
         self.assertAlmostEqual(parallel["step_height_mm"], 0.10001, places=8)
+
+    def test_plane_residual_smart_roi_keeps_seed_connected_component(self):
+        axis = np.linspace(0.0, 1.0, 11)
+        xx, yy = np.meshgrid(axis, axis)
+        x1, y1 = xx.ravel(), yy.ravel()
+        x2, y2 = x1 + 5.0, y1.copy()
+        x = np.concatenate([x1, x2])
+        y = np.concatenate([y1, y2])
+        z = 1.0 + 0.001 * x + 0.002 * y
+        roi = {
+            "seed_x": 0.5,
+            "seed_y": 0.5,
+            "seed_z": 1.0015,
+            "z_tolerance_mm": 0.0001,
+            "xy_radius_mm": 0.0,
+            "smart_mode": "plane_residual",
+        }
+        keep = _RoiHarness()._smart_face_keep_mask_plane_residual(x, y, z, roi, update_radius=True)
+        self.assertEqual(int(keep[: len(x1)].sum()), len(x1))
+        self.assertEqual(int(keep[len(x1):].sum()), 0)
+
+    def test_file_position_sampling_is_marked_as_estimated(self):
+        quality = DataIOMixin._metric_quality_from_import({
+            "sampled": True,
+            "sample_method_key": "file_position",
+            "extrema_preserved": False,
+        })
+        self.assertTrue(quality["estimated"])
+        self.assertFalse(quality["extrema_preserved"])
+        self.assertIn("不可直接用于产线放行", quality["warning"])
 
 
 if __name__ == "__main__":

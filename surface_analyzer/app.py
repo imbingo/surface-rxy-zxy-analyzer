@@ -93,6 +93,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             'file_size_mb': 0.0,
             'strategy': '--',
             'sampled': False,
+            'sample_method_key': 'full',
+            'extrema_preserved': True,
             'import_rows': 0,
             'display_limit': self.DISPLAY_POINT_LIMIT,
             'large_file_mode': self._bigfile_mode_label(),
@@ -1375,15 +1377,22 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             mean_z, ttv, pv, rx, ry = m['mean_z'], m['ttv'], m['pv'], m['rx'], m['ry']
 
             self.last_metrics = {'a': m['a'], 'b': m['b'], 'c': m['c'],
-                                 'mean_z': mean_z, 'rms': m['rms'], 'pv': pv, 'ttv': ttv,
-                                 'rx': rx, 'ry': ry}
+                                  'mean_z': mean_z, 'rms': m['rms'], 'pv': pv, 'ttv': ttv,
+                                  'rx': rx, 'ry': ry,
+                                  'estimated': self._current_metric_quality()['estimated'],
+                                  'quality_label': self._current_metric_quality()['label']}
 
             # UI 更新
-            self.lbl_eqn.setText(f"Z = {c[0]:.4f}·X + {c[1]:.4f}·Y + {c[2]:.4f}")
+            quality = self._current_metric_quality()
+            approx = "≈" if quality['estimated'] else ""
+            relation = "≈" if quality['estimated'] else "="
+            self.lbl_eqn.setText(f"Z {relation} {c[0]:.4f}·X + {c[1]:.4f}·Y + {c[2]:.4f}")
             # 单位已在结果卡片标题中展示，这里只写数值，避免重复
-            self.lbl_z.setText(f"{mean_z:.5f}")
-            self.lbl_pv.setText(f"{pv:.3f}"); self.lbl_ttv.setText(f"{ttv:.3f}")
-            self.lbl_rx.setText(f"{rx:.2f}"); self.lbl_ry.setText(f"{ry:.2f}")
+            self.lbl_z.setText(f"{approx}{mean_z:.5f}")
+            self.lbl_pv.setText(f"{approx}{pv:.3f}"); self.lbl_ttv.setText(f"{approx}{ttv:.3f}")
+            self.lbl_rx.setText(f"{approx}{rx:.2f}"); self.lbl_ry.setText(f"{approx}{ry:.2f}")
+            if quality['estimated']:
+                self.statusBar().showMessage(f"⚠ {quality['label']}：{quality['warning']}", 12000)
             self.draw_plots(tx, ty, tz)
             self.setup_selectors()
             self._refresh_roi_ui(update=False)

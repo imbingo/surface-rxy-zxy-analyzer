@@ -140,7 +140,7 @@ def analyze_xyz(
     clean_metrics = {key: float(value) for key, value in metrics.items() if key != "coeffs"}
     warnings: list[str] = []
     if sampled:
-        warnings.append("结果基于降采样数据；PV/TTV 极值精度取决于抽样策略。")
+        warnings.append("结果基于文件位置降采样，未保留全量极值；PV/TTV可能低估，不可直接用于产线放行。")
 
     return AnalysisResult(
         version=APP_VERSION,

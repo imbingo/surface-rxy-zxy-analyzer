@@ -42,6 +42,7 @@ class ParallelismMixin:
             QMessageBox.warning(self, "点数不足", "参与拟合点少于 3 个，无法写入平行度分析。")
             return None
         metrics = self.compute_plane_metrics(fx, fy, fz)
+        quality = self._current_metric_quality()
         return {
             'x': fx.copy(),
             'y': fy.copy(),
@@ -53,11 +54,14 @@ class ParallelismMixin:
             'pipeline': " -> ".join(self.transform_pipeline) if self.transform_pipeline else "原始状态",
             'import_strategy': self.import_info.get('strategy', '--'),
             'sampled': bool(self.import_info.get('sampled', False)),
+            'metric_quality': dict(quality),
         }
 
     def set_parallel_surface(self, slot):
         rec = self._current_parallel_record()
         if rec is None:
+            return
+        if not self._confirm_estimated_metrics('写入平行度分析'):
             return
         if slot == 'base':
             self.parallel_base = rec
@@ -81,8 +85,10 @@ class ParallelismMixin:
     def _slot_status_text(self, rec):
         if rec is None:
             return "尚未设置"
+        quality = rec.get('metric_quality', {})
+        quality_text = quality.get('label', '全量计算')
         return (f"来源: {rec['name']}\n"
-                f"参与拟合: {rec['n']:,} 点 | 导入: {rec['import_strategy']} | 抽样: {rec['sampled']}\n"
+                f"参与拟合: {rec['n']:,} 点 | 导入: {rec['import_strategy']} | {quality_text}\n"
                 f"Rx {rec['metrics']['rx']:.2f} µrad | Ry {rec['metrics']['ry']:.2f} µrad")
 
     def _update_parallel_ui(self):
@@ -102,6 +108,8 @@ class ParallelismMixin:
         z_base = b['a'] * ref_x + b['b'] * ref_y + b['c']
         z_measure = m['a'] * ref_x + m['b'] * ref_y + m['c']
         step_height = z_measure - z_base
+        estimated = bool(self.parallel_base.get('metric_quality', {}).get('estimated', False)
+                         or self.parallel_measure.get('metric_quality', {}).get('estimated', False))
         return {
             'drx': float(drx),
             'dry': float(dry),
@@ -109,6 +117,7 @@ class ParallelismMixin:
             'step_height': float(step_height),
             'ref_x': float(ref_x),
             'ref_y': float(ref_y),
+            'estimated': estimated,
         }
 
     def calculate_parallelism(self):
@@ -133,23 +142,26 @@ class ParallelismMixin:
             return
         b = self.parallel_base['metrics'] if self.parallel_base else None
         m = self.parallel_measure['metrics'] if self.parallel_measure else None
+        base_prefix = "≈" if self.parallel_base and self.parallel_base.get('metric_quality', {}).get('estimated') else ""
+        measure_prefix = "≈" if self.parallel_measure and self.parallel_measure.get('metric_quality', {}).get('estimated') else ""
+        result_prefix = "≈" if self.parallel_result and self.parallel_result.get('estimated') else ""
         for key, labels in self.parallel_result_labels.items():
             base_lab, meas_lab, delta_lab = labels
-            base_lab.setText(self._fmt_metric(key, b[key]) if b else "--")
-            meas_lab.setText(self._fmt_metric(key, m[key]) if m else "--")
+            base_lab.setText(base_prefix + self._fmt_metric(key, b[key]) if b else "--")
+            meas_lab.setText(measure_prefix + self._fmt_metric(key, m[key]) if m else "--")
             if self.parallel_result and key == 'rx':
-                delta_lab.setText(f"{self.parallel_result['drx']:.2f}")
+                delta_lab.setText(f"{result_prefix}{self.parallel_result['drx']:.2f}")
             elif self.parallel_result and key == 'ry':
-                delta_lab.setText(f"{self.parallel_result['dry']:.2f}")
+                delta_lab.setText(f"{result_prefix}{self.parallel_result['dry']:.2f}")
             else:
                 delta_lab.setText("--")
 
         if self.parallel_result:
-            self.lbl_par_drx.setText(f"{self.parallel_result['drx']:.2f}")
-            self.lbl_par_dry.setText(f"{self.parallel_result['dry']:.2f}")
-            self.lbl_par_angle.setText(f"{self.parallel_result['angle']:.2f}")
-            self.lbl_par_step.setText(f"{self.parallel_result['step_height']:.5f}")
-            self.lbl_par_state.setText("已计算")
+            self.lbl_par_drx.setText(f"{result_prefix}{self.parallel_result['drx']:.2f}")
+            self.lbl_par_dry.setText(f"{result_prefix}{self.parallel_result['dry']:.2f}")
+            self.lbl_par_angle.setText(f"{result_prefix}{self.parallel_result['angle']:.2f}")
+            self.lbl_par_step.setText(f"{result_prefix}{self.parallel_result['step_height']:.5f}")
+            self.lbl_par_state.setText("抽样估计" if self.parallel_result.get('estimated') else "已计算")
         else:
             self.lbl_par_drx.setText("--")
             self.lbl_par_dry.setText("--")
@@ -179,6 +191,8 @@ class ParallelismMixin:
             f"台阶高度差 = {self.parallel_result['step_height']:.5f} mm "
             f"(参考点 X={self.parallel_result['ref_x']:.5f}, Y={self.parallel_result['ref_y']:.5f})",
         ]
+        if self.parallel_result.get('estimated'):
+            rows.insert(1, "结果质量: 抽样估计，不可直接用于产线放行")
         for label, rec in (("基准面", self.parallel_base), ("测量面", self.parallel_measure)):
             mm = rec['metrics']
             rows.append(
@@ -221,6 +235,7 @@ class ParallelismMixin:
                 f.write(f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
                 f.write(f"# 基准面: {self.parallel_base['name']} | 点数: {self.parallel_base['n']}\n")
                 f.write(f"# 测量面: {self.parallel_measure['name']} | 点数: {self.parallel_measure['n']}\n")
+                f.write(f"# 结果质量: {'抽样估计，不可直接用于产线放行' if self.parallel_result.get('estimated') else '全量计算'}\n")
                 f.write("# 口径: 不做对应点相减；分别拟合平面后计算 测量面 - 基准面 的 Rx/Ry 差值。\n")
                 f.write("# 台阶高度差: 在两面质心中点处分别代入拟合平面求Z后相减。\n")
                 pd.DataFrame(rows).to_csv(f, index=False)
@@ -342,6 +357,7 @@ class ParallelismMixin:
             f"点数  基准 {b_rec['n']:,} / 测量 {m_rec['n']:,}",
             f"导入  基准 {b_rec.get('import_strategy', '--')} / 测量 {m_rec.get('import_strategy', '--')}",
             f"抽样  基准 {b_rec.get('sampled', False)} / 测量 {m_rec.get('sampled', False)}",
+            f"质量  基准 {b_rec.get('metric_quality', {}).get('label', '全量计算')} / 测量 {m_rec.get('metric_quality', {}).get('label', '全量计算')}",
             f"处理  {self._short_report_text(b_rec.get('pipeline'), 38)}",
         ]
         ax_meta.text(0.02, 0.80, "\n".join(meta_lines), va='top', ha='left',
@@ -359,11 +375,12 @@ class ParallelismMixin:
         ax_result.text(0.04, 0.84, "平行度结果", va='center', ha='left',
                        fontsize=11.8, fontweight='bold', color='#11447a',
                        transform=ax_result.transAxes, zorder=2)
+        result_prefix = "≈" if r.get('estimated') else ""
         result_rows = [
-            ("ΔRx", f"{r['drx']:.2f}", "µrad"),
-            ("ΔRy", f"{r['dry']:.2f}", "µrad"),
-            ("合成夹角", f"{r['angle']:.2f}", "µrad"),
-            ("台阶高度差", f"{r['step_height']:.5f}", "mm"),
+            ("ΔRx", f"{result_prefix}{r['drx']:.2f}", "µrad"),
+            ("ΔRy", f"{result_prefix}{r['dry']:.2f}", "µrad"),
+            ("合成夹角", f"{result_prefix}{r['angle']:.2f}", "µrad"),
+            ("台阶高度差", f"{result_prefix}{r['step_height']:.5f}", "mm"),
         ]
         y0 = 0.62
         for i, (name, value, unit) in enumerate(result_rows):
@@ -376,13 +393,15 @@ class ParallelismMixin:
             ax_result.text(0.43, y, unit, va='center', ha='left',
                            fontsize=10.2, color='#64748b', transform=ax_result.transAxes, zorder=2)
 
+        base_prefix = "≈" if b_rec.get('metric_quality', {}).get('estimated') else ""
+        measure_prefix = "≈" if m_rec.get('metric_quality', {}).get('estimated') else ""
         table_rows = [
-            ["Rx (µrad)", f"{b['rx']:.2f}", f"{m['rx']:.2f}", f"{r['drx']:.2f}"],
-            ["Ry (µrad)", f"{b['ry']:.2f}", f"{m['ry']:.2f}", f"{r['dry']:.2f}"],
-            ["RMS (µm)", f"{b['rms']:.3f}", f"{m['rms']:.3f}", "--"],
-            ["PV 法向 (µm)", f"{b['pv']:.3f}", f"{m['pv']:.3f}", "--"],
-            ["TTV Z极差 (µm)", f"{b['ttv']:.3f}", f"{m['ttv']:.3f}", "--"],
-            ["平均 Z (mm)", f"{b['mean_z']:.5f}", f"{m['mean_z']:.5f}", "--"],
+            ["Rx (µrad)", f"{base_prefix}{b['rx']:.2f}", f"{measure_prefix}{m['rx']:.2f}", f"{result_prefix}{r['drx']:.2f}"],
+            ["Ry (µrad)", f"{base_prefix}{b['ry']:.2f}", f"{measure_prefix}{m['ry']:.2f}", f"{result_prefix}{r['dry']:.2f}"],
+            ["RMS (µm)", f"{base_prefix}{b['rms']:.3f}", f"{measure_prefix}{m['rms']:.3f}", "--"],
+            ["PV 法向 (µm)", f"{base_prefix}{b['pv']:.3f}", f"{measure_prefix}{m['pv']:.3f}", "--"],
+            ["TTV Z极差 (µm)", f"{base_prefix}{b['ttv']:.3f}", f"{measure_prefix}{m['ttv']:.3f}", "--"],
+            ["平均 Z (mm)", f"{base_prefix}{b['mean_z']:.5f}", f"{measure_prefix}{m['mean_z']:.5f}", "--"],
         ]
         ax_table.text(0.02, 0.99, "单面拟合指标", va='top', ha='left',
                       fontsize=12.2, fontweight='bold', color='#1f2937',
@@ -419,8 +438,10 @@ class ParallelismMixin:
             f"台阶高度差在两面质心中点处计算，参考点 X={r['ref_x']:.5f}, Y={r['ref_y']:.5f}。\n"
             "Rx/Ry 符号约定需用标准件校准。"
         )
+        if r.get('estimated'):
+            note = "警告: 本报告含抽样估计值，不可直接用于产线放行。\n" + note
         ax_note.text(0.02, 0.76, note, va='top', ha='left',
-                     fontsize=9.3, linespacing=1.45, color='#6b7280',
+                     fontsize=9.3, linespacing=1.45, color='#b42318' if r.get('estimated') else '#6b7280',
                      transform=ax_note.transAxes,
                      bbox=dict(boxstyle='round,pad=0.45', facecolor='#f8fafc',
                                edgecolor='#e2e8f0', linewidth=1.0))

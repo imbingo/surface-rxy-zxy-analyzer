@@ -36,23 +36,27 @@ class GapAnalysisMixin:
         if self.df_raw is None or self.active_idx is None:
             QMessageBox.warning(self, "错误", "主界面尚无数据！请先载入并处理。")
             return
+        if not self._confirm_estimated_metrics('写入多层扣减寄存器'):
+            return
 
         tx, ty, tz = self.get_final_transformed_data(self.df_raw)
         fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
         rec = {'x': fx.copy(), 'y': fy.copy(), 'z': fz.copy(),
-               'name': self.current_source_name, 'n': len(fz)}
+               'name': self.current_source_name, 'n': len(fz),
+               'metric_quality': dict(self._current_metric_quality()),
+               'sampled': bool(self.import_info.get('sampled', False))}
 
         if slot == 'stack':
             self.data_stack = rec
-            self.lbl_stack_status.setText(f"✅ 已存【堆叠总成】\n来源: {rec['name']} (共 {rec['n']} 点)")
+            self.lbl_stack_status.setText(f"✅ 已存【堆叠总成】\n来源: {rec['name']} (共 {rec['n']} 点)\n{rec['metric_quality']['label']}")
             self.lbl_stack_status.setStyleSheet("color: #27ae60; font-weight: bold;")
         elif slot == 'base1':
             self.data_base1 = rec
-            self.lbl_base1_status.setText(f"✅ 已存【单片 1】\n来源: {rec['name']} (共 {rec['n']} 点)")
+            self.lbl_base1_status.setText(f"✅ 已存【单片 1】\n来源: {rec['name']} (共 {rec['n']} 点)\n{rec['metric_quality']['label']}")
             self.lbl_base1_status.setStyleSheet("color: #27ae60; font-weight: bold;")
         elif slot == 'base2':
             self.data_base2 = rec
-            self.lbl_base2_status.setText(f"✅ 已存【单片 2】\n来源: {rec['name']} (共 {rec['n']} 点)")
+            self.lbl_base2_status.setText(f"✅ 已存【单片 2】\n来源: {rec['name']} (共 {rec['n']} 点)\n{rec['metric_quality']['label']}")
             self.lbl_base2_status.setStyleSheet("color: #2980b9; font-weight: bold;")
 
     def clear_memory_slot(self, slot):
@@ -187,7 +191,11 @@ class GapAnalysisMixin:
                 'file_size_bytes': 0,
                 'file_size_mb': 0.0,
                 'strategy': 'Gap计算结果',
-                'sampled': False,
+                'sampled': any(rec.get('sampled', False) for rec in
+                               (self.data_stack, self.data_base1, self.data_base2) if rec is not None),
+                'sample_method_key': 'derived_gap',
+                'extrema_preserved': all(rec.get('metric_quality', {}).get('extrema_preserved', True) for rec in
+                                         (self.data_stack, self.data_base1, self.data_base2) if rec is not None),
                 'import_rows': len(self.df_raw),
                 'valid_rows': len(self.df_raw),
                 'display_limit': self._display_limit(),

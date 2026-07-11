@@ -38,6 +38,8 @@ class ReportingMixin:
         if self.df_raw is None or self.active_idx is None or self.last_metrics is None:
             QMessageBox.warning(self, "暂无数据", "请先载入并解析数据，再导出测量报告图。")
             return
+        if not self._confirm_estimated_metrics('导出测量报告图'):
+            return
         src = self.current_source_name if self.current_source_name not in (None, '', '--') else 'report'
         stem = Path(src).stem or 'report'
         default_name = f"Result_{stem}_{datetime.now():%Y%m%d_%H%M%S}.png"
@@ -66,6 +68,8 @@ class ReportingMixin:
 
     def save_file(self):
         if self.df_raw is None or self.active_idx is None: return
+        if not self._confirm_estimated_metrics('导出CSV'):
+            return
         path, _ = QFileDialog.getSaveFileName(self, "导出", "Result_Data.csv", "CSV (*.csv)")
         if not path: return
         try:
@@ -88,6 +92,7 @@ class ReportingMixin:
             elif self.cb_filter.currentIndex() == 3:
                 filter_text += f" (σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})"
             roi_info = self._roi_report_info(tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data())
+            quality = self._current_metric_quality()
             meta = [
                 f"# ===== 面型及Rxy分析工具 {self.APP_VERSION} 导出 =====",
                 f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
@@ -98,9 +103,12 @@ class ReportingMixin:
                 f"# 滤波剔除点数: {self.n_filtered} | 手动删除点数: {int((~self.manual_mask).sum())} | 导出点数: {len(fz)}",
                 f"# 当前显示模式: {'去倾斜残差显示(仅显示/框选)' if self.display_detrended else '原始Z高度显示'}",
                 f"# 导入方式: {self.import_info.get('strategy', '--')} | 是否抽样: {self.import_info.get('sampled', False)}",
+                f"# 结果质量: {quality['label']}",
                 f"# 源文件大小: {self.import_info.get('file_size_mb', 0.0):.1f} MB | 读入行数: {self.import_info.get('import_rows', 0)} | 有效点数: {self.import_info.get('valid_rows', len(self.df_raw) if self.df_raw is not None else 0)}",
                 f"# 显示上限: {self._display_limit()} 点 | 最近一次绘图显示: {self.last_displayed_points} 点",
             ]
+            if quality['warning']:
+                meta.append(f"# 警告: {quality['warning']}")
             if self.last_metrics is not None:
                 m = self.last_metrics
                 meta += [
@@ -270,6 +278,7 @@ class ReportingMixin:
                     results.append({'status': 'ok', 'file': name, 'out': str(out_png)})
                     summary_rows.append({
                         '文件': name, '总点数': n_total, '参与拟合': int(len(active_idx)),
+                        '结果质量': self._metric_quality_from_import(import_info_snap)['label'],
                         'ROI保留': int(len(roi_idx)) if roi_info.get('enabled') else '',
                         '滤波剔除': n_filtered,
                         '平均Z_mm': round(metrics['mean_z'], 6),
@@ -347,10 +356,13 @@ class ReportingMixin:
             cbar.ax.tick_params(labelsize=8)
 
         # 顶部：元信息（较小字号）
+        quality = self._metric_quality_from_import(import_info)
+        relation = "≈" if quality['estimated'] else "="
         meta_lines = [
             f"报告时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
             f"数据来源: {source_name}",
             f"导入方式: {import_info.get('strategy', '--')} | 抽样: {import_info.get('sampled', False)}",
+            f"结果质量: {quality['label']}",
             f"源文件大小: {import_info.get('file_size_mb', 0.0):.1f} MB | 读入行: {import_info.get('import_rows', 0)}",
             f"有效点数: {import_info.get('valid_rows', len(tz))} | 参与拟合: {len(active_idx)} | 滤波剔除: {n_filtered}",
             f"变换路径: {pipeline_text}",
@@ -369,23 +381,24 @@ class ReportingMixin:
         # 中部：关键结果卡片（大字号 + 高亮底色，手机上一眼可读）
         results_text = (
             "【分析结果】\n\n"
-            f"平面方程   Z = {metrics['a']:.4f}·X + {metrics['b']:.4f}·Y + {metrics['c']:.4f}\n\n"
-            f"平均厚度 Z    = {metrics['mean_z']:.5f} mm\n"
-            f"面型 PV(法向) = {metrics['pv']:.3f} µm\n"
-            f"TTV(Z 极差)   = {metrics['ttv']:.3f} µm\n"
-            f"物料 Rx       = {metrics['rx']:.2f} µrad\n"
-            f"物料 Ry       = {metrics['ry']:.2f} µrad"
+            f"平面方程   Z {relation} {metrics['a']:.4f}·X + {metrics['b']:.4f}·Y + {metrics['c']:.4f}\n\n"
+            f"平均厚度 Z    {relation} {metrics['mean_z']:.5f} mm\n"
+            f"面型 PV(法向) {relation} {metrics['pv']:.3f} µm\n"
+            f"TTV(Z 极差)   {relation} {metrics['ttv']:.3f} µm\n"
+            f"物料 Rx       {relation} {metrics['rx']:.2f} µrad\n"
+            f"物料 Ry       {relation} {metrics['ry']:.2f} µrad"
         )
         ax_res.text(0.02, 0.97, results_text, va='top', ha='left',
                     fontsize=13.5, linespacing=1.6, color='#11447a', transform=ax_res.transAxes,
                     bbox=dict(boxstyle='round,pad=0.7', facecolor='#eaf2fb', edgecolor='#3498db', linewidth=1.4))
 
         # 底部：脚注
-        ax_foot.text(0.02, 0.9,
+        foot_text = (f"警告: {quality['warning']}\n" if quality['warning'] else "") + (
                      "注: Rx≈+dZ/dY, Ry≈-dZ/dX，符号约定需标准件校准。\n"
-                     "PV 为相对最佳拟合平面的法向残差极差。批量无手动删点。",
+                     "PV 为相对最佳拟合平面的法向残差极差。批量无手动删点。")
+        ax_foot.text(0.02, 0.9, foot_text,
                      va='top', ha='left', fontsize=9, style='italic',
-                     color='#7f8c8d', transform=ax_foot.transAxes)
+                     color='#b42318' if quality['warning'] else '#7f8c8d', transform=ax_foot.transAxes)
 
         fig.suptitle(f"面型及Rxy分析报告 ({self.APP_VERSION}) — {source_name}", fontsize=16, fontweight='bold')
         return fig

@@ -86,6 +86,50 @@ class DataIOMixin:
     def _display_limit(self):
         return int(getattr(self, 'display_point_limit', self.DISPLAY_POINT_LIMIT))
 
+    @staticmethod
+    def _metric_quality_from_import(import_info=None):
+        info = import_info or {}
+        sampled = bool(info.get('sampled', False))
+        if not sampled:
+            return {
+                'estimated': False,
+                'extrema_preserved': True,
+                'code': 'full',
+                'label': '全量计算',
+                'warning': '',
+            }
+        extrema_preserved = bool(info.get('extrema_preserved', False))
+        if extrema_preserved:
+            return {
+                'estimated': True,
+                'extrema_preserved': True,
+                'code': 'grid_extrema',
+                'label': '抽样估计（网格保留Z极值）',
+                'warning': '结果基于空间网格抽样；TTV保留Z极值信息，PV/Rx/Ry仍是抽样估计。',
+            }
+        return {
+            'estimated': True,
+            'extrema_preserved': False,
+            'code': 'sampled_estimate',
+            'label': '抽样估计（极值未保留）',
+            'warning': '文件位置/倍率抽样未保留全量极值，PV/TTV可能低估；该结果不可直接用于产线放行。',
+        }
+
+    def _current_metric_quality(self):
+        return self._metric_quality_from_import(getattr(self, 'import_info', {}))
+
+    def _confirm_estimated_metrics(self, purpose='继续'):
+        quality = self._current_metric_quality()
+        if not quality['estimated']:
+            return True
+        ret = QMessageBox.question(
+            self,
+            '抽样结果确认',
+            f"当前结果质量：{quality['label']}\n\n{quality['warning']}\n\n是否仍要{purpose}？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        return ret == QMessageBox.StandardButton.Yes
+
     def _reset_import_info(self, path=None):
         size = 0
         if path:
@@ -98,6 +142,8 @@ class DataIOMixin:
             'file_size_mb': size / (1024 * 1024) if size else 0.0,
             'strategy': '--',
             'sampled': False,
+            'sample_method_key': 'full',
+            'extrema_preserved': True,
             'import_rows': 0,
             'display_limit': self._display_limit(),
             'large_file_mode': self._bigfile_mode_label(),
@@ -119,11 +165,14 @@ class DataIOMixin:
         display_limit = self._display_limit()
         shown = self.last_displayed_points if self.last_displayed_points else min(import_rows or 0, display_limit)
         sampled_text = '抽样' if info.get('sampled') else '全量/未抽样'
+        quality = self._metric_quality_from_import(info)
         notes = info.get('notes') or ''
         valid_rows = info.get('valid_rows', None)
         valid_text = f" | 有效 {int(valid_rows):,} 点" if valid_rows is not None else ""
         text = (f"导入状态: {strategy} | {sampled_text} | 文件 {file_size_mb:.1f} MB | "
                 f"读入 {int(import_rows):,} 行{valid_text} | 显示 {int(shown):,}/{int(display_limit):,} 点")
+        if quality['estimated']:
+            text += f" | 结果质量: {quality['label']}"
         if notes:
             text += f" | {notes}"
         if hasattr(self, 'lbl_import_status'):
@@ -610,6 +659,8 @@ class DataIOMixin:
         self.import_info.update({
             'strategy': '高度矩阵倍率降采样导入',
             'sampled': True,
+            'sample_method_key': 'stride',
+            'extrema_preserved': False,
             'height_matrix': True,
             'import_rows': len(df),
             'source_valid_rows': valid_points,
@@ -748,6 +799,8 @@ class DataIOMixin:
         self.import_info.update({
             'strategy': '高度矩阵空间网格采样导入',
             'sampled': True,
+            'sample_method_key': 'spatial_grid',
+            'extrema_preserved': True,
             'height_matrix': True,
             'import_rows': len(df),
             'source_valid_rows': valid_points,
@@ -788,6 +841,8 @@ class DataIOMixin:
         self.import_info.update({
             'strategy': '高度矩阵全量读取',
             'sampled': False,
+            'sample_method_key': 'full',
+            'extrema_preserved': True,
             'height_matrix': True,
             'import_rows': len(df),
             'matrix_rows': int(rows_count),
@@ -886,6 +941,8 @@ class DataIOMixin:
         self.import_info.update({
             'strategy': '超大文本倍率降采样导入',
             'sampled': True,
+            'sample_method_key': 'stride',
+            'extrema_preserved': False,
             'import_rows': len(df),
             'source_valid_rows': valid_rows,
             'large_file_mode': self._bigfile_mode_label(),
@@ -954,11 +1011,14 @@ class DataIOMixin:
             f"抽样上限: {max_rows:,} 行\n"
             f"实际导入行数: {len(df):,} 行\n"
             f"抽样方式: 文件位置均匀采样。\n"
-            f"缺测值标记({', '.join(sorted(self.MISSING_TEXT_TOKENS))})已按空值处理。"
+            f"缺测值标记({', '.join(sorted(self.MISSING_TEXT_TOKENS))})已按空值处理。\n"
+            f"注意: 文件位置采样不保留全量极值，PV/TTV 为估计值，不可直接用于产线放行。"
         )
         self.import_info.update({
             'strategy': '超大文本文件位置采样导入',
             'sampled': True,
+            'sample_method_key': 'file_position',
+            'extrema_preserved': False,
             'import_rows': len(df),
             'large_file_mode': self._bigfile_mode_label(),
             'sample_method': self._sample_method_label('file_position'),
@@ -1102,6 +1162,8 @@ class DataIOMixin:
         self.import_info.update({
             'strategy': '超大文本空间网格采样导入',
             'sampled': True,
+            'sample_method_key': 'spatial_grid',
+            'extrema_preserved': True,
             'import_rows': len(df),
             'source_valid_rows': valid_rows,
             'large_file_mode': self._bigfile_mode_label(),
@@ -1131,6 +1193,8 @@ class DataIOMixin:
             self.import_info.update({
                 'strategy': 'Excel全量读取',
                 'sampled': False,
+                'sample_method_key': 'full',
+                'extrema_preserved': True,
                 'import_rows': len(df),
                 'notes': 'Excel不做预抽样'
             })
@@ -1176,6 +1240,8 @@ class DataIOMixin:
                     self.import_info.update({
                         'strategy': '文本全量读取',
                         'sampled': False,
+                        'sample_method_key': 'full',
+                        'extrema_preserved': True,
                         'import_rows': len(df),
                         'notes': f"编码 {enc}"
                     })
@@ -1197,6 +1263,8 @@ class DataIOMixin:
                                 self.import_info.update({
                                     'strategy': '文本全量读取(回退嗅探)',
                                     'sampled': False,
+                                    'sample_method_key': 'full',
+                                    'extrema_preserved': True,
                                     'import_rows': len(df),
                                     'notes': f"编码 {enc}"
                                 })
