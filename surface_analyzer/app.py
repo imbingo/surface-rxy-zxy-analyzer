@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.0."""
+"""Qt application shell for Surface Analyzer V4.0.1."""
 
 import sys
 import os
@@ -85,6 +85,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.height_matrix_pitch_x_um = 47.242
         self.height_matrix_pitch_y_um = 47.242
         self.height_matrix_z_unit = "µm"
+        self.height_matrix_start_row = 0   # 0=自动识别；>0 为文件中的 1 基数据起始行
         self.roi_enabled = False           # V3.8.4+: XY ROI 保留区域开关
         self.roi_shapes = []               # list[dict]，当前物料坐标系 X/Y(mm)
         self.roi_next_id = 1
@@ -106,6 +107,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             'grid_count': self.large_text_grid_count,
             'stride_n': self.large_text_stride_n,
             'height_matrix': False,
+            'matrix_start_row': self.height_matrix_start_row,
             'notes': ''
         }
         # V3.5.1: 大文件策略不再占用左侧UI，改为右侧工具条按钮弹窗设置

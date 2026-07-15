@@ -13,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from surface_analyzer import AnalysisOptions, analyze_file, analyze_xyz, compare_plane_results
+from surface_analyzer import APP_VERSION
 from surface_analyzer.app import SurfaceAnalyzerPro
 from surface_analyzer.mixins.analysis import AnalysisMixin
 from surface_analyzer.mixins.data_io import DataIOMixin
@@ -47,6 +48,55 @@ class V4ApiTests(unittest.TestCase):
             result = analyze_file(path, options=AnalysisOptions(z_unit="um"))
             self.assertEqual(result.input_points, 4)
             self.assertFalse(result.sampled)
+
+    def test_keyence_style_height_matrix_skips_metadata_and_coordinate_labels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "keyence_vr_height.csv"
+            lines = [
+                "KEYENCE VR-3000,基恩士三维轮廓导出",
+                "测量模式,表面",
+                "1,2,3",
+                "4,5,6",
+                "7,8,9",
+                "校准参数区,结束",
+                "横向间距[um],12.5",
+                "纵向间距[um],15.0",
+                "高度单位,um",
+                "无效值,-999.999",
+                "," + ",".join(str(i) for i in range(10)) + ",",
+            ]
+            for row in range(10):
+                values = [100.0 + row * 10 + column for column in range(10)]
+                if row == 4:
+                    values[6] = -999.999
+                lines.append(
+                    str(row) + "," + ",".join(f"{value:.3f}" for value in values) + ",")
+            path.write_text("\n".join(lines) + "\n", encoding="gbk")
+
+            window = SurfaceAnalyzerPro()
+            frame = window._read_table(path)
+            self.assertTrue(window.import_info["height_matrix"])
+            self.assertEqual(window.import_info["matrix_rows"], 10)
+            self.assertEqual(window.import_info["matrix_cols"], 10)
+            self.assertEqual(window.import_info["matrix_data_start_row"], 12)
+            self.assertEqual(window.import_info["layout_candidate_count"], 2)
+            self.assertTrue(window.import_info["matrix_coordinate_header"])
+            self.assertEqual(window.import_info["matrix_invalid_values"], [-999.999])
+            self.assertAlmostEqual(window.import_info["matrix_pitch_x_um"], 12.5)
+            self.assertAlmostEqual(window.import_info["matrix_pitch_y_um"], 15.0)
+            self.assertEqual(window.import_info["matrix_z_unit"], "µm")
+            self.assertEqual(len(frame), 99)
+            self.assertNotIn(-999.999, frame["Z"].to_numpy())
+            self.assertIn("跳过前置说明: 11 行", window.last_import_note)
+            window.close()
+
+    def test_v401_recipe_persists_manual_matrix_start_row(self):
+        window = SurfaceAnalyzerPro()
+        window.height_matrix_start_row = 123
+        recipe = window._current_recipe_dict()
+        self.assertEqual(APP_VERSION, "V4.0.1")
+        self.assertEqual(recipe["large_file"]["matrix_start_row"], 123)
+        window.close()
 
     def test_parallel_result_delta(self):
         x = np.array([0.0, 1.0, 0.0, 1.0])

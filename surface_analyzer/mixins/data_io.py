@@ -185,6 +185,7 @@ class DataIOMixin:
             'matrix_pitch_x_um': self.height_matrix_pitch_x_um,
             'matrix_pitch_y_um': self.height_matrix_pitch_y_um,
             'matrix_z_unit': self.height_matrix_z_unit,
+            'matrix_start_row': int(getattr(self, 'height_matrix_start_row', 0)),
             'notes': ''
         }
 
@@ -326,6 +327,15 @@ class DataIOMixin:
         cb_matrix_z_unit.setToolTip("高度矩阵表头未写 Z Unit 时使用；若表头写明 um/mm，会优先采用表头。")
         grid.addWidget(cb_matrix_z_unit, 10, 1)
 
+        grid.addWidget(QLabel("矩阵数据起始行:"), 11, 0)
+        spin_matrix_start = NoWheelSpinBox()
+        spin_matrix_start.setRange(0, 50000)
+        spin_matrix_start.setSpecialValueText("自动")
+        spin_matrix_start.setValue(int(getattr(self, 'height_matrix_start_row', 0)))
+        spin_matrix_start.setToolTip(
+            "0=自动扫描候选数值区；识别错误时填写高度矩阵第一行在原文件中的行号（从1开始）。")
+        grid.addWidget(spin_matrix_start, 11, 1)
+
         applying_preset = {'active': False}
 
         def set_mode_index(mode_key):
@@ -377,7 +387,7 @@ class DataIOMixin:
         note = QLabel("说明：文件位置采样优先保证导入和交互流畅；空间网格采样会先扫描全文件确定 X/Y 范围，再按网格保留代表点、Z最小点和Z最大点。导入抽样会影响参与分析的数据量，显示上限只影响绘图。")
         note.setWordWrap(True)
         note.setStyleSheet("color: #7f8c8d; font-size: 11px;")
-        grid.addWidget(note, 12, 0, 1, 2)
+        grid.addWidget(note, 13, 0, 1, 2)
         layout.addWidget(group)
 
         status = QLabel(self.lbl_import_status.text() if hasattr(self, 'lbl_import_status') else "导入状态: --")
@@ -401,6 +411,7 @@ class DataIOMixin:
             self.height_matrix_pitch_x_um = float(spin_pitch_x.value())
             self.height_matrix_pitch_y_um = float(spin_pitch_y.value())
             self.height_matrix_z_unit = str(cb_matrix_z_unit.currentText())
+            self.height_matrix_start_row = int(spin_matrix_start.value())
             self.large_file_mode = self._matching_bigfile_mode()
             self.import_info['display_limit'] = self.display_point_limit
             self.import_info['large_file_mode'] = self._bigfile_mode_label()
@@ -410,6 +421,7 @@ class DataIOMixin:
             self.import_info['matrix_pitch_x_um'] = self.height_matrix_pitch_x_um
             self.import_info['matrix_pitch_y_um'] = self.height_matrix_pitch_y_um
             self.import_info['matrix_z_unit'] = self.height_matrix_z_unit
+            self.import_info['matrix_start_row'] = self.height_matrix_start_row
             self._update_import_status_label()
             if old_display_limit != self.display_point_limit and self.df_raw is not None and self.active_idx is not None:
                 self.update_plots_only()
@@ -429,11 +441,19 @@ class DataIOMixin:
     def _split_text_line(line, sep):
         if sep == r'\s+':
             return [t for t in re.split(r'\s+', line.strip()) if t]
-        return [t for t in line.strip().split(sep) if t != '']
+        return [t.strip() for t in line.strip().split(sep)]
+
+    @staticmethod
+    def _trim_trailing_empty_tokens(tokens):
+        values = list(tokens)
+        while values and not str(values[-1]).strip():
+            values.pop()
+        return values
 
     @classmethod
     def _is_missing_token(cls, value):
-        return str(value).strip() in cls.MISSING_TEXT_TOKENS
+        token = str(value).strip()
+        return not token or token in cls.MISSING_TEXT_TOKENS
 
     @classmethod
     def _is_float_token(cls, value):
@@ -466,23 +486,57 @@ class DataIOMixin:
             return np.nan
 
     @classmethod
-    def _detect_text_layout(cls, path, enc, max_scan_lines=50000):
+    def _detect_text_layout(cls, path, enc, max_scan_lines=50000, start_line_no=0):
         """扫描文本开头，识别第一行有效数值数据、分隔符、列数和可选表头。
-        兼容 Zeiss/菲索类导出：前面可能有仪器信息、波长等参数说明，只要后面存在连续 X/Y/Z 数值块即可。"""
-        last_tokens = None
-        last_line_no = None
-        last_sep = None
+        不再命中第一组数值行就立即返回，而是比较多个候选区，避免把设备参数表误认成数据。"""
+        candidates = []
         run = None
         min_data_rows = 3
-        with open(path, 'r', encoding=enc, errors='ignore') as fh:
+        previous_non_numeric = None
+
+        def finish_run(end_line_no=None):
+            nonlocal run
+            if run is not None and run['count'] >= min_data_rows:
+                item = dict(run)
+                item['data_end_line_no'] = end_line_no
+                item['data_row_count'] = int(item.pop('count'))
+                item.pop('last_line_no', None)
+                candidates.append(item)
+            run = None
+
+        def score(item):
+            count = int(item.get('data_row_count', item.get('count', 0)))
+            ncols = int(item.get('ncols', 0))
+            stable_matrix = ncols >= 8 and count >= 8
+            return (int(stable_matrix), count * ncols, count, ncols, int(item['data_line_no']))
+
+        def best_candidate(open_run=None):
+            pool = list(candidates)
+            if open_run is not None and open_run.get('count', 0) >= min_data_rows:
+                item = dict(open_run)
+                item['data_end_line_no'] = None
+                item['data_row_count'] = int(item.pop('count'))
+                item.pop('last_line_no', None)
+                pool.append(item)
+            if not pool:
+                return None
+            selected = max(pool, key=score)
+            selected['candidate_count'] = len(pool)
+            return selected
+
+        with open(path, 'r', encoding=enc, errors='strict') as fh:
             for line_no, line in enumerate(fh):
-                if line_no >= max_scan_lines:
-                    break
+                if line_no < max(0, int(start_line_no)):
+                    continue
+                if line_no >= max(0, int(start_line_no)) + max_scan_lines:
+                    return best_candidate(run)
                 stripped = line.strip().lstrip('\ufeff')
                 if not stripped or stripped.startswith('#'):
+                    finish_run(line_no)
+                    previous_non_numeric = None
                     continue
                 sep = cls._detect_sep_from_line(stripped)
-                tokens = cls._split_text_line(stripped, sep)
+                tokens = cls._trim_trailing_empty_tokens(cls._split_text_line(stripped, sep))
                 is_numeric = cls._looks_like_numeric_text_row(tokens) and len(tokens) >= 3
                 if is_numeric:
                     same_run = (
@@ -490,10 +544,17 @@ class DataIOMixin:
                         and line_no == run['last_line_no'] + 1
                     )
                     if not same_run:
+                        finish_run(line_no)
                         header_tokens = None
-                        if last_tokens and len(last_tokens) == len(tokens) and not cls._looks_like_numeric_text_row(last_tokens):
-                            header_tokens = [str(t).replace('\ufeff', '').strip() or f'Col{i+1}'
-                                             for i, t in enumerate(last_tokens)]
+                        header_line_no = None
+                        header_sep = None
+                        if previous_non_numeric and previous_non_numeric['line_no'] == line_no - 1:
+                            prior = previous_non_numeric['tokens']
+                            if len(prior) == len(tokens):
+                                header_tokens = [str(t).replace('\ufeff', '').strip()
+                                                 for t in prior]
+                                header_line_no = previous_non_numeric['line_no']
+                                header_sep = previous_non_numeric['sep']
                         run = {
                             'encoding': enc,
                             'sep': sep,
@@ -501,22 +562,24 @@ class DataIOMixin:
                             'data_line_no': line_no,
                             'header_tokens': header_tokens,
                             'first_numeric_line': stripped,
-                            'header_line_no': last_line_no,
-                            'header_sep': last_sep,
+                            'header_line_no': header_line_no,
+                            'header_sep': header_sep,
                             'count': 1,
                             'last_line_no': line_no,
                         }
                     else:
                         run['count'] += 1
                         run['last_line_no'] = line_no
-                    if run['count'] >= min_data_rows:
-                        return {k: v for k, v in run.items() if k not in ('count', 'last_line_no')}
+                    previous_non_numeric = None
+                    # 宽矩阵读取单行成本很高；确认稳定后即可停止布局扫描。
+                    if ((run['ncols'] >= 8 and run['count'] >= 32)
+                            or (run['ncols'] < 8 and run['count'] >= 512)):
+                        return best_candidate(run)
                     continue
-                run = None
-                last_tokens = tokens
-                last_line_no = line_no
-                last_sep = sep
-        return None
+                finish_run(line_no)
+                previous_non_numeric = {'tokens': tokens, 'line_no': line_no, 'sep': sep}
+        finish_run(run['last_line_no'] + 1 if run is not None else None)
+        return best_candidate()
 
     @staticmethod
     def _normalize_unit_label(text, default_unit="µm"):
@@ -527,10 +590,89 @@ class DataIOMixin:
             return "µm"
         return default_unit
 
+    @staticmethod
+    def _regular_numeric_sequence(values):
+        arr = np.asarray(values, dtype=float)
+        if arr.size < 3 or not np.all(np.isfinite(arr)):
+            return False
+        diffs = np.diff(arr)
+        median = float(np.median(diffs))
+        if abs(median) <= 1e-12 or not (np.all(diffs > 0) or np.all(diffs < 0)):
+            return False
+        atol = max(abs(median) * 0.05, 1e-9)
+        return bool(np.allclose(diffs, median, rtol=0.05, atol=atol))
+
+    def _prepare_height_matrix_layout(self, path, enc, layout):
+        """识别矩阵顶部列坐标、左侧行号和尾部空列，并返回标准 Z 区域布局。"""
+        prepared = dict(layout)
+        raw_ncols = int(prepared['ncols'])
+        original_start = int(prepared['data_line_no'])
+        sample_rows = []
+        with open(path, 'r', encoding=enc, errors='ignore') as fh:
+            for line_no, line in enumerate(fh):
+                if line_no < original_start:
+                    continue
+                if len(sample_rows) >= 16:
+                    break
+                stripped = line.strip().lstrip('\ufeff')
+                if not stripped:
+                    continue
+                tokens = self._trim_trailing_empty_tokens(self._split_text_line(stripped, prepared['sep']))
+                if len(tokens) != raw_ncols:
+                    break
+                sample_rows.append((line_no, tokens))
+
+        value_start = 0
+        coordinate_header = False
+        data_start = original_start
+        header = self._trim_trailing_empty_tokens(prepared.get('header_tokens') or [])
+        axis_words = (
+            'y/x', 'y\\x', 'x', 'x坐标', 'xcoordinate', 'row', 'index',
+            '行号', '行', '列坐标', 'y坐标', 'ycoordinate')
+
+        if header and len(header) == raw_ncols:
+            first_label = str(header[0]).strip().lower().replace(' ', '')
+            rest = [self._token_to_float(value) for value in header[1:]]
+            if any(word in first_label for word in axis_words) and len(rest) >= 8:
+                value_start = 1
+                coordinate_header = True
+
+        if sample_rows:
+            first_tokens = sample_rows[0][1]
+            rest = [self._token_to_float(value) for value in first_tokens[1:]]
+            if (self._is_missing_token(first_tokens[0]) and len(rest) >= 8
+                    and self._regular_numeric_sequence(rest)):
+                value_start = 1
+                coordinate_header = True
+                data_start = int(sample_rows[0][0]) + 1
+
+        data_samples = [tokens for line_no, tokens in sample_rows if line_no >= data_start]
+        first_column = [self._token_to_float(tokens[0]) for tokens in data_samples if tokens]
+        integer_row_index = (
+            len(first_column) >= 8 and self._regular_numeric_sequence(first_column)
+            and np.allclose(first_column, np.round(first_column), rtol=0.0, atol=1e-9)
+            and abs(abs(float(np.median(np.diff(first_column)))) - 1.0) <= 1e-9)
+        if value_start == 0 and raw_ncols >= 9 and integer_row_index:
+            value_start = 1
+            coordinate_header = True
+
+        value_count = raw_ncols - value_start
+        prepared.update({
+            'raw_ncols': raw_ncols,
+            'ncols': value_count,
+            'matrix_value_start': value_start,
+            'matrix_coordinate_header': coordinate_header,
+            'detected_data_line_no': original_start,
+            'data_line_no': data_start,
+            'header_rows_skipped': data_start,
+        })
+        return prepared
+
     def _height_matrix_header_meta(self, path, enc, data_line_no):
         pitch_x = float(getattr(self, 'height_matrix_pitch_x_um', 47.242))
         pitch_y = float(getattr(self, 'height_matrix_pitch_y_um', 47.242))
         z_unit = str(getattr(self, 'height_matrix_z_unit', "µm"))
+        invalid_values = []
         header_lines = []
         try:
             with open(path, 'r', encoding=enc, errors='ignore') as fh:
@@ -539,36 +681,84 @@ class DataIOMixin:
                         break
                     header_lines.append(line.strip())
         except Exception:
-            return pitch_x, pitch_y, z_unit, "默认"
+            return pitch_x, pitch_y, z_unit, tuple(invalid_values), "默认"
 
-        meta_source = "默认"
+        detected = []
         for line in header_lines:
             lowered = line.lower().replace("μ", "µ")
             parts = re.split(r'[,;\t]+', line)
             numeric_values = re.findall(r'[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?', line)
             value = float(numeric_values[-1]) if numeric_values else None
-            if value is not None and "pitch" in lowered and "x" in lowered:
-                pitch_x = value
-                meta_source = "表头"
-            elif value is not None and "pitch" in lowered and "y" in lowered:
-                pitch_y = value
-                meta_source = "表头"
-            if ("z unit" in lowered or ("z" in lowered and "unit" in lowered)) and len(parts) >= 2:
-                z_unit = self._normalize_unit_label(parts[-1], z_unit)
-                meta_source = "表头"
-        return pitch_x, pitch_y, z_unit, meta_source
+            pitch_hint = any(word in lowered for word in (
+                'pitch', 'pixel size', 'pixel spacing', 'resolution', 'spacing', 'interval',
+                '间距', '像素尺寸', '分辨率', 'ピッチ'))
+            x_hint = bool(re.search(r'(^|[^a-z])x([^a-z]|$)', lowered)) or '横向' in lowered
+            y_hint = bool(re.search(r'(^|[^a-z])y([^a-z]|$)', lowered)) or '纵向' in lowered
+            factor = 1.0
+            if re.search(r'(^|[^a-z])nm([^a-z]|$)', lowered):
+                factor = 0.001
+            elif re.search(r'(^|[^a-z])mm([^a-z]|$)', lowered):
+                factor = 1000.0
+            if value is not None and pitch_hint and x_hint:
+                pitch_x = value * factor
+                detected.append('Pitch X')
+            elif value is not None and pitch_hint and y_hint:
+                pitch_y = value * factor
+                detected.append('Pitch Y')
+
+            z_unit_hint = (
+                'z unit' in lowered or ('z' in lowered and any(w in lowered for w in ('unit', '单位', '単位')))
+                or ('高度' in lowered and any(w in lowered for w in ('单位', '単位'))))
+            if z_unit_hint:
+                unit_text = parts[-1] if len(parts) >= 2 else line
+                if re.search(r'(^|[^a-z])mm([^a-z]|$)', unit_text.lower()):
+                    z_unit = 'mm'
+                    detected.append('Z单位')
+                elif re.search(r'(^|[^a-z])(um|µm)([^a-z]|$)', unit_text.lower().replace('μ', 'µ')):
+                    z_unit = 'µm'
+                    detected.append('Z单位')
+
+            invalid_hint = any(word in lowered for word in (
+                'invalid', 'missing', 'no data', 'nodata', '无效', '缺测', '欠測', 'データなし'))
+            if invalid_hint and value is not None:
+                invalid_values.append(value)
+                detected.append('无效值')
+        source = "表头: " + '/'.join(dict.fromkeys(detected)) if detected else "默认"
+        return pitch_x, pitch_y, z_unit, tuple(dict.fromkeys(invalid_values)), source
+
+    @staticmethod
+    def _mask_matrix_missing_values(values, invalid_values=()):
+        arr = np.asarray(values, dtype=float)
+        if invalid_values:
+            for marker in invalid_values:
+                atol = max(1e-9, abs(float(marker)) * 1e-9)
+                arr[np.isclose(arr, float(marker), rtol=0.0, atol=atol)] = np.nan
+        else:
+            # 保持旧版 VR Demo 的 -1000 缺测约定；表头给出标记时只按明确标记剔除。
+            arr[arr < -999] = np.nan
+        return arr
 
     def _looks_like_height_matrix_layout(self, path, enc, layout):
         """判断文本数据是否为二维高度矩阵，而不是普通 XYZ 表格。"""
         if not layout or int(layout.get('ncols', 0)) < 8:
             return False
+        prepared = self._prepare_height_matrix_layout(path, enc, layout)
+        if int(prepared.get('ncols', 0)) < 8:
+            return False
+        layout.update(prepared)
         header = [str(x).strip().lower() for x in (layout.get('header_tokens') or [])]
         if header:
             cleaned = {re.sub(r'[^a-z0-9]+', '', h) for h in header[:8]}
-            if {'x', 'y', 'z'}.issubset(cleaned) or any(h.startswith('x') for h in cleaned):
+            has_x = any(h == 'x' or h.startswith('xmm') or h.startswith('xum') for h in cleaned)
+            has_y = any(h == 'y' or h.startswith('ymm') or h.startswith('yum') for h in cleaned)
+            has_z = any(h == 'z' or h.startswith('zmm') or h.startswith('zum')
+                        or h.startswith('height') for h in cleaned)
+            if has_x and has_y and has_z:
                 return False
 
         target_cols = int(layout['ncols'])
+        raw_cols = int(layout.get('raw_ncols', target_cols))
+        value_start = int(layout.get('matrix_value_start', 0))
         good_rows = 0
         scanned = 0
         try:
@@ -579,9 +769,10 @@ class DataIOMixin:
                     stripped = line.strip().lstrip('\ufeff')
                     if not stripped:
                         continue
-                    tokens = self._split_text_line(stripped, layout['sep'])
+                    tokens = self._trim_trailing_empty_tokens(self._split_text_line(stripped, layout['sep']))
                     scanned += 1
-                    if len(tokens) == target_cols and self._looks_like_numeric_text_row(tokens):
+                    values = tokens[value_start:value_start + target_cols]
+                    if len(tokens) == raw_cols and self._looks_like_numeric_text_row(values):
                         good_rows += 1
                     if scanned >= 16:
                         break
@@ -589,9 +780,9 @@ class DataIOMixin:
             return False
         return good_rows >= 4
 
-    def _height_matrix_dataframe(self, z_values, rows_count, cols_count, pitch_x_um, pitch_y_um):
-        arr = np.asarray(z_values, dtype=float)
-        arr[arr < -999] = np.nan
+    def _height_matrix_dataframe(self, z_values, rows_count, cols_count, pitch_x_um, pitch_y_um,
+                                 invalid_values=()):
+        arr = self._mask_matrix_missing_values(np.asarray(z_values, dtype=float), invalid_values)
         valid = np.isfinite(arr)
         if not np.any(valid):
             raise ValueError("高度矩阵未识别到有效 Z 数据。")
@@ -607,7 +798,8 @@ class DataIOMixin:
         })
 
     def _sample_large_height_matrix_by_stride(self, path, enc, sep, ncols, data_line_no,
-                                              pitch_x_um, pitch_y_um, z_unit, meta_source):
+                                              pitch_x_um, pitch_y_um, z_unit, meta_source,
+                                              data_end_line_no=None, value_start=0, invalid_values=()):
         file_size = Path(path).stat().st_size
         stride = max(1, int(getattr(self, 'large_text_stride_n', 10)))
         max_rows = self._large_text_import_limit()
@@ -616,22 +808,28 @@ class DataIOMixin:
             stripped = line.strip().lstrip('\ufeff')
             if not stripped:
                 return None
-            tokens = self._split_text_line(stripped, sep)
-            if len(tokens) < ncols or not self._looks_like_numeric_text_row(tokens[:ncols]):
+            tokens = self._trim_trailing_empty_tokens(self._split_text_line(stripped, sep))
+            values_tokens = tokens[value_start:value_start + ncols]
+            if len(values_tokens) < ncols or not self._looks_like_numeric_text_row(values_tokens):
                 return None
-            values = np.array([self._token_to_float(t) for t in tokens[:ncols]], dtype=float)
-            values[values < -999] = np.nan
-            return values
+            values = np.array([self._token_to_float(t) for t in values_tokens], dtype=float)
+            return self._mask_matrix_missing_values(values, invalid_values)
 
         row_count = 0
         valid_points = 0
+        matrix_started = False
         with open(path, 'r', encoding=enc, errors='ignore') as fh:
             for line_no, line in enumerate(fh):
                 if line_no < data_line_no:
                     continue
+                if data_end_line_no is not None and line_no >= data_end_line_no:
+                    break
                 values = parse_matrix_line(line)
                 if values is None:
+                    if matrix_started:
+                        break
                     continue
+                matrix_started = True
                 row_count += 1
                 valid_points += int(np.isfinite(values).sum())
                 if row_count % 1000 == 0:
@@ -646,15 +844,21 @@ class DataIOMixin:
         pitch_y_mm = float(pitch_y_um) / 1000.0
         rows = []
         matrix_row = 0
+        matrix_started = False
         z_min = np.inf
         z_max = -np.inf
         with open(path, 'r', encoding=enc, errors='ignore') as fh:
             for line_no, line in enumerate(fh):
                 if line_no < data_line_no:
                     continue
+                if data_end_line_no is not None and line_no >= data_end_line_no:
+                    break
                 values = parse_matrix_line(line)
                 if values is None:
+                    if matrix_started:
+                        break
                     continue
+                matrix_started = True
                 if matrix_row % stride == 0:
                     for col_idx in range(0, ncols, stride):
                         z = float(values[col_idx])
@@ -681,6 +885,7 @@ class DataIOMixin:
         df = pd.DataFrame(rows, columns=['X', 'Y', 'Z', '_matrix_row', '_matrix_col'])
         self.last_import_note = (
             f"VR/基恩士高度矩阵已按倍率降采样导入。\n"
+            f"数据起始行: {data_line_no + 1} | 跳过前置说明: {data_line_no} 行\n"
             f"文件大小: {file_size / (1024 * 1024):.1f} MB | 矩阵尺寸: {row_count:,} × {ncols:,}\n"
             f"降采样倍率: N={stride}（行列每 {stride} 个像素取 1 点）\n"
             f"Pitch: X={pitch_x_um:g}µm, Y={pitch_y_um:g}µm（{meta_source}）| Z单位: {z_unit}\n"
@@ -700,6 +905,10 @@ class DataIOMixin:
             'matrix_pitch_x_um': float(pitch_x_um),
             'matrix_pitch_y_um': float(pitch_y_um),
             'matrix_z_unit': z_unit,
+            'matrix_data_start_row': data_line_no + 1,
+            'matrix_header_rows_skipped': data_line_no,
+            'matrix_start_row': int(getattr(self, 'height_matrix_start_row', 0)),
+            'matrix_invalid_values': list(invalid_values),
             'large_file_mode': self._bigfile_mode_label(),
             'sample_method': self._sample_method_label('stride'),
             'stride_n': stride,
@@ -708,7 +917,8 @@ class DataIOMixin:
         return df
 
     def _sample_large_height_matrix(self, path, enc, sep, ncols, data_line_no,
-                                    pitch_x_um, pitch_y_um, z_unit, meta_source):
+                                    pitch_x_um, pitch_y_um, z_unit, meta_source,
+                                    data_end_line_no=None, value_start=0, invalid_values=()):
         file_size = Path(path).stat().st_size
         max_rows = self._large_text_import_limit()
 
@@ -716,24 +926,30 @@ class DataIOMixin:
             stripped = line.strip().lstrip('\ufeff')
             if not stripped:
                 return None
-            tokens = self._split_text_line(stripped, sep)
-            if len(tokens) < ncols or not self._looks_like_numeric_text_row(tokens[:ncols]):
+            tokens = self._trim_trailing_empty_tokens(self._split_text_line(stripped, sep))
+            values_tokens = tokens[value_start:value_start + ncols]
+            if len(values_tokens) < ncols or not self._looks_like_numeric_text_row(values_tokens):
                 return None
-            values = np.array([self._token_to_float(t) for t in tokens[:ncols]], dtype=float)
-            values[values < -999] = np.nan
-            return values
+            values = np.array([self._token_to_float(t) for t in values_tokens], dtype=float)
+            return self._mask_matrix_missing_values(values, invalid_values)
 
         row_count = 0
         valid_points = 0
         z_min = np.inf
         z_max = -np.inf
+        matrix_started = False
         with open(path, 'r', encoding=enc, errors='ignore') as fh:
             for line_no, line in enumerate(fh):
                 if line_no < data_line_no:
                     continue
+                if data_end_line_no is not None and line_no >= data_end_line_no:
+                    break
                 values = parse_matrix_line(line)
                 if values is None:
+                    if matrix_started:
+                        break
                     continue
+                matrix_started = True
                 row_count += 1
                 finite = np.isfinite(values)
                 if np.any(finite):
@@ -772,13 +988,19 @@ class DataIOMixin:
         pitch_y_mm = float(pitch_y_um) / 1000.0
         cells = {}
         matrix_row = 0
+        matrix_started = False
         with open(path, 'r', encoding=enc, errors='ignore') as fh:
             for line_no, line in enumerate(fh):
                 if line_no < data_line_no:
                     continue
+                if data_end_line_no is not None and line_no >= data_end_line_no:
+                    break
                 values = parse_matrix_line(line)
                 if values is None:
+                    if matrix_started:
+                        break
                     continue
+                matrix_started = True
                 finite_cols = np.where(np.isfinite(values))[0]
                 for col_idx in finite_cols:
                     z = float(values[col_idx])
@@ -820,6 +1042,7 @@ class DataIOMixin:
         total_cells = grid_side * grid_side
         self.last_import_note = (
             f"VR/基恩士高度矩阵已按空间网格采样导入。\n"
+            f"数据起始行: {data_line_no + 1} | 跳过前置说明: {data_line_no} 行\n"
             f"文件大小: {file_size / (1024 * 1024):.1f} MB | 触发阈值: {self.large_text_threshold_mb} MB\n"
             f"矩阵尺寸: {row_count:,} × {ncols:,} | 有效点: {valid_points:,}\n"
             f"Pitch: X={pitch_x_um:g}µm, Y={pitch_y_um:g}µm（{meta_source}）| Z单位: {z_unit}\n"
@@ -840,6 +1063,10 @@ class DataIOMixin:
             'matrix_pitch_x_um': float(pitch_x_um),
             'matrix_pitch_y_um': float(pitch_y_um),
             'matrix_z_unit': z_unit,
+            'matrix_data_start_row': data_line_no + 1,
+            'matrix_header_rows_skipped': data_line_no,
+            'matrix_start_row': int(getattr(self, 'height_matrix_start_row', 0)),
+            'matrix_invalid_values': list(invalid_values),
             'large_file_mode': self._bigfile_mode_label(),
             'sample_method': self._sample_method_label('spatial_grid'),
             'grid_count': grid_side,
@@ -853,22 +1080,48 @@ class DataIOMixin:
         sep = layout['sep']
         ncols = int(layout['ncols'])
         data_line_no = int(layout['data_line_no'])
-        pitch_x, pitch_y, z_unit, meta_source = self._height_matrix_header_meta(path, enc, data_line_no)
+        data_end_line_no = layout.get('data_end_line_no')
+        value_start = int(layout.get('matrix_value_start', 0))
+        pitch_x, pitch_y, z_unit, invalid_values, meta_source = self._height_matrix_header_meta(
+            path, enc, data_line_no)
         auto_sample = bool(getattr(self, 'auto_sample_large_text', True))
         if auto_sample and file_size >= self._large_text_threshold_bytes():
             return self._sample_large_height_matrix(
-                path, enc, sep, ncols, data_line_no, pitch_x, pitch_y, z_unit, meta_source)
+                path, enc, sep, ncols, data_line_no, pitch_x, pitch_y, z_unit, meta_source,
+                data_end_line_no, value_start, invalid_values)
 
+        read_kwargs = {}
+        if data_end_line_no is not None:
+            read_kwargs['nrows'] = max(0, int(data_end_line_no) - data_line_no)
         raw = pd.read_csv(path, sep=sep, engine='python', encoding=enc,
                           comment='#', skip_blank_lines=True, on_bad_lines='skip',
                           header=None, skiprows=data_line_no,
                           na_values=list(self.MISSING_TEXT_TOKENS),
-                          keep_default_na=True)
-        if raw.shape[1] > ncols:
-            raw = raw.iloc[:, :ncols]
+                          keep_default_na=True, **read_kwargs)
+        raw = raw.iloc[:, value_start:value_start + ncols]
+        valid_rows = raw.apply(
+            lambda column: column.map(self._is_float_or_missing_token)).all(axis=1)
+        numeric_counts = raw.apply(pd.to_numeric, errors='coerce').notna().sum(axis=1)
+        valid_rows = (valid_rows & (numeric_counts >= 2)).to_numpy(dtype=bool)
+        invalid_positions = np.flatnonzero(~valid_rows)
+        if invalid_positions.size:
+            raw = raw.iloc[:int(invalid_positions[0])]
+        else:
+            raw = raw.iloc[:]
         z = raw.apply(pd.to_numeric, errors='coerce').to_numpy(dtype=float, copy=True)
         rows_count, cols_count = z.shape
-        df = self._height_matrix_dataframe(z, rows_count, cols_count, pitch_x, pitch_y)
+        df = self._height_matrix_dataframe(
+            z, rows_count, cols_count, pitch_x, pitch_y, invalid_values)
+        coordinate_text = "；已去除顶部/左侧坐标标题" if layout.get('matrix_coordinate_header') else ""
+        invalid_text = ', '.join(f'{v:g}' for v in invalid_values) if invalid_values else '< -999（兼容旧格式）'
+        start_mode = (f"手动起始行 {self.height_matrix_start_row}"
+                      if int(getattr(self, 'height_matrix_start_row', 0)) > 0 else "自动识别")
+        self.last_import_note = (
+            f"VR/基恩士高度矩阵已全量导入。\n"
+            f"识别方式: {start_mode} | 数据起始行: {data_line_no + 1} | 跳过前置说明: {data_line_no} 行{coordinate_text}\n"
+            f"矩阵尺寸: {rows_count:,} × {cols_count:,} | 有效点: {len(df):,}\n"
+            f"Pitch: X={pitch_x:g}µm, Y={pitch_y:g}µm（{meta_source}）| Z单位: {z_unit}\n"
+            f"无效值规则: {invalid_text}。如识别范围不正确，可在“大文件策略”中填写矩阵数据起始行后重新导入。")
         self.import_info.update({
             'strategy': '高度矩阵全量读取',
             'sampled': False,
@@ -881,13 +1134,14 @@ class DataIOMixin:
             'matrix_pitch_x_um': float(pitch_x),
             'matrix_pitch_y_um': float(pitch_y),
             'matrix_z_unit': z_unit,
-            'notes': f"高度矩阵 | Pitch {pitch_x:g}/{pitch_y:g}µm（{meta_source}）| Z单位 {z_unit}"
+            'matrix_data_start_row': data_line_no + 1,
+            'matrix_header_rows_skipped': data_line_no,
+            'matrix_start_row': int(getattr(self, 'height_matrix_start_row', 0)),
+            'matrix_coordinate_header': bool(layout.get('matrix_coordinate_header')),
+            'matrix_invalid_values': list(invalid_values),
+            'layout_candidate_count': int(layout.get('candidate_count', 1)),
+            'notes': f"高度矩阵 {rows_count}×{cols_count} | 起始行 {data_line_no + 1} | Pitch {pitch_x:g}/{pitch_y:g}µm"
         })
-        if meta_source != "表头":
-            self.last_import_note = (
-                f"高度矩阵表头未识别到 Pitch/Z Unit，已使用默认设置：\n"
-                f"Pitch X={pitch_x:g}µm, Pitch Y={pitch_y:g}µm, Z单位={z_unit}。\n"
-                f"如与设备导出不一致，请先在“大文件策略”里调整高度矩阵参数后重新导入。")
         return df
 
     def _infer_xyz_column_indices(self, column_names, ncols):
@@ -1210,8 +1464,8 @@ class DataIOMixin:
         """鲁棒读取表格文件：
         - 文本类(.csv/.txt/.tsv/.dat/.asc/.xyz): 自动尝试 utf-8-sig/gbk/utf-16/latin-1；自动识别分隔符；
           自动跳过#注释行、空行、坏行；识别无表头/普通表头/Zeiss类复杂头。
-        - 超过设定阈值的文本文件可在 pandas 全量读入前预抽样，默认使用空间网格均匀采样。
-          空间网格采样每格保留代表点、Z最小点和Z最大点；也可在大文件策略中切回文件位置采样。
+        - 超过设定阈值的文本文件可在 pandas 全量读入前预抽样，默认使用文件位置均匀采样。
+          也可切换到空间网格采样，每格保留代表点、Z最小点和Z最大点。
         - Excel类(.xlsx/.xls/.xlsm): pd.read_excel，不做预抽样。
         """
         self.last_import_note = ""
@@ -1236,7 +1490,8 @@ class DataIOMixin:
 
             for enc in ('utf-8-sig', 'gbk', 'utf-16', 'latin-1'):
                 try:
-                    layout = self._detect_text_layout(path, enc)
+                    manual_start = max(0, int(getattr(self, 'height_matrix_start_row', 0)) - 1)
+                    layout = self._detect_text_layout(path, enc, start_line_no=manual_start)
                     if layout is not None:
                         break
                 except Exception as e:

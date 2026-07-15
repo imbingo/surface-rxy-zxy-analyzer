@@ -1,24 +1,33 @@
 # Surface Rxy ZXY Analyzer
 
-面型及 Rxy 分析工具，当前主程序已更新到 V3.8.6。
+面型及 Rxy 分析工具，当前模块化主程序版本为 V4.0.1。
 
 ## 文件
 
-- `面型及Rxy分析ZXY版.py`: PyQt6 GUI 主程序，内容为 V3.8.6 最新版。
-- `start_surface_analyzer_v3_8_6.bat`: 推荐启动脚本，固定使用仓库内 `.venv`，避免换解释器后重复装依赖。
+- `surface_analyzer/`: V4.0.1 模块化 GUI、分析、导入、ROI、Recipe 和接口实现。
+- `面型及Rxy分析ZXY版.py`: V3.9.3 单文件回退基线。
+- `start_surface_analyzer_v4_0_1.bat`: 推荐启动脚本，固定使用仓库内 `.venv`。
 - `requirements.txt`: 运行所需 Python 依赖。
 
 ## 运行
 
 ```powershell
-.\start_surface_analyzer_v3_8_6.bat
+.\start_surface_analyzer_v4_0_1.bat
 ```
 
 首次运行会创建 `.venv` 并安装依赖；后续会复用同一个环境。需要只检查环境、不打开 GUI 时：
 
 ```powershell
-.\start_surface_analyzer_v3_8_6.bat --check
+.\start_surface_analyzer_v4_0_1.bat --check
 ```
+
+## V4.0.1 重点
+
+- **真实设备矩阵表头**：比较多个数值候选区，不再把连续的波长、校准或尺寸参数误认为矩阵数据。
+- **坐标标题清洗**：自动剔除顶部列坐标、左侧连续行号和尾部空列，并显示识别出的矩阵行列数。
+- **基恩士参数识别**：从常见中英文/日文表头读取 Pitch X/Y、Z 单位和无效值标记。
+- **可人工修正**：大文件策略新增“矩阵数据起始行”，`0` 为自动识别，并随 Recipe 保存。
+- **导入可追溯**：导入说明记录跳过行数、数据起始行、矩阵尺寸、Pitch、单位和无效值规则。
 
 ## V3.8.6 重点
 

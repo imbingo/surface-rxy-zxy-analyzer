@@ -65,6 +65,7 @@ class RecipeMixin:
                 'matrix_pitch_x_um': float(self.height_matrix_pitch_x_um),
                 'matrix_pitch_y_um': float(self.height_matrix_pitch_y_um),
                 'matrix_z_unit': str(self.height_matrix_z_unit),
+                'matrix_start_row': int(self.height_matrix_start_row),
             },
             'gap': {'tolerance_mm': float(self.spin_tol.value()) if hasattr(self, 'spin_tol') else 0.05},
         }
@@ -140,6 +141,7 @@ class RecipeMixin:
         self.height_matrix_pitch_x_um = float(lf.get('matrix_pitch_x_um', self.height_matrix_pitch_x_um))
         self.height_matrix_pitch_y_um = float(lf.get('matrix_pitch_y_um', self.height_matrix_pitch_y_um))
         self.height_matrix_z_unit = self._normalize_unit_label(lf.get('matrix_z_unit', self.height_matrix_z_unit), self.height_matrix_z_unit)
+        self.height_matrix_start_row = max(0, int(lf.get('matrix_start_row', self.height_matrix_start_row)))
         self.large_file_mode = self._matching_bigfile_mode()
         self.import_info['display_limit'] = self.display_point_limit
         self.import_info['sample_method'] = self._sample_method_label()
@@ -148,6 +150,7 @@ class RecipeMixin:
         self.import_info['matrix_pitch_x_um'] = self.height_matrix_pitch_x_um
         self.import_info['matrix_pitch_y_um'] = self.height_matrix_pitch_y_um
         self.import_info['matrix_z_unit'] = self.height_matrix_z_unit
+        self.import_info['matrix_start_row'] = self.height_matrix_start_row
         gap = recipe.get('gap', {}) or {}
         if hasattr(self, 'spin_tol'):
             self.spin_tol.setValue(float(gap.get('tolerance_mm', self.spin_tol.value())))

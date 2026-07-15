@@ -26,7 +26,8 @@ def _column(value: str) -> int | str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="surface-analyzer", description="面型及Rxy分析工具 V4.0")
+    parser = argparse.ArgumentParser(
+        prog="surface-analyzer", description=f"面型及Rxy分析工具 {APP_VERSION}")
     parser.add_argument("--check", action="store_true", help="检查依赖和模块导入后退出")
     parser.add_argument("--input", help="启动 GUI 后自动载入文件，或作为无界面分析输入")
     parser.add_argument("--headless", action="store_true", help="不打开 GUI，输出 JSON 结果")
