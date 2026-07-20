@@ -27,6 +27,8 @@ from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
 
+from .plotting import set_surface_box_aspect, set_xy_equal_aspect
+
 
 
 class NoWheelSpinBox(QSpinBox):
@@ -172,10 +174,7 @@ class ParallelismCanvas(FigureCanvas):
                   transform=ax.transAxes, ha='left', va='top', fontsize=8,
                   color='#4b5563', bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='#e5e7eb', alpha=0.86))
         ax.view_init(elev=24, azim=-52)
-        try:
-            ax.set_box_aspect((1.35, 1.0, 0.42), zoom=1.08)
-        except TypeError:
-            ax.set_box_aspect((1.35, 1.0, 0.42))
+        set_surface_box_aspect(ax, x, y, z, zoom=1.08, z_tick_count=3)
         for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
             pane.set_facecolor('#fbfcfd')
             pane.set_edgecolor('#e6eaee')
@@ -255,7 +254,7 @@ class GapMatchCanvas(FigureCanvas):
         ax.set_xlabel("X (mm)")
         ax.set_ylabel("Y (mm)")
         ax.grid(True, linestyle='-', linewidth=0.6, color='#edf0f3')
-        ax.set_aspect('equal', adjustable='box')
+        set_xy_equal_aspect(ax)
 
         def scatter_mask(mask, label, color, marker='o', size=16, alpha=0.90, zorder=2):
             if np.any(mask):

@@ -29,6 +29,8 @@ from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
 
+from ..plotting import set_surface_box_aspect
+
 
 
 class ParallelismMixin:
@@ -302,10 +304,7 @@ class ParallelismMixin:
         ax.tick_params(labelsize=8, colors='#94a3b8')
         ax.view_init(elev=24, azim=-52)
         ax.grid(True, linestyle=':', linewidth=0.7, color='#dce3ea')
-        try:
-            ax.set_box_aspect((1.35, 1.0, 0.42), zoom=1.06)
-        except TypeError:
-            ax.set_box_aspect((1.35, 1.0, 0.42))
+        set_surface_box_aspect(ax, x, y, z, zoom=1.06)
         for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
             pane.set_facecolor('#fbfcfd')
             pane.set_edgecolor('#e6eaee')
@@ -319,7 +318,7 @@ class ParallelismMixin:
             color='#334155',
             bbox=dict(boxstyle='round,pad=0.35', fc='white', ec='#dbe3ec', alpha=0.9)
         )
-        cbar = fig.colorbar(sc, ax=ax, shrink=0.68, aspect=24, pad=0.05)
+        cbar = fig.colorbar(sc, ax=ax, shrink=0.68, aspect=24, pad=0.10)
         cbar.set_label("Z (mm)", fontsize=9)
         cbar.ax.tick_params(labelsize=8)
 
@@ -382,15 +381,15 @@ class ParallelismMixin:
             ("合成夹角", f"{result_prefix}{r['angle']:.2f}", "µrad"),
             ("台阶高度差", f"{result_prefix}{r['step_height']:.5f}", "mm"),
         ]
-        y0 = 0.62
+        y0 = 0.66
         for i, (name, value, unit) in enumerate(result_rows):
-            y = y0 - i * 0.18
+            y = y0 - i * 0.17
             ax_result.text(0.04, y, name, va='center', ha='left',
                            fontsize=10.2, color='#64748b', transform=ax_result.transAxes, zorder=2)
-            ax_result.text(0.40, y, value, va='center', ha='right',
+            ax_result.text(0.72, y, value, va='center', ha='right',
                            fontsize=17.0, fontweight='bold', color='#11447a',
                            transform=ax_result.transAxes, zorder=2)
-            ax_result.text(0.43, y, unit, va='center', ha='left',
+            ax_result.text(0.76, y, unit, va='center', ha='left',
                            fontsize=10.2, color='#64748b', transform=ax_result.transAxes, zorder=2)
 
         base_prefix = "≈" if b_rec.get('metric_quality', {}).get('estimated') else ""

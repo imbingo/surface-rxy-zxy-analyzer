@@ -18,6 +18,7 @@ from surface_analyzer.app import SurfaceAnalyzerPro
 from surface_analyzer.mixins.analysis import AnalysisMixin
 from surface_analyzer.mixins.data_io import DataIOMixin
 from surface_analyzer.mixins.roi import ROIMixin
+from surface_analyzer.plotting import surface_box_aspect
 
 
 class _RoiHarness(ROIMixin, AnalysisMixin):
@@ -90,13 +91,26 @@ class V4ApiTests(unittest.TestCase):
             self.assertIn("跳过前置说明: 11 行", window.last_import_note)
             window.close()
 
-    def test_v401_recipe_persists_manual_matrix_start_row(self):
+    def test_v402_recipe_persists_manual_matrix_start_row(self):
         window = SurfaceAnalyzerPro()
         window.height_matrix_start_row = 123
         recipe = window._current_recipe_dict()
-        self.assertEqual(APP_VERSION, "V4.0.1")
+        self.assertEqual(APP_VERSION, "V4.0.2")
         self.assertEqual(recipe["large_file"]["matrix_start_row"], 123)
         window.close()
+
+    def test_3d_aspect_preserves_xy_geometry_and_bounds_flat_z(self):
+        x = np.array([0.0, 12.0])
+        y = np.array([0.0, 3.0])
+        z = np.array([0.100, 0.130])
+        aspect = surface_box_aspect(x, y, z)
+        self.assertAlmostEqual(aspect[0], 1.0)
+        self.assertAlmostEqual(aspect[1], 0.25)
+        self.assertAlmostEqual(aspect[2], 0.18)
+
+    def test_3d_aspect_uses_real_z_ratio_when_large_enough(self):
+        aspect = surface_box_aspect([0.0, 10.0], [0.0, 5.0], [0.0, 2.0])
+        self.assertEqual(aspect, (1.0, 0.5, 0.2))
 
     def test_parallel_result_delta(self):
         x = np.array([0.0, 1.0, 0.0, 1.0])

@@ -9,3 +9,4 @@ env/
 .vscode/
 *.log
 *.tmp
+audit_outputs/

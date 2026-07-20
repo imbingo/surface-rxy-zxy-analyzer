@@ -29,6 +29,8 @@ from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
 
+from ..plotting import set_surface_box_aspect, set_xy_equal_aspect
+
 
 
 class ReportingMixin:
@@ -340,6 +342,7 @@ class ReportingMixin:
         ax3d.scatter(dx, dy, dz, **sc)
         ax3d.set_title(ttl3d); ax3d.set_xlabel("X (mm)"); ax3d.set_ylabel("Y (mm)"); ax3d.set_zlabel(zlab)
         m_xy = ax_xy.scatter(dx, dy, **sc); ax_xy.set_title("XY 俯视分布"); ax_xy.set_xlabel("X (mm)"); ax_xy.set_ylabel("Y (mm)")
+        set_xy_equal_aspect(ax_xy)
         self._draw_roi_overlays(ax_xy, roi_info.get('shapes'), roi_info.get('roi_enabled'), report=True)
         ax_xz.scatter(dx, dz, **sc); ax_xz.set_title(txt); ax_xz.set_xlabel("X (mm)"); ax_xz.set_ylabel(zlab)
         ax_yz.scatter(dy, dz, **sc); ax_yz.set_title(tyt); ax_yz.set_xlabel("Y (mm)"); ax_yz.set_ylabel(zlab)
@@ -350,6 +353,7 @@ class ReportingMixin:
             xx, yy = np.meshgrid(np.linspace(dx.min(), dx.max(), 10), np.linspace(dy.min(), dy.max(), 10))
             zz = np.zeros_like(xx) if display_detrended else coeffs[0] * xx + coeffs[1] * yy + coeffs[2]
             ax3d.plot_surface(xx, yy, zz, color='#3498db', alpha=0.3, edgecolor='none')
+            set_surface_box_aspect(ax3d, dx, dy, dz, zoom=1.02, z_tick_count=3)
             # 颜色条：标明散点配色对应的高度/残差量级
             cbar = fig.colorbar(m_xy, ax=[ax_xz, ax_yz], location='bottom',
                                 shrink=0.65, aspect=40, pad=0.12)

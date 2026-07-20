@@ -29,7 +29,7 @@ if errorlevel 1 (
 )
 
 echo [ok] Python: %PY%
-echo [run] Starting Surface Rxy/Zxy Analyzer V4.0.1
+echo [run] Starting Surface Rxy/Zxy Analyzer V4.0.2
 "%PY%" -m surface_analyzer %*
 set "EXITCODE=%ERRORLEVEL%"
 popd >nul

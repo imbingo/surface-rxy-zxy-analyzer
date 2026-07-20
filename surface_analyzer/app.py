@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.0.1."""
+"""Qt application shell for Surface Analyzer V4.0.2."""
 
 import sys
 import os
@@ -38,6 +38,7 @@ from .widgets import (
     NoWheelSpinBox, NoWheelDoubleSpinBox, NoWheelComboBox,
     MultiViewCanvas, ParallelismCanvas, GapMatchCanvas,
 )
+from .plotting import set_surface_box_aspect, set_xy_equal_aspect
 from .mixins.analysis import AnalysisMixin
 from .mixins.data_io import DataIOMixin
 from .mixins.gap import GapAnalysisMixin
@@ -1117,6 +1118,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
     def _build_parallel_right_panel(self):
         panel = QWidget()
+        panel.setMinimumHeight(760)
         outer = QVBoxLayout(panel)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(10)
@@ -1141,6 +1143,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.parallel_canvas = ParallelismCanvas(self)
         canvas_card = QFrame()
         canvas_card.setObjectName("plotCard")
+        canvas_card.setMinimumHeight(430)
         cv = QVBoxLayout(canvas_card)
         cv.setContentsMargins(12, 10, 12, 10)
         cv.setSpacing(6)
@@ -1157,6 +1160,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
         result_card = QFrame()
         result_card.setObjectName("plotCard")
+        result_card.setMinimumHeight(245)
         rl = QVBoxLayout(result_card)
         rl.setContentsMargins(14, 12, 14, 12)
         rl.setSpacing(9)
@@ -1203,7 +1207,14 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             rl.addWidget(lab)
         self._add_shadow(result_card, blur=20, dy=3, alpha=30)
         outer.addWidget(result_card, 1)
-        return panel
+
+        scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(panel)
+        return scroll
 
     def undo_transform(self):
         if self.transform_pipeline:
@@ -1471,6 +1482,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.canvas.set_titles(self.display_detrended)
 
         if len(xy_x) == 0 and len(detail_x) == 0:
+            set_xy_equal_aspect(self.canvas.ax_xy)
             self._draw_roi_overlays(self.canvas.ax_xy)
             self.canvas.ax_xy.relim()
             self.canvas.ax_xy.autoscale_view()
@@ -1480,6 +1492,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         sc_params = {'cmap': 'turbo', 's': 14, 'alpha': 0.85, 'edgecolors': 'none'}
         if len(xy_x) > 0:
             self.canvas.ax_xy.scatter(xy_x, xy_y, c=xy_z, **sc_params, zorder=2)
+        set_xy_equal_aspect(self.canvas.ax_xy)
         self._draw_roi_overlays(self.canvas.ax_xy)
         if len(detail_x) > 0:
             self.canvas.ax3d.scatter(detail_x, detail_y, detail_z, c=detail_z, **sc_params)
@@ -1504,6 +1517,11 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             else:
                 zz = c[0] * xx + c[1] * yy + c[2]
             self.canvas.ax3d.plot_surface(xx, yy, zz, color='#3498db', alpha=0.3, edgecolor='none')
+
+        if len(detail_x) > 0:
+            set_surface_box_aspect(
+                self.canvas.ax3d, detail_x, detail_y, detail_z,
+                zoom=1.02, z_tick_count=3)
 
         if self.temp_selected_mask is not None and self.temp_selected_mask.sum() > 0:
             selected_idx = np.where(self.temp_selected_mask)[0]
