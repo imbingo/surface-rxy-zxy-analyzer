@@ -10,3 +10,7 @@ env/
 *.log
 *.tmp
 audit_outputs/
+build/
+dist/
+release/
+installer/generated_version_info.txt
