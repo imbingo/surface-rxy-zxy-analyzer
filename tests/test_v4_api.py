@@ -95,7 +95,7 @@ class V4ApiTests(unittest.TestCase):
         window = SurfaceAnalyzerPro()
         window.height_matrix_start_row = 123
         recipe = window._current_recipe_dict()
-        self.assertEqual(APP_VERSION, "V4.0.2")
+        self.assertEqual(APP_VERSION, "V4.0.3")
         self.assertEqual(recipe["large_file"]["matrix_start_row"], 123)
         window.close()
 

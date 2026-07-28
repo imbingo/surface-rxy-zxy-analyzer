@@ -98,11 +98,16 @@ def _run_headless(args: argparse.Namespace) -> int:
 
 def _run_gui(input_path: str | None) -> int:
     from PyQt6.QtCore import QTimer
+    from PyQt6.QtGui import QIcon
     from PyQt6.QtWidgets import QApplication
 
     from .app import SurfaceAnalyzerPro
 
     app = QApplication(sys.argv)
+    resource_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    icon_path = resource_root / "assets" / "SurfaceRxyZxyAnalyzer.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     window = SurfaceAnalyzerPro()
     window.show()
     if input_path:

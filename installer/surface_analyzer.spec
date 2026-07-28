@@ -8,6 +8,7 @@ from PyInstaller.utils.hooks import collect_submodules
 project_root = Path(SPECPATH).parent
 version_file = project_root / "installer" / "generated_version_info.txt"
 icon_file = project_root / "assets" / "SurfaceRxyZxyAnalyzer.ico"
+icon_png = project_root / "assets" / "SurfaceRxyZxyAnalyzer.png"
 
 if not version_file.exists():
     raise SystemExit(
@@ -26,6 +27,8 @@ demo_files = [
     project_root / "demo_data" / "V3.9_StepDemo_XYZ_points.csv",
 ]
 datas = [(str(path), "demo_data") for path in demo_files if path.exists()]
+if icon_png.exists():
+    datas.append((str(icon_png), "assets"))
 
 hiddenimports = collect_submodules("surface_analyzer") + [
     "matplotlib.backends.backend_qtagg",

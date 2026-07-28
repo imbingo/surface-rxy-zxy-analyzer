@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.0.2."""
+"""Qt application shell for Surface Analyzer V4.0.3."""
 
 import sys
 import os
