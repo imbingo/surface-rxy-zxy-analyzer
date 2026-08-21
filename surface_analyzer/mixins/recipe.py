@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
     QStackedWidget, QSizeGrip,
 )
-from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
+from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSettings
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
 
@@ -36,7 +36,7 @@ class RecipeMixin:
         """导出当前界面参数，不包含测量数据本身。"""
         return {
             'recipe_type': 'SurfaceRxyZxyAnalyzerRecipe',
-            'schema_version': 2,
+            'schema_version': 3,
             'app_version': self.APP_VERSION,
             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'column_mapping': {
@@ -47,7 +47,11 @@ class RecipeMixin:
             'units': {'x_unit': self.cb_x_unit.currentText(), 'y_unit': self.cb_y_unit.currentText(), 'z_unit': self.cb_z_unit.currentText()},
             'transform_pipeline': list(self.transform_pipeline),
             'filter': {'mode_index': int(self.cb_filter.currentIndex()), 'mode_text': self.cb_filter.currentText(), 'neighbor_k': int(self.spin_k.value()), 'threshold_um': float(self.spin_thresh.value()), 'sigma_k': float(self.spin_sigma.value()), 'sigma_iters': int(self.spin_sigma_iter.value())},
-            'display': {'detrended': bool(self.display_detrended)},
+            'input': {'layout_mode': str(getattr(self, 'input_layout_mode', 'point_table'))},
+            'display': {
+                'surface_mode': str(getattr(self, 'display_surface_mode', 'raw')),
+                'detrended': bool(self.display_detrended),
+            },
             'roi': {
                 'enabled': bool(self.roi_enabled),
                 'shapes': [dict(r) for r in self.roi_shapes],
@@ -113,6 +117,12 @@ class RecipeMixin:
     def apply_recipe(self, recipe, path_hint='', remap_current_data=True):
         """将Recipe写入UI；若尚未载入数据，列映射名称会暂存，下一次载入文件后自动匹配。"""
         self.pending_recipe = recipe
+        input_config = recipe.get('input', {}) or {}
+        input_layout = str(input_config.get('layout_mode', getattr(self, 'input_layout_mode', 'point_table')))
+        if input_layout in ('point_table', 'height_matrix'):
+            self.input_layout_mode = input_layout
+            QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer").setValue(
+                "input_layout_mode", self.input_layout_mode)
         units = recipe.get('units', {}) or {}
         self._safe_set_combo_text(self.cb_x_unit, units.get('x_unit'))
         self._safe_set_combo_text(self.cb_y_unit, units.get('y_unit'))
@@ -167,10 +177,19 @@ class RecipeMixin:
         self.spin_sigma.setValue(float(flt.get('sigma_k', self.spin_sigma.value())))
         self.spin_sigma_iter.setValue(int(flt.get('sigma_iters', self.spin_sigma_iter.value())))
         self._sync_filter_enabled()
-        detrended = bool((recipe.get('display', {}) or {}).get('detrended', False))
-        self.chk_detrend_display.blockSignals(True); self.chk_detrend_display.setChecked(detrended); self.chk_detrend_display.blockSignals(False)
-        self.display_detrended = detrended
-        self.lbl_detrend_info.setText("去倾斜残差 µm" if detrended else "原始Z高度 mm")
+        display_config = recipe.get('display', {}) or {}
+        surface_mode = str(display_config.get('surface_mode') or
+                           ('residual_1' if display_config.get('detrended', False) else 'raw'))
+        valid_surface_modes = {'raw', 'residual_1', 'residual_2', 'residual_3'}
+        if surface_mode not in valid_surface_modes:
+            surface_mode = 'raw'
+        display_index = self.cb_surface_display.findData(surface_mode)
+        self.cb_surface_display.blockSignals(True)
+        self.cb_surface_display.setCurrentIndex(display_index if display_index >= 0 else 0)
+        self.cb_surface_display.blockSignals(False)
+        self.display_surface_mode = surface_mode
+        self.display_detrended = surface_mode != 'raw'
+        self._update_surface_display_metrics()
         roi = recipe.get('roi', {}) or {}
         self.roi_enabled = bool(roi.get('enabled', self.roi_enabled))
         self.roi_shapes = self._clean_roi_shapes(roi.get('shapes', self.roi_shapes))

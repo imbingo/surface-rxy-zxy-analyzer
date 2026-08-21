@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
+from ..polynomial import evaluate_polynomial_surface
 
 
 
@@ -579,10 +580,26 @@ class ROIMixin:
 
     def _build_manual_delete_operation(self, view_type, x1, y1, x2, y2):
         coeffs = None
-        if self.display_detrended and self.current_coeffs is not None:
+        surface_mode = str(getattr(self, 'display_surface_mode', 'raw'))
+        polynomial_model = None
+        if surface_mode == 'residual_1' and self.current_coeffs is not None:
             coeffs = [float(v) for v in self.current_coeffs]
+        if surface_mode.startswith('residual_'):
+            try:
+                order = int(surface_mode.rsplit('_', 1)[1])
+            except (ValueError, IndexError):
+                order = 1
+            model = getattr(self, 'high_order_models', {}).get(order)
+            if model is not None:
+                polynomial_model = {
+                    'order': order,
+                    'powers': [list(power) for power in model['powers']],
+                    'coefficients': [float(value) for value in model['coefficients']],
+                    'x_center': float(model['x_center']), 'y_center': float(model['y_center']),
+                    'x_scale': float(model['x_scale']), 'y_scale': float(model['y_scale']),
+                }
         return {
-            'schema_version': 1,
+            'schema_version': 2,
             'operation_id': len(getattr(self, 'manual_delete_operations', [])) + 1,
             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'view': str(view_type).upper(),
@@ -593,10 +610,12 @@ class ROIMixin:
                 'y_max': float(max(y1, y2)),
             },
             'axis_units': 'mm/mm' if str(view_type).upper() == 'XY' else
-                          ('mm/µm' if self.display_detrended else 'mm/mm'),
+                          ('mm/µm' if surface_mode != 'raw' else 'mm/mm'),
             'transform_pipeline': list(self.transform_pipeline),
-            'display_mode': 'detrended_um' if self.display_detrended else 'raw_z_mm',
+            'display_mode': ('detrended_um' if surface_mode == 'residual_1' else
+                             f"{surface_mode}_um" if surface_mode != 'raw' else 'raw_z_mm'),
             'display_plane_coeffs': coeffs,
+            'display_polynomial_model': polynomial_model,
             'filter': {
                 'mode_index': int(self.cb_filter.currentIndex()),
                 'neighbor_k': int(self.spin_k.value()),
@@ -639,10 +658,29 @@ class ROIMixin:
                     coeffs = None
                 if coeffs is not None and (len(coeffs) != 3 or not np.isfinite(coeffs).all()):
                     coeffs = None
+            display_mode = str(raw.get('display_mode', 'raw_z_mm'))
+            if display_mode not in ('raw_z_mm', 'detrended_um', 'residual_2_um', 'residual_3_um'):
+                display_mode = 'raw_z_mm'
+            polynomial_model = raw.get('display_polynomial_model')
+            if not isinstance(polynomial_model, dict):
+                polynomial_model = None
+            elif display_mode != 'raw_z_mm':
+                try:
+                    polynomial_model = {
+                        'order': int(polynomial_model['order']),
+                        'powers': [list(int(v) for v in power) for power in polynomial_model['powers']],
+                        'coefficients': [float(value) for value in polynomial_model['coefficients']],
+                        'x_center': float(polynomial_model['x_center']),
+                        'y_center': float(polynomial_model['y_center']),
+                        'x_scale': float(polynomial_model['x_scale']),
+                        'y_scale': float(polynomial_model['y_scale']),
+                    }
+                except (KeyError, TypeError, ValueError):
+                    polynomial_model = None
             flt = raw.get('filter', {}) or {}
             roi = raw.get('roi', {}) or {}
             cleaned.append({
-                'schema_version': 1,
+                'schema_version': 2,
                 'operation_id': int(raw.get('operation_id', len(cleaned) + 1)),
                 'created_at': str(raw.get('created_at', '')),
                 'view': view,
@@ -650,8 +688,9 @@ class ROIMixin:
                            'y_min': min(y_min, y_max), 'y_max': max(y_min, y_max)},
                 'axis_units': str(raw.get('axis_units', 'mm/mm')),
                 'transform_pipeline': [a for a in (raw.get('transform_pipeline', []) or []) if a in valid_actions],
-                'display_mode': 'detrended_um' if raw.get('display_mode') == 'detrended_um' else 'raw_z_mm',
+                'display_mode': display_mode,
                 'display_plane_coeffs': coeffs,
+                'display_polynomial_model': polynomial_model,
                 'filter': {
                     'mode_index': max(0, min(3, int(flt.get('mode_index', 0)))),
                     'neighbor_k': max(3, int(flt.get('neighbor_k', 12))),
@@ -700,7 +739,10 @@ class ROIMixin:
         filtered_scope[idx[keep]] = True
 
         plot_z = tz
-        if op['display_mode'] == 'detrended_um' and op['display_plane_coeffs'] is not None:
+        if op.get('display_polynomial_model') is not None:
+            fitted = evaluate_polynomial_surface(op['display_polynomial_model'], tx, ty)
+            plot_z = (tz - fitted) * 1000.0
+        elif op['display_mode'] == 'detrended_um' and op['display_plane_coeffs'] is not None:
             c = op['display_plane_coeffs']
             plot_z = (tz - (c[0] * tx + c[1] * ty + c[2])) * 1000.0
         b = op['bounds']

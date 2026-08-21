@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import platform
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -66,6 +68,18 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def git_commit() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            text=True,
+            encoding="utf-8",
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
 def write_manifest(path: Path, artifact: Path, version: str) -> None:
     checksum = sha256(artifact)
     payload = {
@@ -78,6 +92,10 @@ def write_manifest(path: Path, artifact: Path, version: str) -> None:
         "sha256": checksum,
         "size_bytes": artifact.stat().st_size,
         "minimum_upgrade_version": "4.0.2",
+        "source_commit": git_commit(),
+        "build_platform": platform.platform(),
+        "python_version": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
         "published_at_utc": datetime.now(timezone.utc).isoformat(),
     }
     path.parent.mkdir(parents=True, exist_ok=True)

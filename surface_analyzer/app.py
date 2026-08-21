@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.0.3."""
+"""Qt application shell for Surface Analyzer V4.1.0."""
 
 import sys
 import os
@@ -25,8 +25,8 @@ from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
     QStackedWidget, QSizeGrip,
 )
-from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
-from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
+from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSettings
+from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen, QFont, QFontDatabase
 from scipy.spatial import cKDTree
 
 
@@ -39,6 +39,7 @@ from .widgets import (
     MultiViewCanvas, ParallelismCanvas, GapMatchCanvas,
 )
 from .plotting import set_surface_box_aspect, set_xy_equal_aspect
+from .polynomial import fit_polynomial_surface, evaluate_polynomial_surface
 from .mixins.analysis import AnalysisMixin
 from .mixins.data_io import DataIOMixin
 from .mixins.gap import GapAnalysisMixin
@@ -60,6 +61,16 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
     def __init__(self):
         super().__init__()
+        app = QApplication.instance()
+        if app is not None:
+            family = "Microsoft YaHei UI"
+            font_path = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'Fonts' / 'msyh.ttc'
+            if font_path.exists():
+                font_id = QFontDatabase.addApplicationFont(str(font_path))
+                loaded = QFontDatabase.applicationFontFamilies(font_id) if font_id >= 0 else []
+                if loaded:
+                    family = loaded[0]
+            app.setFont(QFont(family, 9))
         self.setWindowTitle(f"面型及Rxy分析ZXY版 {self.APP_VERSION}")
         self.resize(1860, 980)
 
@@ -76,7 +87,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.current_source_name = "--"   # 当前视图数据来源（文件名 / GAP结果）
         self.n_filtered = 0               # 最近一次滤波剔除点数
         self.last_metrics = None          # 最近一次分析指标（导出元数据用）
-        self.display_detrended = False    # 去倾斜显示：只影响绘图/框选，不改变数据与指标
+        self.display_surface_mode = 'raw' # raw / residual_1 / residual_2 / residual_3
+        self.display_detrended = False    # 兼容旧Recipe；任意残差显示模式下为 True
+        self.high_order_models = {}       # 当前参与拟合点的一至三阶显示诊断模型
         self.last_import_note = ""        # 最近一次导入说明
         self.last_displayed_points = 0     # 最近一次绘图实际显示点数
         self.large_file_mode = 'standard'  # 大文件策略模式：fast / standard / precise / custom
@@ -87,6 +100,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.height_matrix_pitch_y_um = 47.242
         self.height_matrix_z_unit = "µm"
         self.height_matrix_start_row = 0   # 0=自动识别；>0 为文件中的 1 基数据起始行
+        settings = QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer")
+        saved_layout = str(settings.value("input_layout_mode", "point_table"))
+        self.input_layout_mode = saved_layout if saved_layout in ('point_table', 'height_matrix') else 'point_table'
         self.roi_enabled = False           # V3.8.4+: XY ROI 保留区域开关
         self.roi_shapes = []               # list[dict]，当前物料坐标系 X/Y(mm)
         self.roi_next_id = 1
@@ -294,8 +310,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.btn_export_recipe = QPushButton("导出 Recipe")
         self.btn_export_recipe.setToolTip("保存当前单位、列映射、物料旋转组合、滤波、ROI、大文件显示和Gap参数。")
         self.btn_export_recipe.clicked.connect(self.export_recipe)
-        self.btn_bigfile_settings = QPushButton("大文件策略")
-        self.btn_bigfile_settings.setToolTip("设置超大TXT预抽样模式、导入上限、绘图显示上限。")
+        layout_short = "XYZ" if self.input_layout_mode == 'point_table' else "Z矩阵"
+        self.btn_bigfile_settings = QPushButton(f"导入策略 · {layout_short}")
+        self.btn_bigfile_settings.setToolTip("设置XYZ点表/Z矩阵布局、超大文本预抽样、矩阵Pitch和显示上限。")
         self.btn_bigfile_settings.clicked.connect(self.show_bigfile_settings_dialog)
         for b in (self.btn_import_recipe, self.btn_export_recipe, self.btn_bigfile_settings):
             b.setFixedHeight(30)
@@ -470,16 +487,23 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         head.addWidget(cap)
         head.addWidget(self.lbl_eqn)
         head.addStretch()
-        # 去倾斜显示开关并入标题行右侧，省掉单独一行（绘图区垂直空间紧张）
-        self.chk_detrend_display = QCheckBox("去倾斜显示")
-        self.chk_detrend_display.setToolTip(
-            "开启后，3D/XZ/YZ图中的Z轴改为：实测Z - 当前最佳拟合平面，单位 µm。\n"
-            "用于更清晰观察物料表面面型起伏；只影响显示和框选，不改变Rx/Ry/PV/TTV计算，也不修改原始数据。")
-        self.chk_detrend_display.stateChanged.connect(self._on_detrend_display_changed)
-        self.lbl_detrend_info = QLabel("原始Z高度 mm")
-        self.lbl_detrend_info.setObjectName("mutedNote")
-        head.addWidget(self.chk_detrend_display)
-        head.addWidget(self.lbl_detrend_info)
+        display_label = QLabel("显示面型")
+        display_label.setObjectName("mutedNote")
+        self.cb_surface_display = NoWheelComboBox()
+        self.cb_surface_display.addItem("原始 Z", "raw")
+        self.cb_surface_display.addItem("一阶去倾斜残差", "residual_1")
+        self.cb_surface_display.addItem("二阶去除后残差", "residual_2")
+        self.cb_surface_display.addItem("三阶去除后残差", "residual_3")
+        self.cb_surface_display.setFixedWidth(178)
+        self.cb_surface_display.setToolTip(
+            "切换右侧四幅图的显示面型。高阶残差仅用于显示、框选和独立诊断指标，\n"
+            "不会改变现有 Rx/Ry、TTV 或最佳拟合平面残差 PV 的权威口径。")
+        self.cb_surface_display.currentIndexChanged.connect(self._on_surface_display_changed)
+        self.lbl_surface_residual_metrics = QLabel("原始高度显示")
+        self.lbl_surface_residual_metrics.setObjectName("mutedNote")
+        head.addWidget(display_label)
+        head.addWidget(self.cb_surface_display)
+        head.addWidget(self.lbl_surface_residual_metrics)
         outer.addLayout(head)
 
         cards = QHBoxLayout()
@@ -504,6 +528,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.lbl_eqn.setText("--")
         for lab in (self.lbl_z, self.lbl_pv, self.lbl_ttv, self.lbl_rx, self.lbl_ry):
             lab.setText("--")
+        if hasattr(self, 'lbl_surface_residual_metrics'):
+            self.lbl_surface_residual_metrics.setText("暂无可用结果")
 
     def _step_header(self, num, text, hint=None, active=False):
         """编号分步标题：序号徽章 + 标题 + 可选提示 + 分隔线。"""
@@ -1246,17 +1272,19 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.manual_delete_operations = []
         self.pending_delete_operation = None
         self.current_coeffs = None
+        self.high_order_models = {}
         self.cb_filter.blockSignals(True)
         self.cb_filter.setCurrentIndex(0)
         self.cb_filter.blockSignals(False)
-        self.chk_detrend_display.blockSignals(True)
-        self.chk_detrend_display.setChecked(False)
-        self.chk_detrend_display.blockSignals(False)
+        self.cb_surface_display.blockSignals(True)
+        self.cb_surface_display.setCurrentIndex(0)
+        self.cb_surface_display.blockSignals(False)
+        self.display_surface_mode = 'raw'
         self.display_detrended = False
-        self.lbl_detrend_info.setText("原始Z高度 mm")
+        self._update_surface_display_metrics()
         self.clear_rois(update=False)
         self.update_analysis()
-        self.statusBar().showMessage("系统已完全重置（滤波已关闭，去倾斜显示已关闭）", 3000)
+        self.statusBar().showMessage("系统已完全重置（滤波已关闭，显示已恢复原始Z）", 3000)
 
     def get_final_transformed_data(self, df):
         """对当前 df 应用 transform_pipeline，结果带缓存。"""
@@ -1305,23 +1333,45 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._sync_filter_enabled()
         self.update_analysis()
 
-    def _on_detrend_display_changed(self):
-        self.display_detrended = self.chk_detrend_display.isChecked()
-        if self.display_detrended:
-            self.lbl_detrend_info.setText("去倾斜残差 µm")
-        else:
-            self.lbl_detrend_info.setText("原始Z高度 mm")
+    def _on_surface_display_changed(self):
+        mode = str(self.cb_surface_display.currentData() or 'raw')
+        self.display_surface_mode = mode
+        self.display_detrended = mode != 'raw'
+        self._update_surface_display_metrics()
         self.update_plots_only()
+
+    def _update_surface_display_metrics(self):
+        mode = getattr(self, 'display_surface_mode', 'raw')
+        if mode == 'raw':
+            self.lbl_surface_residual_metrics.setText("原始高度显示")
+            return
+        try:
+            order = int(mode.rsplit('_', 1)[1])
+        except (ValueError, IndexError):
+            order = 1
+        model = self.high_order_models.get(order)
+        if model is None:
+            self.lbl_surface_residual_metrics.setText(f"{order}阶残差暂不可用")
+            return
+        self.lbl_surface_residual_metrics.setText(
+            f"残差 PV {model['residual_pv_um']:.3f} µm | RMS {model['residual_rms_um']:.3f} µm")
 
     def _get_plot_z(self, tx, ty, tz):
         """返回绘图/框选使用的Z值和轴标签。
         原始模式：Z使用内部单位mm；
         去倾斜模式：Z为相对当前最佳拟合平面的残差，单位µm。
         注意：该函数只服务显示/框选，不改变原始数据和拟合指标。"""
-        if self.display_detrended and self.current_coeffs is not None:
-            c = self.current_coeffs
-            plot_z = (tz - (c[0] * tx + c[1] * ty + c[2])) * 1000.0
-            return plot_z, "Resid / 去倾斜残差 (µm)", "去倾斜残差 (µm)"
+        mode = getattr(self, 'display_surface_mode', 'raw')
+        if mode != 'raw':
+            try:
+                order = int(mode.rsplit('_', 1)[1])
+            except (ValueError, IndexError):
+                order = 1
+            model = self.high_order_models.get(order)
+            if model is not None:
+                fitted = evaluate_polynomial_surface(model, tx, ty)
+                plot_z = (tz - fitted) * 1000.0
+                return plot_z, f"{order}阶去除后残差 (µm)", f"{order}阶残差"
         return tz, "Z (mm)", "Z"
 
     def update_analysis(self):
@@ -1338,6 +1388,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 self.n_filtered = 0
                 self.last_metrics = None
                 self.current_coeffs = None
+                self.high_order_models = {}
                 self._clear_result_labels()
                 self.statusBar().showMessage("⚠ 有效点少于 3 个，无法拟合平面。请点击[♻️ 全部重置]恢复数据。", 10000)
                 self.draw_plots(tx, ty, tz)
@@ -1354,6 +1405,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                     self.n_filtered = 0
                     self.last_metrics = None
                     self.current_coeffs = None
+                    self.high_order_models = {}
                     self._clear_result_labels()
                     self.lbl_filter_info.setText(
                         f"滤波剔除: 0 点 | 手动删除: {manual_deleted} 点 | ROI保留: {len(idx)} 点 | 参与拟合: {len(idx)} 点")
@@ -1395,11 +1447,30 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.current_coeffs = c
             mean_z, ttv, pv, rx, ry = m['mean_z'], m['ttv'], m['pv'], m['rx'], m['ry']
 
+            self.high_order_models = {}
+            for order in (1, 2, 3):
+                try:
+                    self.high_order_models[order] = fit_polynomial_surface(fx, fy, fz, order)
+                except ValueError:
+                    # Small or degenerate ROIs can make higher orders unavailable while
+                    # the authoritative plane result remains valid.
+                    continue
+
             self.last_metrics = {'a': m['a'], 'b': m['b'], 'c': m['c'],
                                   'mean_z': mean_z, 'rms': m['rms'], 'pv': pv, 'ttv': ttv,
                                   'rx': rx, 'ry': ry,
                                   'estimated': self._current_metric_quality()['estimated'],
                                   'quality_label': self._current_metric_quality()['label']}
+            self.last_metrics['high_order'] = {
+                order: {
+                    'residual_pv_um': model['residual_pv_um'],
+                    'residual_rms_um': model['residual_rms_um'],
+                    'fit_pv_um': model['fit_pv_um'],
+                    'r_squared': model['r_squared'],
+                    'condition': model['condition'],
+                }
+                for order, model in self.high_order_models.items()
+            }
 
             # UI 更新
             quality = self._current_metric_quality()
@@ -1410,6 +1481,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.lbl_z.setText(f"{approx}{mean_z:.5f}")
             self.lbl_pv.setText(f"{approx}{pv:.3f}"); self.lbl_ttv.setText(f"{approx}{ttv:.3f}")
             self.lbl_rx.setText(f"{approx}{rx:.2f}"); self.lbl_ry.setText(f"{approx}{ry:.2f}")
+            self._update_surface_display_metrics()
             if quality['estimated']:
                 self.statusBar().showMessage(f"⚠ {quality['label']}：{quality['warning']}", 12000)
             self.draw_plots(tx, ty, tz)
@@ -1479,7 +1551,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             pane.set_facecolor('#fbfcfd'); pane.set_edgecolor('#e6eaee'); pane.set_alpha(1.0)
         a3.tick_params(colors='#9aa4ae', labelsize=7)
 
-        self.canvas.set_titles(self.display_detrended)
+        self.canvas.set_titles(getattr(self, 'display_surface_mode', 'raw'))
 
         if len(xy_x) == 0 and len(detail_x) == 0:
             set_xy_equal_aspect(self.canvas.ax_xy)
@@ -1512,7 +1584,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             fit_idx = self.active_idx if len(self.active_idx) >= 3 else detail_plot_idx
             fxp, fyp = tx[fit_idx], ty[fit_idx]
             xx, yy = np.meshgrid(np.linspace(fxp.min(), fxp.max(), 10), np.linspace(fyp.min(), fyp.max(), 10))
-            if self.display_detrended:
+            if getattr(self, 'display_surface_mode', 'raw') != 'raw':
                 zz = np.zeros_like(xx)
             else:
                 zz = c[0] * xx + c[1] * yy + c[2]

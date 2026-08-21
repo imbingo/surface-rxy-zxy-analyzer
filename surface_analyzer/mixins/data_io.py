@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
     QStackedWidget, QSizeGrip,
 )
-from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
+from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSettings
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
 
@@ -172,6 +172,7 @@ class DataIOMixin:
             'source_path': str(Path(path).expanduser().resolve()) if path else '',
             'source_sha256': '',
             'strategy': '--',
+            'input_layout_mode': getattr(self, 'input_layout_mode', 'point_table'),
             'sampled': False,
             'sample_method_key': 'full',
             'extrema_preserved': True,
@@ -192,6 +193,7 @@ class DataIOMixin:
     def _update_import_status_label(self):
         info = getattr(self, 'import_info', {}) or {}
         strategy = info.get('strategy', '--')
+        layout_text = 'XYZ点表' if info.get('input_layout_mode', getattr(self, 'input_layout_mode', 'point_table')) == 'point_table' else 'Z矩阵'
         file_size_mb = info.get('file_size_mb', 0.0)
         import_rows = info.get('import_rows', 0)
         display_limit = self._display_limit()
@@ -201,7 +203,7 @@ class DataIOMixin:
         notes = info.get('notes') or ''
         valid_rows = info.get('valid_rows', None)
         valid_text = f" | 有效 {int(valid_rows):,} 点" if valid_rows is not None else ""
-        text = (f"导入状态: {strategy} | {sampled_text} | 文件 {file_size_mb:.1f} MB | "
+        text = (f"导入状态: {layout_text} | {strategy} | {sampled_text} | 文件 {file_size_mb:.1f} MB | "
                 f"读入 {int(import_rows):,} 行{valid_text} | 显示 {int(shown):,}/{int(display_limit):,} 点")
         if quality['estimated']:
             text += f" | 结果质量: {quality['label']}"
@@ -210,6 +212,7 @@ class DataIOMixin:
         if hasattr(self, 'lbl_import_status'):
             self.lbl_import_status.setText(text)
         if hasattr(self, 'btn_bigfile_settings'):
+            self.btn_bigfile_settings.setText(f"导入策略 · {'XYZ' if layout_text == 'XYZ点表' else 'Z矩阵'}")
             cfg = (f"大文件策略\n"
                    f"模式: {self._bigfile_mode_label()}\n"
                    f"自动抽样: {'开启' if self.auto_sample_large_text else '关闭'}\n"
@@ -232,9 +235,27 @@ class DataIOMixin:
         """V3.5.1: 大文件导入/显示策略弹窗。
         正常界面只保留右侧工具条按钮，避免占用左侧主控区。"""
         dlg = QDialog(self)
-        dlg.setWindowTitle("大文件导入 / 显示策略")
+        dlg.setWindowTitle("文件导入 / 显示策略")
         dlg.setMinimumWidth(520)
         layout = QVBoxLayout(dlg)
+
+        layout_group = QGroupBox("文件数据布局")
+        layout_grid = QGridLayout(layout_group)
+        layout_grid.addWidget(QLabel("导入类型:"), 0, 0)
+        cb_input_layout = NoWheelComboBox()
+        cb_input_layout.addItem("XYZ 点表", "point_table")
+        cb_input_layout.addItem("Z 矩阵", "height_matrix")
+        layout_index = cb_input_layout.findData(getattr(self, 'input_layout_mode', 'point_table'))
+        cb_input_layout.setCurrentIndex(layout_index if layout_index >= 0 else 0)
+        cb_input_layout.setToolTip(
+            "XYZ点表：文件中存在可映射的X/Y/Z逻辑列，也支持Excel单列内用分号封装多字段。\n"
+            "Z矩阵：文件主体是二维高度数组，X/Y由矩阵Pitch和行列位置生成。")
+        layout_grid.addWidget(cb_input_layout, 0, 1)
+        layout_note = QLabel("此选择会自动记忆，后续导入沿用；更换数据类型时再修改。")
+        layout_note.setWordWrap(True)
+        layout_note.setStyleSheet("color: #7f8c8d; font-size: 11px;")
+        layout_grid.addWidget(layout_note, 1, 0, 1, 2)
+        layout.addWidget(layout_group)
 
         group = QGroupBox("Zeiss / TXT / ASC / XYZ 大文件策略")
         grid = QGridLayout(group)
@@ -402,6 +423,9 @@ class DataIOMixin:
 
         if dlg.exec() == QDialog.DialogCode.Accepted:
             old_display_limit = self.display_point_limit
+            self.input_layout_mode = str(cb_input_layout.currentData())
+            QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer").setValue(
+                "input_layout_mode", self.input_layout_mode)
             self.auto_sample_large_text = chk_auto.isChecked()
             self.large_file_sample_method = str(cb_sample_method.currentData())
             self.large_text_grid_count = int(spin_grid.value())
@@ -422,15 +446,19 @@ class DataIOMixin:
             self.import_info['matrix_pitch_y_um'] = self.height_matrix_pitch_y_um
             self.import_info['matrix_z_unit'] = self.height_matrix_z_unit
             self.import_info['matrix_start_row'] = self.height_matrix_start_row
+            self.import_info['input_layout_mode'] = self.input_layout_mode
             self._update_import_status_label()
             if old_display_limit != self.display_point_limit and self.df_raw is not None and self.active_idx is not None:
                 self.update_plots_only()
-            self.statusBar().showMessage("大文件导入/显示策略已更新", 5000)
+            layout_text = "XYZ点表" if self.input_layout_mode == 'point_table' else "Z矩阵"
+            self.statusBar().showMessage(f"文件导入策略已更新：{layout_text}", 5000)
 
     @staticmethod
     def _detect_sep_from_line(line):
         if '\t' in line:
             return '\t'
+        if '；' in line:
+            return '；'
         if ',' in line:
             return ','
         if ';' in line:
@@ -477,6 +505,22 @@ class DataIOMixin:
         return numeric_count >= 2 and all(cls._is_float_or_missing_token(t) for t in tokens)
 
     @classmethod
+    def _looks_like_point_record_row(cls, tokens):
+        """XYZ point records may contain extra text fields such as probe or quality."""
+        if len(tokens) < 3:
+            return False
+        return sum(cls._is_float_token(t) for t in tokens) >= 3
+
+    @staticmethod
+    def _looks_like_xyz_header(tokens):
+        cleaned = [re.sub(r'[^a-z0-9]+', '', str(token).strip().lower()) for token in tokens]
+        has_x = any(value == 'x' or value.startswith('xmm') or value.startswith('xum') for value in cleaned)
+        has_y = any(value == 'y' or value.startswith('ymm') or value.startswith('yum') for value in cleaned)
+        has_z = any(value == 'z' or value.startswith('zmm') or value.startswith('zum')
+                    or value.startswith('height') for value in cleaned)
+        return has_x and has_y and has_z
+
+    @classmethod
     def _token_to_float(cls, value):
         if cls._is_missing_token(value):
             return np.nan
@@ -486,7 +530,8 @@ class DataIOMixin:
             return np.nan
 
     @classmethod
-    def _detect_text_layout(cls, path, enc, max_scan_lines=50000, start_line_no=0):
+    def _detect_text_layout(cls, path, enc, max_scan_lines=50000, start_line_no=0,
+                            layout_mode='point_table'):
         """扫描文本开头，识别第一行有效数值数据、分隔符、列数和可选表头。
         不再命中第一组数值行就立即返回，而是比较多个候选区，避免把设备参数表误认成数据。"""
         candidates = []
@@ -507,7 +552,7 @@ class DataIOMixin:
         def score(item):
             count = int(item.get('data_row_count', item.get('count', 0)))
             ncols = int(item.get('ncols', 0))
-            stable_matrix = ncols >= 8 and count >= 8
+            stable_matrix = layout_mode == 'height_matrix' and ncols >= 2 and count >= 2
             return (int(stable_matrix), count * ncols, count, ncols, int(item['data_line_no']))
 
         def best_candidate(open_run=None):
@@ -537,7 +582,10 @@ class DataIOMixin:
                     continue
                 sep = cls._detect_sep_from_line(stripped)
                 tokens = cls._trim_trailing_empty_tokens(cls._split_text_line(stripped, sep))
-                is_numeric = cls._looks_like_numeric_text_row(tokens) and len(tokens) >= 3
+                if layout_mode == 'height_matrix':
+                    is_numeric = cls._looks_like_numeric_text_row(tokens) and len(tokens) >= 2
+                else:
+                    is_numeric = cls._looks_like_point_record_row(tokens)
                 if is_numeric:
                     same_run = (
                         run is not None and run['sep'] == sep and run['ncols'] == len(tokens)
@@ -550,7 +598,7 @@ class DataIOMixin:
                         header_sep = None
                         if previous_non_numeric and previous_non_numeric['line_no'] == line_no - 1:
                             prior = previous_non_numeric['tokens']
-                            if len(prior) == len(tokens):
+                            if len(prior) == len(tokens) and cls._looks_like_xyz_header(prior):
                                 header_tokens = [str(t).replace('\ufeff', '').strip()
                                                  for t in prior]
                                 header_line_no = previous_non_numeric['line_no']
@@ -572,14 +620,192 @@ class DataIOMixin:
                         run['last_line_no'] = line_no
                     previous_non_numeric = None
                     # 宽矩阵读取单行成本很高；确认稳定后即可停止布局扫描。
-                    if ((run['ncols'] >= 8 and run['count'] >= 32)
-                            or (run['ncols'] < 8 and run['count'] >= 512)):
+                    if ((layout_mode == 'height_matrix' and run['ncols'] >= 8 and run['count'] >= 32)
+                            or run['count'] >= 512):
                         return best_candidate(run)
                     continue
                 finish_run(line_no)
                 previous_non_numeric = {'tokens': tokens, 'line_no': line_no, 'sep': sep}
         finish_run(run['last_line_no'] + 1 if run is not None else None)
         return best_candidate()
+
+    @classmethod
+    def _packed_excel_candidate(cls, raw):
+        """Find a semicolon-like logical table stored inside one physical Excel column."""
+        best = None
+        delimiters = (';', '；', '\t', '|', ',')
+        for physical_col in raw.columns:
+            values = raw[physical_col].tolist()
+            for delimiter in delimiters:
+                run = None
+                candidates = []
+                for row_index, value in enumerate(values):
+                    text = '' if pd.isna(value) else str(value).strip()
+                    tokens = cls._trim_trailing_empty_tokens(cls._split_text_line(text, delimiter))
+                    valid = cls._looks_like_point_record_row(tokens)
+                    if valid:
+                        if run is not None and run['ncols'] == len(tokens) and row_index == run['end'] + 1:
+                            run['rows'].append(tokens)
+                            run['end'] = row_index
+                        else:
+                            if run is not None and len(run['rows']) >= 3:
+                                candidates.append(run)
+                            run = {'physical_col': physical_col, 'delimiter': delimiter,
+                                   'start': row_index, 'end': row_index,
+                                   'ncols': len(tokens), 'rows': [tokens]}
+                    else:
+                        if run is not None and len(run['rows']) >= 3:
+                            candidates.append(run)
+                        run = None
+                if run is not None and len(run['rows']) >= 3:
+                    candidates.append(run)
+                for candidate in candidates:
+                    score = len(candidate['rows']) * candidate['ncols']
+                    if best is None or score > best['score']:
+                        best = dict(candidate, score=score)
+        return best
+
+    def _read_packed_single_column_excel(self, path, raw):
+        candidate = self._packed_excel_candidate(raw)
+        if candidate is None:
+            raise ValueError(
+                "XYZ点表模式下，Excel只有一个物理列，但未找到连续的分隔式XYZ数据区。\n"
+                "支持英文/中文分号、Tab、竖线或逗号；每条记录至少需包含3个数值字段。")
+        physical_col = candidate['physical_col']
+        delimiter = candidate['delimiter']
+        start = int(candidate['start'])
+        header_tokens = None
+        header_row = start - 1
+        if header_row >= 0:
+            header_value = raw.at[header_row, physical_col]
+            header_text = '' if pd.isna(header_value) else str(header_value).strip()
+            possible = self._trim_trailing_empty_tokens(self._split_text_line(header_text, delimiter))
+            if len(possible) == candidate['ncols'] and self._looks_like_xyz_header(possible):
+                header_tokens = [str(token).strip() or f'Col{i+1}' for i, token in enumerate(possible)]
+        if not header_tokens or len(set(header_tokens)) != len(header_tokens):
+            header_tokens = [f'Col{i+1}' for i in range(candidate['ncols'])]
+
+        frame = pd.DataFrame(candidate['rows'], columns=header_tokens)
+        metadata = {}
+        metadata_end = header_row if header_tokens[0] != 'Col1' else start
+        for row_index in range(max(0, metadata_end)):
+            value = raw.at[row_index, physical_col]
+            text = '' if pd.isna(value) else str(value).strip()
+            if not text:
+                continue
+            parts = self._trim_trailing_empty_tokens(self._split_text_line(text, delimiter))
+            if len(parts) >= 2 and str(parts[0]).strip():
+                metadata[str(parts[0]).strip()] = delimiter.join(str(part).strip() for part in parts[1:])
+        delimiter_label = {';': ';', '；': '；', '\t': 'Tab', '|': '|', ',': ','}[delimiter]
+        self.import_info.update({
+            'strategy': 'Excel单列分隔式XYZ读取',
+            'sampled': False,
+            'sample_method_key': 'full',
+            'extrema_preserved': True,
+            'import_rows': len(frame),
+            'packed_single_column': True,
+            'packed_delimiter': delimiter_label,
+            'packed_physical_column': int(physical_col) + 1 if isinstance(physical_col, (int, np.integer)) else str(physical_col),
+            'metadata': metadata,
+            'notes': f"单列拆分 {delimiter_label} | 跳过前置说明 {start} 行",
+        })
+        self.last_import_note = (
+            f"已将Excel物理列拆分为 {candidate['ncols']} 个逻辑字段；"
+            f"数据从第 {start + 1} 行开始，保留 {len(metadata)} 项前置扫描参数。")
+        return frame
+
+    @classmethod
+    def _extract_text_preamble_metadata(cls, path, enc, data_line_no, header_line_no=None):
+        metadata = {}
+        try:
+            with open(path, 'r', encoding=enc, errors='ignore') as handle:
+                for row_index, line in enumerate(handle):
+                    if row_index >= int(data_line_no):
+                        break
+                    if header_line_no is not None and row_index == int(header_line_no):
+                        continue
+                    text = line.strip().lstrip('\ufeff')
+                    if not text or text.startswith('#'):
+                        continue
+                    delimiter = cls._detect_sep_from_line(text)
+                    parts = cls._trim_trailing_empty_tokens(cls._split_text_line(text, delimiter))
+                    if len(parts) >= 2 and str(parts[0]).strip():
+                        metadata[str(parts[0]).strip()] = (
+                            delimiter.join(str(part).strip() for part in parts[1:]))
+        except Exception:
+            return {}
+        return metadata
+
+    def _read_excel_height_matrix(self, path, raw):
+        """Read an explicitly selected Excel Z matrix, allowing metadata rows above it."""
+        manual_start = max(0, int(getattr(self, 'height_matrix_start_row', 0)) - 1)
+        runs = []
+        run = None
+        for row_index in range(manual_start, len(raw)):
+            row = raw.iloc[row_index].tolist()
+            while row and pd.isna(row[-1]):
+                row.pop()
+            numeric_count = sum(self._is_float_token(value) for value in row)
+            valid = len(row) >= 2 and numeric_count >= 2 and all(
+                self._is_float_or_missing_token(value) for value in row)
+            if valid:
+                if run is not None and run['ncols'] == len(row) and row_index == run['end'] + 1:
+                    run['rows'].append(row)
+                    run['end'] = row_index
+                else:
+                    if run is not None and len(run['rows']) >= 3:
+                        runs.append(run)
+                    run = {'start': row_index, 'end': row_index, 'ncols': len(row), 'rows': [row]}
+            else:
+                if run is not None and len(run['rows']) >= 3:
+                    runs.append(run)
+                run = None
+        if run is not None and len(run['rows']) >= 3:
+            runs.append(run)
+        if not runs:
+            raise ValueError("Z矩阵模式下，Excel中未找到至少3行、2列的连续数值矩阵区。")
+        selected = max(runs, key=lambda item: len(item['rows']) * item['ncols'])
+        values = np.asarray(
+            [[self._token_to_float(value) for value in row] for row in selected['rows']], dtype=float)
+        coordinate_header = False
+        if values.shape[1] >= 3 and np.isnan(values[0, 0]) and self._regular_numeric_sequence(values[0, 1:]):
+            values = values[1:, 1:]
+            coordinate_header = True
+        elif values.shape[1] >= 3 and values.shape[0] >= 3:
+            first_column = values[:, 0]
+            if (self._regular_numeric_sequence(first_column)
+                    and np.allclose(first_column, np.round(first_column), rtol=0.0, atol=1e-9)
+                    and abs(abs(float(np.median(np.diff(first_column)))) - 1.0) <= 1e-9):
+                values = values[:, 1:]
+                coordinate_header = True
+        if values.shape[0] < 2 or values.shape[1] < 2:
+            raise ValueError("Excel矩阵去除坐标标签后小于2×2，无法生成面型。")
+        pitch_x = float(self.height_matrix_pitch_x_um)
+        pitch_y = float(self.height_matrix_pitch_y_um)
+        z_unit = str(self.height_matrix_z_unit)
+        frame = self._height_matrix_dataframe(
+            values, values.shape[0], values.shape[1], pitch_x, pitch_y)
+        self.import_info.update({
+            'strategy': 'Excel高度矩阵全量读取',
+            'sampled': False,
+            'sample_method_key': 'full',
+            'extrema_preserved': True,
+            'height_matrix': True,
+            'matrix_rows': int(values.shape[0]),
+            'matrix_cols': int(values.shape[1]),
+            'matrix_data_start_row': int(selected['start']) + 1,
+            'matrix_coordinate_header': coordinate_header,
+            'matrix_pitch_x_um': pitch_x,
+            'matrix_pitch_y_um': pitch_y,
+            'matrix_z_unit': z_unit,
+            'import_rows': int(values.size),
+            'valid_rows': len(frame),
+            'notes': f"Excel矩阵 {values.shape[0]}×{values.shape[1]} | 跳过前置说明 {selected['start']} 行",
+        })
+        self.last_import_note = (
+            f"已按Z矩阵读取Excel：{values.shape[0]}×{values.shape[1]}；"
+            f"跳过前置说明 {selected['start']} 行。")
+        return frame
 
     @staticmethod
     def _normalize_unit_label(text, default_unit="µm"):
@@ -633,14 +859,14 @@ class DataIOMixin:
         if header and len(header) == raw_ncols:
             first_label = str(header[0]).strip().lower().replace(' ', '')
             rest = [self._token_to_float(value) for value in header[1:]]
-            if any(word in first_label for word in axis_words) and len(rest) >= 8:
+            if any(word in first_label for word in axis_words) and len(rest) >= 2:
                 value_start = 1
                 coordinate_header = True
 
         if sample_rows:
             first_tokens = sample_rows[0][1]
             rest = [self._token_to_float(value) for value in first_tokens[1:]]
-            if (self._is_missing_token(first_tokens[0]) and len(rest) >= 8
+            if (self._is_missing_token(first_tokens[0]) and len(rest) >= 2
                     and self._regular_numeric_sequence(rest)):
                 value_start = 1
                 coordinate_header = True
@@ -649,10 +875,10 @@ class DataIOMixin:
         data_samples = [tokens for line_no, tokens in sample_rows if line_no >= data_start]
         first_column = [self._token_to_float(tokens[0]) for tokens in data_samples if tokens]
         integer_row_index = (
-            len(first_column) >= 8 and self._regular_numeric_sequence(first_column)
+            len(first_column) >= 3 and self._regular_numeric_sequence(first_column)
             and np.allclose(first_column, np.round(first_column), rtol=0.0, atol=1e-9)
             and abs(abs(float(np.median(np.diff(first_column)))) - 1.0) <= 1e-9)
-        if value_start == 0 and raw_ncols >= 9 and integer_row_index:
+        if value_start == 0 and raw_ncols >= 3 and integer_row_index:
             value_start = 1
             coordinate_header = True
 
@@ -740,10 +966,10 @@ class DataIOMixin:
 
     def _looks_like_height_matrix_layout(self, path, enc, layout):
         """判断文本数据是否为二维高度矩阵，而不是普通 XYZ 表格。"""
-        if not layout or int(layout.get('ncols', 0)) < 8:
+        if not layout or int(layout.get('ncols', 0)) < 2:
             return False
         prepared = self._prepare_height_matrix_layout(path, enc, layout)
-        if int(prepared.get('ncols', 0)) < 8:
+        if int(prepared.get('ncols', 0)) < 2:
             return False
         layout.update(prepared)
         header = [str(x).strip().lower() for x in (layout.get('header_tokens') or [])]
@@ -778,7 +1004,7 @@ class DataIOMixin:
                         break
         except Exception:
             return False
-        return good_rows >= 4
+        return good_rows >= 3
 
     def _height_matrix_dataframe(self, z_values, rows_count, cols_count, pitch_x_um, pitch_y_um,
                                  invalid_values=()):
@@ -1472,17 +1698,31 @@ class DataIOMixin:
         self._reset_import_info(path)
         suffix = Path(path).suffix.lower()
         file_size = Path(path).stat().st_size
+        layout_mode = getattr(self, 'input_layout_mode', 'point_table')
+        if layout_mode not in ('point_table', 'height_matrix'):
+            layout_mode = 'point_table'
+        self.import_info['input_layout_mode'] = layout_mode
 
         if suffix in self.EXCEL_SUFFIXES:
-            df = pd.read_excel(path)
-            self.import_info.update({
-                'strategy': 'Excel全量读取',
-                'sampled': False,
-                'sample_method_key': 'full',
-                'extrema_preserved': True,
-                'import_rows': len(df),
-                'notes': 'Excel不做预抽样'
-            })
+            raw_excel = pd.read_excel(path, header=None, dtype=object)
+            nonempty_excel = raw_excel.dropna(axis=1, how='all')
+            if layout_mode == 'height_matrix':
+                df = self._read_excel_height_matrix(path, raw_excel)
+                self.import_info['display_limit'] = self._display_limit()
+                self._update_import_status_label()
+                return df
+            if nonempty_excel.shape[1] == 1:
+                df = self._read_packed_single_column_excel(path, raw_excel)
+            else:
+                df = pd.read_excel(path)
+                self.import_info.update({
+                    'strategy': 'Excel点表全量读取',
+                    'sampled': False,
+                    'sample_method_key': 'full',
+                    'extrema_preserved': True,
+                    'import_rows': len(df),
+                    'notes': 'Excel不做预抽样'
+                })
         elif suffix in self.TEXT_SUFFIXES or suffix == '':
             last_err = None
             df = None
@@ -1491,7 +1731,8 @@ class DataIOMixin:
             for enc in ('utf-8-sig', 'gbk', 'utf-16', 'latin-1'):
                 try:
                     manual_start = max(0, int(getattr(self, 'height_matrix_start_row', 0)) - 1)
-                    layout = self._detect_text_layout(path, enc, start_line_no=manual_start)
+                    layout = self._detect_text_layout(
+                        path, enc, start_line_no=manual_start, layout_mode=layout_mode)
                     if layout is not None:
                         break
                 except Exception as e:
@@ -1503,11 +1744,17 @@ class DataIOMixin:
                 sep = layout['sep']
                 ncols = layout['ncols']
                 col_names = layout['header_tokens'] if layout['header_tokens'] else [f'Col{i+1}' for i in range(ncols)]
-                if self._looks_like_height_matrix_layout(path, enc, layout):
+                if layout_mode == 'height_matrix':
+                    if not self._looks_like_height_matrix_layout(path, enc, layout):
+                        raise ValueError(
+                            "当前导入策略选择了Z矩阵，但文件中未找到稳定的二维数值矩阵区。\n"
+                            "请检查数据起始行，或在文件导入策略中切换为XYZ点表。")
                     df = self._read_height_matrix_table(path, enc, layout, file_size)
                     self.import_info['display_limit'] = self._display_limit()
                     self._update_import_status_label()
                     return df
+                text_metadata = self._extract_text_preamble_metadata(
+                    path, enc, layout['data_line_no'], layout.get('header_line_no'))
                 auto_sample = bool(getattr(self, 'auto_sample_large_text', True))
                 if auto_sample and file_size >= self._large_text_threshold_bytes():
                     df = self._sample_large_text(path, enc, sep, ncols, col_names)
@@ -1531,7 +1778,15 @@ class DataIOMixin:
                         'import_rows': len(df),
                         'notes': f"编码 {enc}"
                     })
+                self.import_info['metadata'] = text_metadata
+                self.import_info['preamble_rows_skipped'] = int(layout['data_line_no'])
+                if text_metadata:
+                    self.import_info['notes'] += f" | 前置参数 {len(text_metadata)} 项"
             else:
+                if layout_mode == 'height_matrix':
+                    raise ValueError(
+                        "当前导入策略选择了Z矩阵，但前50000行未找到连续二维数值区。\n"
+                        "请检查矩阵数据起始行或切换导入类型。")
                 # 回退到 pandas 嗅探；不建议用于超大未知格式文件，因此超过阈值时给出明确提示。
                 auto_sample = bool(getattr(self, 'auto_sample_large_text', True))
                 if auto_sample and file_size >= self._large_text_threshold_bytes():

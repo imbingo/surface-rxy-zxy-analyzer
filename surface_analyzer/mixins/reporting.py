@@ -30,6 +30,7 @@ from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
 
 from ..plotting import set_surface_box_aspect, set_xy_equal_aspect
+from ..polynomial import fit_polynomial_surface, evaluate_polynomial_surface
 
 
 
@@ -60,7 +61,8 @@ class ReportingMixin:
                 filter_text += f" (σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})"
             fig = self._render_report_figure(
                 self.current_source_name, tx, ty, tz, self.active_idx, metrics,
-                self.n_filtered, pipeline_text, filter_text, self.import_info, self.display_detrended,
+                self.n_filtered, pipeline_text, filter_text, self.import_info,
+                getattr(self, 'display_surface_mode', 'raw'),
                 roi_info=self._roi_report_info(tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data()))
             fig.savefig(path, dpi=150)
             self.statusBar().showMessage(f"已导出报告图: {path}", 6000)
@@ -86,6 +88,9 @@ class ReportingMixin:
             if self.current_coeffs is not None:
                 c = self.current_coeffs
                 df_out['Resid_um'] = (fz - (c[0] * fx + c[1] * fy + c[2])) * 1000.0
+            for order, model in sorted(getattr(self, 'high_order_models', {}).items()):
+                df_out[f'Resid_Order{order}_um'] = (
+                    fz - evaluate_polynomial_surface(model, fx, fy)) * 1000.0
 
             pipeline_text = " -> ".join(self.transform_pipeline) if self.transform_pipeline else "原始状态"
             filter_text = self.cb_filter.currentText()
@@ -104,7 +109,8 @@ class ReportingMixin:
                 f"# ROI: {roi_info['summary']}",
                 f"# 滤波剔除点数: {self.n_filtered} | 手动删除点数: {int((~self.manual_mask).sum())} | 导出点数: {len(fz)}",
                 f"# 手动删除重放: {self._manual_deletion_summary()}",
-                f"# 当前显示模式: {'去倾斜残差显示(仅显示/框选)' if self.display_detrended else '原始Z高度显示'}",
+                f"# 当前显示模式: {getattr(self, 'display_surface_mode', 'raw')}",
+                f"# 输入布局: {self.import_info.get('input_layout_mode', 'point_table')}",
                 f"# 导入方式: {self.import_info.get('strategy', '--')} | 是否抽样: {self.import_info.get('sampled', False)}",
                 f"# 结果质量: {quality['label']}",
                 f"# 源文件大小: {self.import_info.get('file_size_mb', 0.0):.1f} MB | 读入行数: {self.import_info.get('import_rows', 0)} | 有效点数: {self.import_info.get('valid_rows', len(self.df_raw) if self.df_raw is not None else 0)}",
@@ -112,6 +118,9 @@ class ReportingMixin:
             ]
             if quality['warning']:
                 meta.append(f"# 警告: {quality['warning']}")
+            source_metadata = self.import_info.get('metadata') or {}
+            if source_metadata:
+                meta.append("# 源文件前置参数: " + json.dumps(source_metadata, ensure_ascii=False, sort_keys=True))
             if self.last_metrics is not None:
                 m = self.last_metrics
                 meta += [
@@ -119,6 +128,10 @@ class ReportingMixin:
                     f"# Rx = {m['rx']:.2f} µrad | Ry = {m['ry']:.2f} µrad (符号约定需标准件校准)",
                     f"# PV(BF平面法向) = {m['pv']:.3f} µm | TTV(原始Z极差) = {m['ttv']:.3f} µm | 平均Z = {m['mean_z']:.5f} mm",
                 ]
+                for order, hm in sorted((m.get('high_order') or {}).items()):
+                    meta.append(
+                        f"# {order}阶去除后残差: PV = {hm['residual_pv_um']:.3f} µm | "
+                        f"RMS = {hm['residual_rms_um']:.3f} µm | R² = {hm['r_squared']:.6f}")
             if roi_info['shape_lines']:
                 meta.append("# ROI形状: " + "；".join(roi_info['shape_lines'][:8]))
                 if len(roi_info['shape_lines']) > 8:
@@ -161,6 +174,7 @@ class ReportingMixin:
             'sigma_k': self.spin_sigma.value(),
             'sigma_iters': self.spin_sigma_iter.value(),
             'filter_text': filter_text,
+            'display_surface_mode': getattr(self, 'display_surface_mode', 'raw'),
             'display_detrended': self.display_detrended,
             'roi_enabled': bool(self.roi_enabled),
             'roi_shapes': [dict(r) for r in self.roi_shapes],
@@ -275,7 +289,7 @@ class ReportingMixin:
                     fig = self._render_report_figure(
                         name, x, y, z, active_idx, metrics, n_filtered,
                         params['pipeline_text'], params['filter_text'],
-                        import_info_snap, params['display_detrended'], roi_info=roi_info)
+                        import_info_snap, params['display_surface_mode'], roi_info=roi_info)
                     out_png = out / f"result_{Path(path).stem}.png"
                     fig.savefig(str(out_png), dpi=150)
                     results.append({'status': 'ok', 'file': name, 'out': str(out_png)})
@@ -302,7 +316,7 @@ class ReportingMixin:
 
     def _render_report_figure(self, source_name, tx, ty, tz, active_idx, metrics,
                               n_filtered, pipeline_text, filter_text,
-                              import_info, display_detrended, roi_info=None):
+                              import_info, display_surface_mode='raw', roi_info=None):
         """生成包含主页面全部信息(指标文本 + 四视图)的报告图，返回 Figure(Agg后端)。"""
         # YaHei 同时含中文与 µ(U+00B5)，避免报告图里 µm/µrad 出现缺字方块；其余字体兜底
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
@@ -321,6 +335,9 @@ class ReportingMixin:
         ax_yz = fig.add_subplot(gs[1, 2])
 
         coeffs = metrics['coeffs']
+        if isinstance(display_surface_mode, bool):
+            display_surface_mode = 'residual_1' if display_surface_mode else 'raw'
+        display_surface_mode = str(display_surface_mode or 'raw')
         if roi_info is None:
             roi_info = {'enabled': False, 'summary': '关闭', 'shape_lines': [], 'shapes': [], 'roi_enabled': False}
         # 绘图抽样（与主界面口径一致）；指标仍按全部参与拟合点
@@ -330,9 +347,16 @@ class ReportingMixin:
             pick = np.linspace(0, len(plot_idx) - 1, limit, dtype=int)
             plot_idx = plot_idx[pick]
         dx, dy = tx[plot_idx], ty[plot_idx]
-        if display_detrended:
-            plot_z_all = (tz - (coeffs[0] * tx + coeffs[1] * ty + coeffs[2])) * 1000.0
-            zlab, ttl3d, txt, tyt = "去倾斜残差 (µm)", "3D 去倾斜残差面型", "X-残差剖面", "Y-残差剖面"
+        if display_surface_mode != 'raw':
+            try:
+                order = int(display_surface_mode.rsplit('_', 1)[1])
+            except (ValueError, IndexError):
+                order = 1
+            fit_idx = np.asarray(active_idx, dtype=int)
+            model = fit_polynomial_surface(tx[fit_idx], ty[fit_idx], tz[fit_idx], order)
+            plot_z_all = (tz - evaluate_polynomial_surface(model, tx, ty)) * 1000.0
+            zlab = f"{order}阶去除后残差 (µm)"
+            ttl3d, txt, tyt = f"3D {order}阶去除后残差", f"X-{order}阶残差剖面", f"Y-{order}阶残差剖面"
         else:
             plot_z_all = tz
             zlab, ttl3d, txt, tyt = "Z (mm)", "3D 原始高度", "X-Z剖面", "Y-Z剖面"
@@ -351,7 +375,7 @@ class ReportingMixin:
 
         if len(dx) > 0:
             xx, yy = np.meshgrid(np.linspace(dx.min(), dx.max(), 10), np.linspace(dy.min(), dy.max(), 10))
-            zz = np.zeros_like(xx) if display_detrended else coeffs[0] * xx + coeffs[1] * yy + coeffs[2]
+            zz = np.zeros_like(xx) if display_surface_mode != 'raw' else coeffs[0] * xx + coeffs[1] * yy + coeffs[2]
             ax3d.plot_surface(xx, yy, zz, color='#3498db', alpha=0.3, edgecolor='none')
             set_surface_box_aspect(ax3d, dx, dy, dz, zoom=1.02, z_tick_count=3)
             # 颜色条：标明散点配色对应的高度/残差量级
@@ -366,6 +390,7 @@ class ReportingMixin:
         meta_lines = [
             f"报告时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
             f"数据来源: {source_name}",
+            f"输入布局: {import_info.get('input_layout_mode', 'point_table')} | "
             f"导入方式: {import_info.get('strategy', '--')} | 抽样: {import_info.get('sampled', False)}",
             f"结果质量: {quality['label']}",
             f"源文件大小: {import_info.get('file_size_mb', 0.0):.1f} MB | 读入行: {import_info.get('import_rows', 0)}",
@@ -374,7 +399,7 @@ class ReportingMixin:
             f"滤波模式: {filter_text}",
             f"ROI: {roi_info.get('summary', '关闭')}",
             f"手动删除: {self._manual_deletion_summary()}",
-            f"显示模式: {'去倾斜残差 (µm)' if display_detrended else '原始Z高度 (mm)'}",
+            f"显示模式: {display_surface_mode}",
         ]
         if roi_info.get('shape_lines'):
             roi_shape_text = "；".join(roi_info['shape_lines'][:4])

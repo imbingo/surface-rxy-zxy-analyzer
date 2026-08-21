@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+import pandas as pd
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -19,6 +20,7 @@ from surface_analyzer.mixins.analysis import AnalysisMixin
 from surface_analyzer.mixins.data_io import DataIOMixin
 from surface_analyzer.mixins.roi import ROIMixin
 from surface_analyzer.plotting import surface_box_aspect
+from surface_analyzer.polynomial import fit_polynomial_surface, evaluate_polynomial_surface
 
 
 class _RoiHarness(ROIMixin, AnalysisMixin):
@@ -75,6 +77,7 @@ class V4ApiTests(unittest.TestCase):
             path.write_text("\n".join(lines) + "\n", encoding="gbk")
 
             window = SurfaceAnalyzerPro()
+            window.input_layout_mode = "height_matrix"
             frame = window._read_table(path)
             self.assertTrue(window.import_info["height_matrix"])
             self.assertEqual(window.import_info["matrix_rows"], 10)
@@ -94,9 +97,11 @@ class V4ApiTests(unittest.TestCase):
     def test_v402_recipe_persists_manual_matrix_start_row(self):
         window = SurfaceAnalyzerPro()
         window.height_matrix_start_row = 123
+        window.input_layout_mode = "height_matrix"
         recipe = window._current_recipe_dict()
-        self.assertEqual(APP_VERSION, "V4.0.3")
+        self.assertEqual(APP_VERSION, "V4.1.0")
         self.assertEqual(recipe["large_file"]["matrix_start_row"], 123)
+        self.assertEqual(recipe["input"]["layout_mode"], "height_matrix")
         window.close()
 
     def test_3d_aspect_preserves_xy_geometry_and_bounds_flat_z(self):
@@ -178,14 +183,15 @@ class V4ApiTests(unittest.TestCase):
             counts = []
             counts.append(self._select_and_delete(source, "XY", 0.5, 0.5, 2.5, 2.5))
             counts.append(self._select_and_delete(source, "XZ", 3.5, 0.0009, 4.5, 0.0011))
-            source.chk_detrend_display.setChecked(True)
-            source._on_detrend_display_changed()
+            source.cb_surface_display.setCurrentIndex(
+                source.cb_surface_display.findData("residual_1"))
+            source._on_surface_display_changed()
             counts.append(self._select_and_delete(source, "YZ", 3.5, -0.001, 4.5, 0.001))
             self.assertEqual(counts, [4, 5, 4])
             recipe = source._current_recipe_dict()
             json.dumps(recipe, ensure_ascii=False)
             expected_mask = source.manual_mask.copy()
-            self.assertEqual(recipe["schema_version"], 2)
+            self.assertEqual(recipe["schema_version"], 3)
             self.assertEqual(len(recipe["manual_deletion"]["operations"]), 3)
             self.assertEqual(len(recipe["manual_deletion"]["source_sha256"]), 64)
             self.assertTrue(all(op["transform_pipeline"] == ["CW90"]
@@ -212,6 +218,95 @@ class V4ApiTests(unittest.TestCase):
             self.assertEqual(int((~changed.manual_mask).sum()), 0)
             self.assertEqual(changed.manual_delete_operations, [])
             changed.close()
+
+    def test_point_table_mode_does_not_use_matrix_width_heuristic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "wide_point_table.csv"
+            rows = [",".join(f"C{i}" for i in range(10))]
+            for row in range(12):
+                rows.append(",".join(str(row * 10 + col) for col in range(10)))
+            path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            window = SurfaceAnalyzerPro()
+            window.input_layout_mode = "point_table"
+            frame = window._read_table(path)
+            self.assertFalse(window.import_info["height_matrix"])
+            self.assertEqual(frame.shape, (12, 10))
+            window.close()
+
+    def test_semicolon_point_table_keeps_text_fields_and_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "probe_export.txt"
+            path.write_text(
+                "Probe;CHRocodile\nScan speed;10 mm/s\n"
+                "X;Y;Z;Intensity;Probe;Quality\n"
+                "0;0;1.001;52000;P-A;Valid\n"
+                "1;0;1.002;51900;P-A;Valid\n"
+                "0;1;1.003;51800;P-A;Valid\n"
+                "1;1;1.004;51700;P-A;Valid\n",
+                encoding="utf-8",
+            )
+            window = SurfaceAnalyzerPro()
+            window.input_layout_mode = "point_table"
+            frame = window._read_table(path)
+            self.assertEqual(list(frame.columns), ["X", "Y", "Z", "Intensity", "Probe", "Quality"])
+            self.assertEqual(frame.iloc[0]["Probe"], "P-A")
+            self.assertEqual(len(frame), 4)
+            self.assertEqual(window.import_info["metadata"]["Probe"], "CHRocodile")
+            window.close()
+
+    def test_excel_single_physical_column_is_split_into_xyz_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "packed_probe.xlsx"
+            values = [
+                "Probe;CHRocodile", "Scan speed;10 mm/s",
+                "X;Y;Z;Intensity;Probe;Quality",
+                "0;0;1.001;52000;P-A;Valid",
+                "1;0;1.002;51900;P-A;Valid",
+                "0;1;1.003;51800;P-A;Valid",
+                "1;1;1.004;51700;P-A;Valid",
+            ]
+            pd.DataFrame({"A": values}).to_excel(path, header=False, index=False)
+            window = SurfaceAnalyzerPro()
+            window.input_layout_mode = "point_table"
+            frame = window._read_table(path)
+            self.assertEqual(list(frame.columns), ["X", "Y", "Z", "Intensity", "Probe", "Quality"])
+            self.assertTrue(window.import_info["packed_single_column"])
+            self.assertEqual(window.import_info["metadata"]["Probe"], "CHRocodile")
+            self.assertEqual(len(frame), 4)
+            window.close()
+
+    def test_explicit_excel_height_matrix_skips_metadata_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "height_matrix.xlsx"
+            raw = pd.DataFrame([
+                ["Instrument", "Demo", None],
+                ["Mode", "Surface", None],
+                [1.0, 2.0, 3.0],
+                [4.0, 5.0, 6.0],
+                [7.0, 8.0, 9.0],
+            ])
+            raw.to_excel(path, header=False, index=False)
+            window = SurfaceAnalyzerPro()
+            window.input_layout_mode = "height_matrix"
+            frame = window._read_table(path)
+            self.assertTrue(window.import_info["height_matrix"])
+            self.assertEqual(window.import_info["matrix_rows"], 3)
+            self.assertEqual(window.import_info["matrix_cols"], 3)
+            self.assertEqual(len(frame), 9)
+            window.close()
+
+    def test_high_order_residual_separates_second_and_third_order_shape(self):
+        x, y = np.meshgrid(np.linspace(-10, 10, 31), np.linspace(-8, 8, 27))
+        z = (1.0 + 2e-5 * x - 3e-5 * y + 2e-5 * x ** 2 - 1.5e-5 * x * y
+             + 8e-6 * y ** 2 + 1.2e-6 * x ** 3 - 8e-7 * x * y ** 2)
+        xf, yf, zf = x.ravel(), y.ravel(), z.ravel()
+        model2 = fit_polynomial_surface(xf, yf, zf, 2)
+        model3 = fit_polynomial_surface(xf, yf, zf, 3)
+        residual2 = zf - evaluate_polynomial_surface(model2, xf, yf)
+        residual3 = zf - evaluate_polynomial_surface(model3, xf, yf)
+        self.assertGreater(np.ptp(residual2), 1e-4)
+        self.assertLess(np.ptp(residual3), 1e-10)
+        self.assertLess(model3["residual_pv_um"], model2["residual_pv_um"])
 
 
 if __name__ == "__main__":

@@ -95,10 +95,16 @@ class MultiViewCanvas(QWidget):
         card.setGraphicsEffect(eff)
         return ax, canvas, card, tlabel
 
-    def set_titles(self, detrended):
-        if detrended:
-            self.title_3d.setText("3D 去倾斜残差面型"); self.title_xy.setText("XY 俯视分布")
-            self.title_xz.setText("X-残差剖面"); self.title_yz.setText("Y-残差剖面")
+    def set_titles(self, mode='raw'):
+        if mode != 'raw':
+            try:
+                order = int(str(mode).rsplit('_', 1)[1])
+            except (ValueError, IndexError):
+                order = 1
+            self.title_3d.setText(f"3D {order}阶去除后残差")
+            self.title_xy.setText(f"XY {order}阶残差色图")
+            self.title_xz.setText(f"X-{order}阶残差剖面")
+            self.title_yz.setText(f"Y-{order}阶残差剖面")
         else:
             self.title_3d.setText("3D 原始高度"); self.title_xy.setText("XY 俯视分布")
             self.title_xz.setText("X-Z 剖面"); self.title_yz.setText("Y-Z 剖面")
