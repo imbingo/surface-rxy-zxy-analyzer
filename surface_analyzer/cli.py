@@ -7,7 +7,6 @@ import json
 import sys
 from pathlib import Path
 
-from .api import AnalysisOptions, analyze_file
 from .version import APP_VERSION, SOURCE_BASE_VERSION, SOURCE_COMMIT
 
 
@@ -51,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_headless(args: argparse.Namespace) -> int:
+    from .api import AnalysisOptions, analyze_file
+
     if not args.input:
         print("[error] --headless 需要 --input", file=sys.stderr)
         return EXIT_ARGUMENT
@@ -97,22 +98,68 @@ def _run_headless(args: argparse.Namespace) -> int:
 
 
 def _run_gui(input_path: str | None) -> int:
-    from PyQt6.QtCore import QTimer
-    from PyQt6.QtGui import QIcon
-    from PyQt6.QtWidgets import QApplication
-
-    from .app import SurfaceAnalyzerPro
+    from PyQt6.QtCore import Qt, QTimer
+    from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+    from PyQt6.QtWidgets import QApplication, QMessageBox, QSplashScreen
 
     app = QApplication(sys.argv)
     resource_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
     icon_path = resource_root / "assets" / "SurfaceRxyZxyAnalyzer.png"
+    icon = QIcon(str(icon_path)) if icon_path.exists() else QIcon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
+
+    splash_pixmap = QPixmap(560, 330)
+    splash_pixmap.fill(QColor("#f7f9fb"))
+    painter = QPainter(splash_pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
-    window = SurfaceAnalyzerPro()
-    window.show()
-    if input_path:
-        QTimer.singleShot(0, lambda: window.load_path(input_path))
-    return app.exec()
+        logo = QPixmap(str(icon_path)).scaled(
+            196, 196, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation)
+        painter.drawPixmap((560 - logo.width()) // 2, 28, logo)
+    painter.setPen(QColor("#263746"))
+    painter.setFont(QFont("Microsoft YaHei UI", 15, QFont.Weight.DemiBold))
+    painter.drawText(0, 230, 560, 32, Qt.AlignmentFlag.AlignCenter, "面型及 Rxy 分析工具")
+    painter.setPen(QColor("#657786"))
+    painter.setFont(QFont("Microsoft YaHei UI", 9))
+    painter.drawText(0, 264, 560, 24, Qt.AlignmentFlag.AlignCenter, APP_VERSION)
+    painter.end()
+
+    splash = QSplashScreen(splash_pixmap)
+    splash.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    splash.show()
+
+    def stage(message: str) -> None:
+        splash.showMessage(
+            message, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom,
+            QColor("#526575"))
+        app.processEvents()
+
+    try:
+        stage("正在加载分析模块...")
+        from .app import SurfaceAnalyzerPro
+
+        stage("正在初始化绘图与分析工作区...")
+        window = SurfaceAnalyzerPro()
+        stage("正在恢复导入策略与界面设置...")
+        window.show()
+        if input_path:
+            QTimer.singleShot(0, lambda: window.load_path(input_path))
+        splash.finish(window)
+        window.statusBar().showMessage(f"{APP_VERSION} 已就绪", 4000)
+        return app.exec()
+    except Exception as exc:
+        splash.close()
+        log_dir = Path.home() / "AppData" / "Local" / "SurfaceRxyZxyAnalyzer" / "logs"
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            (log_dir / "startup_error.log").write_text(
+                f"{APP_VERSION}\n{type(exc).__name__}: {exc}\n", encoding="utf-8")
+        except OSError:
+            pass
+        QMessageBox.critical(None, "启动失败", f"软件启动失败：\n{exc}\n\n错误日志：{log_dir}")
+        return EXIT_ANALYSIS
 
 
 def main(argv: list[str] | None = None) -> int:

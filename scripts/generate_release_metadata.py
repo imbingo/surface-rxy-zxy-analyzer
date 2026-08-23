@@ -60,6 +60,16 @@ VSVersionInfo(
     path.write_text(content, encoding="utf-8")
 
 
+def write_build_info(path: Path, version: str) -> None:
+    payload = {
+        "version": version,
+        "source_commit": git_commit(),
+        "built_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -70,12 +80,21 @@ def sha256(path: Path) -> str:
 
 def git_commit() -> str:
     try:
-        return subprocess.check_output(
+        commit = subprocess.check_output(
             ["git", "rev-parse", "HEAD"],
             text=True,
             encoding="utf-8",
             stderr=subprocess.DEVNULL,
         ).strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            text=True,
+            encoding="utf-8",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).stdout.strip()
+        return f"{commit}-dirty" if dirty else commit
     except (OSError, subprocess.CalledProcessError):
         return "unknown"
 
@@ -113,12 +132,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
     parser.add_argument("--version-file", type=Path)
+    parser.add_argument("--build-info", type=Path)
     parser.add_argument("--artifact", type=Path)
     parser.add_argument("--manifest", type=Path)
     args = parser.parse_args()
     version_tuple(args.version)
     if args.version_file:
         write_version_info(args.version_file, args.version)
+    if args.build_info:
+        write_build_info(args.build_info, args.version)
     if args.artifact or args.manifest:
         if not args.artifact or not args.manifest:
             parser.error("--artifact and --manifest must be supplied together")

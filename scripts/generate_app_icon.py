@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,24 +20,8 @@ def main() -> None:
     top = (source.height - side) // 2
     source = source.crop((left, top, left + side, top + side))
 
-    # Recreate the generated tile boundary as alpha for clean Windows corners.
-    mask = Image.new("L", source.size, 0)
-    draw = ImageDraw.Draw(mask)
-    inset = max(4, round(side * 0.006))
-    radius = round(side * 0.16)
-    draw.rounded_rectangle(
-        (inset, inset, side - inset - 1, side - inset - 1),
-        radius=radius,
-        fill=255,
-    )
-    source_pixels = source.load()
-    mask_pixels = mask.load()
-    for y in range(side):
-        for x in range(side):
-            red, green, blue, _ = source_pixels[x, y]
-            if red >= 220 and green >= 220 and blue >= 220:
-                mask_pixels[x, y] = 0
-    source.putalpha(mask)
+    # The source is authoritative RGBA artwork. Preserve its alpha instead of
+    # inferring transparency from light colors, which would erase pale cloud-map areas.
     image = source.resize((512, 512), Image.Resampling.LANCZOS)
 
     ASSET_DIR.mkdir(parents=True, exist_ok=True)

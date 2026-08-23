@@ -143,15 +143,35 @@ class RecipeMixin:
             self.large_file_sample_method = 'file_position'
         if self.large_file_sample_method not in ('spatial_grid', 'file_position'):
             self.large_file_sample_method = 'file_position'
-        self.large_text_grid_count = int(lf.get('grid_count', self.large_text_grid_count))
-        self.large_text_stride_n = int(lf.get('stride_n', self.large_text_stride_n))
-        self.large_text_threshold_mb = int(lf.get('threshold_mb', self.large_text_threshold_mb))
-        self.large_text_import_limit = int(lf.get('import_limit', self.large_text_import_limit))
-        self.display_point_limit = int(lf.get('display_limit', self.display_point_limit))
-        self.height_matrix_pitch_x_um = float(lf.get('matrix_pitch_x_um', self.height_matrix_pitch_x_um))
-        self.height_matrix_pitch_y_um = float(lf.get('matrix_pitch_y_um', self.height_matrix_pitch_y_um))
+        def bounded_int(value, default, minimum, maximum):
+            try:
+                return max(minimum, min(int(value), maximum))
+            except (TypeError, ValueError, OverflowError):
+                return int(default)
+
+        def bounded_float(value, default, minimum, maximum):
+            try:
+                return max(minimum, min(float(value), maximum))
+            except (TypeError, ValueError, OverflowError):
+                return float(default)
+
+        self.large_text_grid_count = bounded_int(
+            lf.get('grid_count'), self.large_text_grid_count, 0, 2000)
+        self.large_text_stride_n = bounded_int(
+            lf.get('stride_n'), self.large_text_stride_n, 1, 1000000)
+        self.large_text_threshold_mb = bounded_int(
+            lf.get('threshold_mb'), self.large_text_threshold_mb, 1, 4096)
+        self.large_text_import_limit = bounded_int(
+            lf.get('import_limit'), self.large_text_import_limit, 10000, 5000000)
+        self.display_point_limit = bounded_int(
+            lf.get('display_limit'), self.display_point_limit, 5000, 1000000)
+        self.height_matrix_pitch_x_um = bounded_float(
+            lf.get('matrix_pitch_x_um'), self.height_matrix_pitch_x_um, 0.0001, 1e6)
+        self.height_matrix_pitch_y_um = bounded_float(
+            lf.get('matrix_pitch_y_um'), self.height_matrix_pitch_y_um, 0.0001, 1e6)
         self.height_matrix_z_unit = self._normalize_unit_label(lf.get('matrix_z_unit', self.height_matrix_z_unit), self.height_matrix_z_unit)
-        self.height_matrix_start_row = max(0, int(lf.get('matrix_start_row', self.height_matrix_start_row)))
+        self.height_matrix_start_row = bounded_int(
+            lf.get('matrix_start_row'), self.height_matrix_start_row, 0, 50000)
         self.large_file_mode = self._matching_bigfile_mode()
         self.import_info['display_limit'] = self.display_point_limit
         self.import_info['sample_method'] = self._sample_method_label()

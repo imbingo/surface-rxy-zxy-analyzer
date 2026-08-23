@@ -38,7 +38,8 @@ try {
     }
     & $Python ".\scripts\generate_release_metadata.py" `
         --version $Version `
-        --version-file ".\installer\generated_version_info.txt"
+        --version-file ".\installer\generated_version_info.txt" `
+        --build-info ".\installer\generated_build_info.json"
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to generate Windows version metadata."
     }

@@ -19,6 +19,7 @@ from surface_analyzer.app import SurfaceAnalyzerPro
 from surface_analyzer.mixins.analysis import AnalysisMixin
 from surface_analyzer.mixins.data_io import DataIOMixin
 from surface_analyzer.mixins.roi import ROIMixin
+from surface_analyzer.mixins.reporting import ReportingMixin
 from surface_analyzer.plotting import surface_box_aspect
 from surface_analyzer.polynomial import fit_polynomial_surface, evaluate_polynomial_surface
 
@@ -99,10 +100,52 @@ class V4ApiTests(unittest.TestCase):
         window.height_matrix_start_row = 123
         window.input_layout_mode = "height_matrix"
         recipe = window._current_recipe_dict()
-        self.assertEqual(APP_VERSION, "V4.1.0")
+        self.assertEqual(APP_VERSION, "V4.2.0")
         self.assertEqual(recipe["large_file"]["matrix_start_row"], 123)
         self.assertEqual(recipe["input"]["layout_mode"], "height_matrix")
         window.close()
+
+    def test_recipe_large_file_settings_are_clamped(self):
+        window = SurfaceAnalyzerPro()
+        recipe = window._current_recipe_dict()
+        recipe["large_file"].update({
+            "grid_count": 999999,
+            "stride_n": 10**12,
+            "threshold_mb": -20,
+            "import_limit": 10**12,
+            "display_limit": -1,
+            "matrix_pitch_x_um": 1e20,
+            "matrix_pitch_y_um": -5,
+            "matrix_start_row": 999999,
+        })
+        with patch.object(QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok), \
+             patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.Ok):
+            window.apply_recipe(recipe, remap_current_data=False)
+        self.assertEqual(window.large_text_grid_count, 2000)
+        self.assertEqual(window.large_text_stride_n, 1000000)
+        self.assertEqual(window.large_text_threshold_mb, 1)
+        self.assertEqual(window.large_text_import_limit, 5000000)
+        self.assertEqual(window.display_point_limit, 5000)
+        self.assertEqual(window.height_matrix_pitch_x_um, 1e6)
+        self.assertEqual(window.height_matrix_pitch_y_um, 0.0001)
+        self.assertEqual(window.height_matrix_start_row, 50000)
+        window.close()
+
+    def test_matrix_legacy_missing_values_do_not_remove_real_deep_values(self):
+        values = np.array([-1200.0, -1000.0, -999.999, -999.5, 1.0])
+        masked = DataIOMixin._mask_matrix_missing_values(values)
+        self.assertTrue(np.isfinite(masked[0]))
+        self.assertTrue(np.isnan(masked[1]))
+        self.assertTrue(np.isnan(masked[2]))
+        self.assertTrue(np.isfinite(masked[3]))
+
+    def test_batch_report_paths_do_not_overwrite_duplicate_stems(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reserved = set()
+            first = ReportingMixin._unique_batch_report_path(directory, "a/sample.csv", reserved)
+            second = ReportingMixin._unique_batch_report_path(directory, "b/sample.csv", reserved)
+            self.assertEqual(first.name, "result_sample.png")
+            self.assertEqual(second.name, "result_sample_2.png")
 
     def test_3d_aspect_preserves_xy_geometry_and_bounds_flat_z(self):
         x = np.array([0.0, 12.0])

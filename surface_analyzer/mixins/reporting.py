@@ -235,6 +235,8 @@ class ReportingMixin:
         saved_note = self.last_import_note
         results, summary_rows = [], []
         out = Path(outdir)
+        reserved_outputs = set()
+
         try:
             for path in files:
                 name = Path(path).name
@@ -290,12 +292,19 @@ class ReportingMixin:
                         name, x, y, z, active_idx, metrics, n_filtered,
                         params['pipeline_text'], params['filter_text'],
                         import_info_snap, params['display_surface_mode'], roi_info=roi_info)
-                    out_png = out / f"result_{Path(path).stem}.png"
+                    out_png = self._unique_batch_report_path(out, path, reserved_outputs)
                     fig.savefig(str(out_png), dpi=150)
-                    results.append({'status': 'ok', 'file': name, 'out': str(out_png)})
+                    results.append({'status': 'ok', 'file': name, 'source': str(Path(path).resolve()),
+                                    'out': str(out_png.resolve())})
+                    quality = self._metric_quality_from_import(import_info_snap)
                     summary_rows.append({
-                        '文件': name, '总点数': n_total, '参与拟合': int(len(active_idx)),
-                        '结果质量': self._metric_quality_from_import(import_info_snap)['label'],
+                        '文件': name, '源文件完整路径': str(Path(path).resolve()),
+                        '报告完整路径': str(out_png.resolve()),
+                        '总点数': n_total, '参与拟合': int(len(active_idx)),
+                        '结果质量': quality['label'],
+                        'sampled': bool(import_info_snap.get('sampled', False)),
+                        'extrema_preserved': bool(import_info_snap.get('extrema_preserved', True)),
+                        'warnings': quality.get('warning', ''),
                         'ROI保留': int(len(roi_idx)) if roi_info.get('enabled') else '',
                         '滤波剔除': n_filtered,
                         '平均Z_mm': round(metrics['mean_z'], 6),
@@ -304,7 +313,8 @@ class ReportingMixin:
                         '平面方程': f"Z={metrics['a']:.4f}X+{metrics['b']:.4f}Y+{metrics['c']:.4f}",
                     })
                 except Exception as e:
-                    results.append({'status': 'fail', 'file': name, 'error': str(e)})
+                    results.append({'status': 'fail', 'file': name,
+                                    'source': str(Path(path).resolve()), 'error': str(e)})
             if summary_rows:
                 pd.DataFrame(summary_rows).to_csv(
                     out / 'result_batch_summary.csv', index=False, encoding='utf-8-sig')
@@ -313,6 +323,20 @@ class ReportingMixin:
             self.last_import_note = saved_note
             self._update_import_status_label()
         return results
+
+    @staticmethod
+    def _unique_batch_report_path(output_dir, source_path, reserved_outputs=None):
+        """Return a non-conflicting report path for duplicate stems and existing files."""
+        output_dir = Path(output_dir)
+        reserved_outputs = reserved_outputs if reserved_outputs is not None else set()
+        base = output_dir / f"result_{Path(source_path).stem}.png"
+        candidate = base
+        suffix = 2
+        while candidate.exists() or str(candidate).casefold() in reserved_outputs:
+            candidate = output_dir / f"{base.stem}_{suffix}{base.suffix}"
+            suffix += 1
+        reserved_outputs.add(str(candidate).casefold())
+        return candidate
 
     def _render_report_figure(self, source_name, tx, ty, tz, active_idx, metrics,
                               n_filtered, pipeline_text, filter_text,
@@ -387,6 +411,16 @@ class ReportingMixin:
         # 顶部：元信息（较小字号）
         quality = self._metric_quality_from_import(import_info)
         relation = "≈" if quality['estimated'] else "="
+        high_order_warnings = []
+        fit_idx = np.asarray(active_idx, dtype=int)
+        for order in (2, 3):
+            try:
+                condition = float(fit_polynomial_surface(
+                    tx[fit_idx], ty[fit_idx], tz[fit_idx], order)['condition'])
+            except ValueError:
+                continue
+            if condition > 1e8:
+                high_order_warnings.append(f"{order}阶拟合病态(condition={condition:.2e})")
         meta_lines = [
             f"报告时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
             f"数据来源: {source_name}",
@@ -414,22 +448,28 @@ class ReportingMixin:
             "【分析结果】\n\n"
             f"平面方程   Z {relation} {metrics['a']:.4f}·X + {metrics['b']:.4f}·Y + {metrics['c']:.4f}\n\n"
             f"平均厚度 Z    {relation} {metrics['mean_z']:.5f} mm\n"
-            f"面型 PV(法向) {relation} {metrics['pv']:.3f} µm\n"
+            f"PV(BF平面残差) {relation} {metrics['pv']:.3f} µm\n"
             f"TTV(Z 极差)   {relation} {metrics['ttv']:.3f} µm\n"
             f"物料 Rx       {relation} {metrics['rx']:.2f} µrad\n"
             f"物料 Ry       {relation} {metrics['ry']:.2f} µrad"
         )
+        result_face = '#fff4e5' if quality['estimated'] else '#eaf2fb'
+        result_edge = '#d97706' if quality['estimated'] else '#3498db'
         ax_res.text(0.02, 0.97, results_text, va='top', ha='left',
                     fontsize=13.5, linespacing=1.6, color='#11447a', transform=ax_res.transAxes,
-                    bbox=dict(boxstyle='round,pad=0.7', facecolor='#eaf2fb', edgecolor='#3498db', linewidth=1.4))
+                    bbox=dict(boxstyle='round,pad=0.7', facecolor=result_face,
+                              edgecolor=result_edge, linewidth=2.0 if quality['estimated'] else 1.4))
 
         # 底部：脚注
-        foot_text = (f"警告: {quality['warning']}\n" if quality['warning'] else "") + (
+        fit_warning_text = ("高阶警告: " + "；".join(high_order_warnings) + "\n"
+                            if high_order_warnings else "")
+        foot_text = (f"警告: {quality['warning']}\n" if quality['warning'] else "") + fit_warning_text + (
                      "注: Rx≈+dZ/dY, Ry≈-dZ/dX，符号约定需标准件校准。\n"
-                     "PV 为相对最佳拟合平面的法向残差极差。批量无手动删点。")
+                     "PV 为相对最佳拟合平面的法向残差极差，仅去倾斜、未去曲率。批量无手动删点。")
         ax_foot.text(0.02, 0.9, foot_text,
                      va='top', ha='left', fontsize=9, style='italic',
-                     color='#b42318' if quality['warning'] else '#7f8c8d', transform=ax_foot.transAxes)
+                     color='#b42318' if quality['warning'] or high_order_warnings else '#7f8c8d',
+                     transform=ax_foot.transAxes)
 
         fig.suptitle(f"面型及Rxy分析报告 ({self.APP_VERSION}) — {source_name}", fontsize=16, fontweight='bold')
         return fig

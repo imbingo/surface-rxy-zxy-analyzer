@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.1.0."""
+"""Qt application shell for Surface Analyzer V4.2.0."""
 
 import sys
 import os
@@ -515,7 +515,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.lbl_rx = QLabel("--")
         self.lbl_ry = QLabel("--")
         cards.addWidget(self._make_metric_card("平均厚度 Z (mm)", self.lbl_z), 1)
-        cards.addWidget(self._make_metric_card("面型 PV·法向 (µm)", self.lbl_pv, accent=True), 1)
+        pv_card = self._make_metric_card("PV·BF平面残差 (µm)", self.lbl_pv, accent=True)
+        pv_card.setToolTip("相对最佳拟合平面的法向残差极差：仅去除整体高度和一阶倾斜，未去除二阶及以上曲率。")
+        cards.addWidget(pv_card, 1)
         cards.addWidget(self._make_metric_card("TTV·Z极差 (µm)", self.lbl_ttv), 1)
         cards.addWidget(self._make_metric_card("物料 Rx (µrad)", self.lbl_rx), 1)
         cards.addWidget(self._make_metric_card("物料 Ry (µrad)", self.lbl_ry), 1)
@@ -1353,8 +1355,13 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         if model is None:
             self.lbl_surface_residual_metrics.setText(f"{order}阶残差暂不可用")
             return
+        ill_conditioned = float(model.get('condition', 0.0)) > 1e8
+        warning = " | ⚠ 拟合病态" if ill_conditioned else ""
         self.lbl_surface_residual_metrics.setText(
-            f"残差 PV {model['residual_pv_um']:.3f} µm | RMS {model['residual_rms_um']:.3f} µm")
+            f"残差 PV {model['residual_pv_um']:.3f} µm | RMS {model['residual_rms_um']:.3f} µm{warning}")
+        self.lbl_surface_residual_metrics.setToolTip(
+            "高阶设计矩阵条件数过大，结果对采样分布与噪声敏感，不宜作为判定依据。"
+            if ill_conditioned else "高阶残差仅用于诊断，不改变Rx/Ry及BF平面残差PV的权威口径。")
 
     def _get_plot_z(self, tx, ty, tz):
         """返回绘图/框选使用的Z值和轴标签。

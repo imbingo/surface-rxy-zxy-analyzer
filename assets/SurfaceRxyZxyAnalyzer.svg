@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="surfaceColor" x1="0.08" y1="0.92" x2="0.9" y2="0.08">
+      <stop offset="0" stop-color="#2867D3"/>
+      <stop offset="0.35" stop-color="#31BFD1"/>
+      <stop offset="0.64" stop-color="#F2D45F"/>
+      <stop offset="1" stop-color="#F28D55"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#66D7E5" stop-opacity="0.82"/>
+      <stop offset="1" stop-color="#C8F4F7" stop-opacity="0.12"/>
+    </linearGradient>
+    <clipPath id="surfaceClip">
+      <path d="M344 690 C426 538 514 516 606 642 C699 770 785 754 878 590 C790 648 712 616 628 520 C541 421 439 501 344 690 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- One flowing microscope frame, no eyepiece. -->
+  <path d="M244 852 C120 706 139 416 312 276 C398 206 505 197 594 249 C642 277 674 324 681 382"
+        fill="none" stroke="#315A72" stroke-width="48" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M224 876 H840" fill="none" stroke="#315A72" stroke-width="48" stroke-linecap="round"/>
+
+  <!-- Compact optical head and objective. -->
+  <path d="M621 346 Q681 320 741 347 L741 438 Q741 468 711 468 H651 Q621 468 621 438 Z"
+        fill="#DDEFF3" stroke="#315A72" stroke-width="34" stroke-linejoin="round"/>
+  <path d="M646 468 H716 L704 528 Q681 552 658 528 Z"
+        fill="#69C1D4" stroke="#315A72" stroke-width="28" stroke-linejoin="round"/>
+  <path d="M681 548 L635 673 H727 Z" fill="url(#beam)"/>
+  <circle cx="681" cy="665" r="13" fill="#F0A264"/>
+
+  <!-- Third-order saddle surface. -->
+  <path d="M344 690 C426 538 514 516 606 642 C699 770 785 754 878 590 C790 648 712 616 628 520 C541 421 439 501 344 690 Z"
+        fill="url(#surfaceColor)"/>
+  <path d="M344 690 C426 538 514 516 606 642 C699 770 785 754 878 590 C790 648 712 616 628 520 C541 421 439 501 344 690 Z"
+        fill="none" stroke="#315A72" stroke-opacity="0.16" stroke-width="6"/>
+</svg>

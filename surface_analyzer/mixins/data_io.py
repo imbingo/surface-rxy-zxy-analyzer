@@ -960,8 +960,9 @@ class DataIOMixin:
                 atol = max(1e-9, abs(float(marker)) * 1e-9)
                 arr[np.isclose(arr, float(marker), rtol=0.0, atol=atol)] = np.nan
         else:
-            # 保持旧版 VR Demo 的 -1000 缺测约定；表头给出标记时只按明确标记剔除。
-            arr[arr < -999] = np.nan
+            # 无表头声明时只兼容历史上实际使用过的精确哨兵，避免把真实深台阶静默删除。
+            for marker in (-1000.0, -999.999):
+                arr[np.isclose(arr, marker, rtol=0.0, atol=1e-9)] = np.nan
         return arr
 
     def _looks_like_height_matrix_layout(self, path, enc, layout):
@@ -1339,7 +1340,8 @@ class DataIOMixin:
         df = self._height_matrix_dataframe(
             z, rows_count, cols_count, pitch_x, pitch_y, invalid_values)
         coordinate_text = "；已去除顶部/左侧坐标标题" if layout.get('matrix_coordinate_header') else ""
-        invalid_text = ', '.join(f'{v:g}' for v in invalid_values) if invalid_values else '< -999（兼容旧格式）'
+        invalid_text = (', '.join(f'{v:g}' for v in invalid_values)
+                        if invalid_values else '-1000 / -999.999（精确兼容旧格式）')
         start_mode = (f"手动起始行 {self.height_matrix_start_row}"
                       if int(getattr(self, 'height_matrix_start_row', 0)) > 0 else "自动识别")
         self.last_import_note = (
