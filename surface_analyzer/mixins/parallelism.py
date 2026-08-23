@@ -101,17 +101,18 @@ class ParallelismMixin:
             self.parallel_canvas.plot_records(self.parallel_base, self.parallel_measure)
         self._update_parallel_result_ui()
 
-    def _compute_parallel_result(self):
-        b, m = self.parallel_base['metrics'], self.parallel_measure['metrics']
+    @staticmethod
+    def _compute_parallel_result_from_records(parallel_base, parallel_measure):
+        b, m = parallel_base['metrics'], parallel_measure['metrics']
         drx = m['rx'] - b['rx']
         dry = m['ry'] - b['ry']
-        ref_x = (float(np.mean(self.parallel_base['x'])) + float(np.mean(self.parallel_measure['x']))) / 2.0
-        ref_y = (float(np.mean(self.parallel_base['y'])) + float(np.mean(self.parallel_measure['y']))) / 2.0
+        ref_x = (float(np.mean(parallel_base['x'])) + float(np.mean(parallel_measure['x']))) / 2.0
+        ref_y = (float(np.mean(parallel_base['y'])) + float(np.mean(parallel_measure['y']))) / 2.0
         z_base = b['a'] * ref_x + b['b'] * ref_y + b['c']
         z_measure = m['a'] * ref_x + m['b'] * ref_y + m['c']
         step_height = z_measure - z_base
-        estimated = bool(self.parallel_base.get('metric_quality', {}).get('estimated', False)
-                         or self.parallel_measure.get('metric_quality', {}).get('estimated', False))
+        estimated = bool(parallel_base.get('metric_quality', {}).get('estimated', False)
+                         or parallel_measure.get('metric_quality', {}).get('estimated', False))
         return {
             'drx': float(drx),
             'dry': float(dry),
@@ -122,13 +123,34 @@ class ParallelismMixin:
             'estimated': estimated,
         }
 
+    def _compute_parallel_result(self):
+        return self._compute_parallel_result_from_records(self.parallel_base, self.parallel_measure)
+
     def calculate_parallelism(self):
         if self.parallel_base is None or self.parallel_measure is None:
             QMessageBox.warning(self, "数据不完整", "请先分别设置基准面和测量面。")
             return
-        self.parallel_result = self._compute_parallel_result()
+        base, measure = self.parallel_base, self.parallel_measure
+        self._run_background_task(
+            "平行度计算",
+            lambda progress, cancel: self._parallel_task(base, measure, progress, cancel),
+            self._apply_parallel_result,
+        )
+
+    @classmethod
+    def _parallel_task(cls, base, measure, progress, cancel_event):
+        progress(20, "正在计算两平面相对姿态")
+        if cancel_event.is_set():
+            from ..workers import TaskCancelled
+            raise TaskCancelled()
+        result = cls._compute_parallel_result_from_records(base, measure)
+        progress(100, "平行度计算完成")
+        return result
+
+    def _apply_parallel_result(self, result):
+        self.parallel_result = result
         self._update_parallel_result_ui()
-        self.statusBar().showMessage(
+        self._show_status(
             f"平行度已计算: ΔRx={self.parallel_result['drx']:.2f} µrad, "
             f"ΔRy={self.parallel_result['dry']:.2f} µrad", 6000)
 

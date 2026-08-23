@@ -6,7 +6,6 @@ import re
 import mmap
 import json
 import tempfile
-import hashlib
 from collections import deque
 from pathlib import Path
 from datetime import datetime
@@ -26,9 +25,10 @@ from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
     QStackedWidget, QSizeGrip,
 )
-from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSettings
+from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSettings, QThread
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
+from ..workers import TaskCancelled, sha256_file_dialog
 
 from ..widgets import NoWheelSpinBox, NoWheelDoubleSpinBox, NoWheelComboBox
 
@@ -37,6 +37,12 @@ from ..widgets import NoWheelSpinBox, NoWheelDoubleSpinBox, NoWheelComboBox
 class DataIOMixin:
     TEXT_SUFFIXES = ('.csv', '.txt', '.tsv', '.dat', '.asc', '.xyz')
     EXCEL_SUFFIXES = ('.xlsx', '.xls', '.xlsm')
+
+    @staticmethod
+    def _process_ui_events():
+        app = QApplication.instance()
+        if app is not None and QThread.currentThread() is app.thread():
+            app.processEvents()
 
     def _bigfile_mode_label(self, mode_key=None):
         mode = mode_key or getattr(self, 'large_file_mode', 'standard')
@@ -95,24 +101,13 @@ class DataIOMixin:
         source_path = str(info.get('source_path') or '')
         if not source_path or not Path(source_path).is_file():
             return ''
-        total = Path(source_path).stat().st_size
-        digest = hashlib.sha256()
-        read_bytes = 0
-        with open(source_path, 'rb') as handle:
-            while True:
-                chunk = handle.read(8 * 1024 * 1024)
-                if not chunk:
-                    break
-                digest.update(chunk)
-                read_bytes += len(chunk)
-                if read_bytes % (256 * 1024 * 1024) < len(chunk):
-                    self.statusBar().showMessage(
-                        f"正在计算源文件SHA-256: {read_bytes / (1024 * 1024):.0f}/{total / (1024 * 1024):.0f} MB",
-                        1000)
-                    QApplication.processEvents()
-        value = digest.hexdigest().lower()
+        try:
+            value = sha256_file_dialog(self, source_path).lower()
+        except TaskCancelled:
+            self._show_status("源文件 SHA-256 计算已取消", 5000)
+            return ''
         self.import_info['source_sha256'] = value
-        self.statusBar().showMessage(f"源文件SHA-256已计算: {value[:12]}…", 5000)
+        self._show_status(f"源文件 SHA-256 已计算: {value[:12]}…", 5000)
         return value
 
     @staticmethod
@@ -191,6 +186,9 @@ class DataIOMixin:
         }
 
     def _update_import_status_label(self):
+        app = QApplication.instance()
+        if app is not None and QThread.currentThread() is not app.thread():
+            return
         info = getattr(self, 'import_info', {}) or {}
         strategy = info.get('strategy', '--')
         layout_text = 'XYZ点表' if info.get('input_layout_mode', getattr(self, 'input_layout_mode', 'point_table')) == 'point_table' else 'Z矩阵'
@@ -223,7 +221,7 @@ class DataIOMixin:
                    f"显示上限: {self.display_point_limit:,} 点\n\n{text}")
             self.btn_bigfile_settings.setToolTip(cfg)
         if text and strategy != '--':
-            self.statusBar().showMessage(text, 5000)
+            self._show_status(text, 5000)
 
     def _on_display_limit_changed(self):
         self.import_info['display_limit'] = self._display_limit()
@@ -451,7 +449,7 @@ class DataIOMixin:
             if old_display_limit != self.display_point_limit and self.df_raw is not None and self.active_idx is not None:
                 self.update_plots_only()
             layout_text = "XYZ点表" if self.input_layout_mode == 'point_table' else "Z矩阵"
-            self.statusBar().showMessage(f"文件导入策略已更新：{layout_text}", 5000)
+            self._show_status(f"文件导入策略已更新：{layout_text}", 5000)
 
     @staticmethod
     def _detect_sep_from_line(line):
@@ -1060,9 +1058,9 @@ class DataIOMixin:
                 row_count += 1
                 valid_points += int(np.isfinite(values).sum())
                 if row_count % 1000 == 0:
-                    self.statusBar().showMessage(
+                    self._show_status(
                         f"高度矩阵倍率预扫描: {row_count:,} 行 | 有效 {valid_points:,} 点", 1000)
-                    QApplication.processEvents()
+                    self._process_ui_events()
 
         if row_count == 0 or valid_points == 0:
             raise ValueError("高度矩阵倍率降采样未识别到有效数据。")
@@ -1102,9 +1100,9 @@ class DataIOMixin:
                 if len(rows) >= max_rows:
                     break
                 if matrix_row % 1000 == 0:
-                    self.statusBar().showMessage(
+                    self._show_status(
                         f"高度矩阵倍率降采样: {matrix_row:,}/{row_count:,} 行 | 已取 {len(rows):,} 点 | N={stride}", 1000)
-                    QApplication.processEvents()
+                    self._process_ui_events()
 
         if not rows:
             raise ValueError("高度矩阵倍率降采样未得到有效点，请调小降采样倍率 N。")
@@ -1185,9 +1183,9 @@ class DataIOMixin:
                     z_min = min(z_min, float(np.min(vals)))
                     z_max = max(z_max, float(np.max(vals)))
                 if row_count % 1000 == 0:
-                    self.statusBar().showMessage(
+                    self._show_status(
                         f"高度矩阵预扫描: {row_count:,} 行 | 有效 {valid_points:,} 点", 1000)
-                    QApplication.processEvents()
+                    self._process_ui_events()
 
         if row_count == 0 or valid_points == 0:
             raise ValueError("高度矩阵大文件采样未识别到有效数据。")
@@ -1247,9 +1245,9 @@ class DataIOMixin:
                             state['max_row'] = row
                 matrix_row += 1
                 if matrix_row % 1000 == 0:
-                    self.statusBar().showMessage(
+                    self._show_status(
                         f"高度矩阵落格: {matrix_row:,}/{row_count:,} 行 | 占用网格 {len(cells):,}", 1000)
-                    QApplication.processEvents()
+                    self._process_ui_events()
 
         rows = []
         for key in sorted(cells):
@@ -1435,9 +1433,9 @@ class DataIOMixin:
                     if len(rows) >= max_rows:
                         break
                 if valid_rows % 100000 == 0:
-                    self.statusBar().showMessage(
+                    self._show_status(
                         f"倍率降采样: 已扫描 {valid_rows:,} 行 | 已取 {len(rows):,} 行 | N={stride}", 1000)
-                    QApplication.processEvents()
+                    self._process_ui_events()
 
         if not rows:
             raise ValueError("倍率降采样未得到有效数值行，请检查文件格式或调小降采样倍率 N。")
@@ -1505,9 +1503,9 @@ class DataIOMixin:
                         values.extend([np.nan] * (ncols - len(values)))
                     rows.append(values)
                     if i % 5000 == 0:
-                        self.statusBar().showMessage(
+                        self._show_status(
                             f"正在抽样导入超大TXT: {i + 1:,}/{max_rows:,} | 已取有效行 {len(rows):,}", 1000)
-                        QApplication.processEvents()
+                        self._process_ui_events()
             finally:
                 mm.close()
 
@@ -1580,9 +1578,9 @@ class DataIOMixin:
                 y_min = min(y_min, y); y_max = max(y_max, y)
                 z_min = min(z_min, z); z_max = max(z_max, z)
                 if valid_rows % 100000 == 0:
-                    self.statusBar().showMessage(
+                    self._show_status(
                         f"空间网格采样预扫描: 已识别 {valid_rows:,} 个有效 XYZ 点", 1000)
-                    QApplication.processEvents()
+                    self._process_ui_events()
 
         if valid_rows == 0:
             raise ValueError("空间网格采样未识别到有效 XYZ 点，请检查文件列顺序/缺测值或改用文件位置采样。")
@@ -1639,9 +1637,9 @@ class DataIOMixin:
                         state['max_z'] = z
                         state['max_row'] = values
                 if scanned % 100000 == 0:
-                    self.statusBar().showMessage(
+                    self._show_status(
                         f"空间网格采样落格: {scanned:,}/{valid_rows:,} | 已占用网格 {len(cells):,}", 1000)
-                    QApplication.processEvents()
+                    self._process_ui_events()
 
         rows = []
         for key in sorted(cells):
@@ -1898,14 +1896,17 @@ class DataIOMixin:
             else:
                 self.apply_mapping()
             self._update_import_status_label()
+            self._remember_recent_file(path)
             if self.last_import_note:
-                self.statusBar().showMessage(self.last_import_note.replace('\n', ' | '), 15000)
-                QMessageBox.information(self, "超大文件导入说明", self.last_import_note)
+                self._show_status(self.last_import_note.replace('\n', ' | '), 15000)
+                self.btn_bigfile_settings.setToolTip(
+                    "设置XYZ点表/Z矩阵布局、超大文本预抽样、矩阵Pitch和显示上限。\n\n"
+                    f"最近导入说明：\n{self.last_import_note}")
 
             # 寄存器保留提示（多层流程需要跨文件保留，故不自动清空）
             if any(s is not None for s in (self.data_stack, self.data_base1, self.data_base2)):
-                self.statusBar().showMessage(
-                    "⚠ 提示: 多层寄存器仍保留之前的数据，如属不同物料请到[多层]页点击 [🧹 清空全部寄存器]", 10000)
+                self._show_status(
+                    "提示: 多层寄存器仍保留之前的数据，如属不同物料请到[多层]页点击[清空全部寄存器]。", 10000)
             return True
         except Exception as e:
             QMessageBox.critical(self, "导入失败", str(e))
@@ -1913,7 +1914,7 @@ class DataIOMixin:
 
     def apply_mapping(self, preserve_analysis_settings=False):
         if self.absolute_raw_df is None:
-            self.statusBar().showMessage("当前无原始文件可映射（Gap 结果状态下映射已锁定）", 5000)
+            self._show_status("当前无原始文件可映射（Gap 结果状态下映射已锁定）", 5000)
             return
         try:
             xc, yc, zc = self.cb_x_col.currentText(), self.cb_y_col.currentText(), self.cb_z_col.currentText()
@@ -1959,6 +1960,6 @@ class DataIOMixin:
                 self._trans_cache_data = None
                 self.update_analysis()
             else:
-                self.reset_all()
+                self.reset_all(confirm=False)
         except Exception as e:
             QMessageBox.critical(self, "解析失败", str(e))

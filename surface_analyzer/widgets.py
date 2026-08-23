@@ -70,8 +70,8 @@ class MultiViewCanvas(QWidget):
         grid.setSpacing(12)
         self.ax3d, c3, card3, self.title_3d = self._make_card("3D 原始高度", '3d')
         self.ax_xy, cxy, cardxy, self.title_xy = self._make_card("XY 俯视分布", None)
-        self.ax_xz, cxz, cardxz, self.title_xz = self._make_card("X-Z 剖面", None)
-        self.ax_yz, cyz, cardyz, self.title_yz = self._make_card("Y-Z 剖面", None)
+        self.ax_xz, cxz, cardxz, self.title_xz = self._make_card("X-Z 投影", None)
+        self.ax_yz, cyz, cardyz, self.title_yz = self._make_card("Y-Z 投影", None)
         self._canvases = [c3, cxy, cxz, cyz]
         grid.addWidget(card3, 0, 0); grid.addWidget(cardxy, 0, 1)
         grid.addWidget(cardxz, 1, 0); grid.addWidget(cardyz, 1, 1)
@@ -103,15 +103,15 @@ class MultiViewCanvas(QWidget):
                 order = 1
             self.title_3d.setText(f"3D {order}阶去除后残差")
             self.title_xy.setText(f"XY {order}阶残差色图")
-            self.title_xz.setText(f"X-{order}阶残差剖面")
-            self.title_yz.setText(f"Y-{order}阶残差剖面")
+            self.title_xz.setText(f"X-{order}阶残差投影")
+            self.title_yz.setText(f"Y-{order}阶残差投影")
         else:
             self.title_3d.setText("3D 原始高度"); self.title_xy.setText("XY 俯视分布")
-            self.title_xz.setText("X-Z 剖面"); self.title_yz.setText("Y-Z 剖面")
+            self.title_xz.setText("X-Z 投影"); self.title_yz.setText("Y-Z 投影")
 
     def draw(self):
         # 同步 draw()（非 draw_idle）：确保滤波/去倾斜等改动后四张图立即重绘，
-        # 否则带框选(useblit)的 XZ/YZ 剖面会滞留旧画面，需点一下才刷新。
+        # 否则带框选(useblit)的 XZ/YZ 投影会滞留旧画面，需点一下才刷新。
         for c in self._canvases:
             c.draw()
 

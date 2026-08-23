@@ -212,7 +212,18 @@ class ReportingMixin:
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
             return
 
-        results = self._run_batch(files, outdir, p)
+        self._run_background_task(
+            "批量处理",
+            lambda progress, cancel: {
+                'results': self._run_batch(files, outdir, p, progress, cancel),
+                'outdir': outdir,
+            },
+            self._finish_batch_process,
+        )
+
+    def _finish_batch_process(self, payload):
+        results, outdir = payload['results'], payload['outdir']
+        self._update_import_status_label()
         ok = [r for r in results if r['status'] == 'ok']
         fail = [r for r in results if r['status'] != 'ok']
         msg = (f"批量处理完成：成功 {len(ok)} / 失败 {len(fail)}\n"
@@ -224,11 +235,11 @@ class ReportingMixin:
             if len(fail) > 8:
                 preview += f"\n  …其余 {len(fail) - 8} 个失败未列出"
             msg += "\n\n失败清单：\n" + preview
-        self.statusBar().showMessage(
+        self._show_status(
             f"批量完成：成功 {len(ok)} / 失败 {len(fail)}，输出至 {outdir}", 10000)
         (QMessageBox.warning if fail else QMessageBox.information)(self, "批量处理结果", msg)
 
-    def _run_batch(self, files, outdir, params):
+    def _run_batch(self, files, outdir, params, progress=None, cancel_event=None):
         """逐文件执行 读入→映射→变换→滤波→拟合→出报告图，并写汇总CSV；返回结果列表。
         批量期间会临时改动 import_info，结束后恢复，避免污染主界面当前视图状态。"""
         saved_info = dict(self.import_info)
@@ -238,8 +249,14 @@ class ReportingMixin:
         reserved_outputs = set()
 
         try:
-            for path in files:
+            total_files = max(1, len(files))
+            for file_index, path in enumerate(files):
+                if cancel_event is not None and cancel_event.is_set():
+                    from ..workers import TaskCancelled
+                    raise TaskCancelled()
                 name = Path(path).name
+                if progress is not None:
+                    progress(int(file_index * 100 / total_files), f"正在处理 {file_index + 1}/{total_files}: {name}")
                 try:
                     df_raw = self._read_table(path)
                     import_info_snap = dict(self.import_info)
@@ -294,6 +311,7 @@ class ReportingMixin:
                         import_info_snap, params['display_surface_mode'], roi_info=roi_info)
                     out_png = self._unique_batch_report_path(out, path, reserved_outputs)
                     fig.savefig(str(out_png), dpi=150)
+                    plt.close(fig)
                     results.append({'status': 'ok', 'file': name, 'source': str(Path(path).resolve()),
                                     'out': str(out_png.resolve())})
                     quality = self._metric_quality_from_import(import_info_snap)
@@ -318,10 +336,13 @@ class ReportingMixin:
             if summary_rows:
                 pd.DataFrame(summary_rows).to_csv(
                     out / 'result_batch_summary.csv', index=False, encoding='utf-8-sig')
+            if progress is not None:
+                progress(100, "批量处理完成")
         finally:
             self.import_info = saved_info
             self.last_import_note = saved_note
-            self._update_import_status_label()
+            if progress is None:
+                self._update_import_status_label()
         return results
 
     @staticmethod
@@ -380,10 +401,10 @@ class ReportingMixin:
             model = fit_polynomial_surface(tx[fit_idx], ty[fit_idx], tz[fit_idx], order)
             plot_z_all = (tz - evaluate_polynomial_surface(model, tx, ty)) * 1000.0
             zlab = f"{order}阶去除后残差 (µm)"
-            ttl3d, txt, tyt = f"3D {order}阶去除后残差", f"X-{order}阶残差剖面", f"Y-{order}阶残差剖面"
+            ttl3d, txt, tyt = f"3D {order}阶去除后残差", f"X-{order}阶残差投影", f"Y-{order}阶残差投影"
         else:
             plot_z_all = tz
-            zlab, ttl3d, txt, tyt = "Z (mm)", "3D 原始高度", "X-Z剖面", "Y-Z剖面"
+            zlab, ttl3d, txt, tyt = "Z (mm)", "3D 原始高度", "X-Z投影", "Y-Z投影"
         dz = plot_z_all[plot_idx]
 
         sc = {'c': dz, 'cmap': 'turbo', 's': 14, 'alpha': 0.85, 'edgecolors': 'none'}

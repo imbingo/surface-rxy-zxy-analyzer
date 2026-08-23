@@ -1,6 +1,7 @@
 import os
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,8 +21,10 @@ from surface_analyzer.mixins.analysis import AnalysisMixin
 from surface_analyzer.mixins.data_io import DataIOMixin
 from surface_analyzer.mixins.roi import ROIMixin
 from surface_analyzer.mixins.reporting import ReportingMixin
+from surface_analyzer.mixins.gap import GapAnalysisMixin
 from surface_analyzer.plotting import surface_box_aspect
 from surface_analyzer.polynomial import fit_polynomial_surface, evaluate_polynomial_surface
+from surface_analyzer.workers import sha256_file
 
 
 class _RoiHarness(ROIMixin, AnalysisMixin):
@@ -100,10 +103,39 @@ class V4ApiTests(unittest.TestCase):
         window.height_matrix_start_row = 123
         window.input_layout_mode = "height_matrix"
         recipe = window._current_recipe_dict()
-        self.assertEqual(APP_VERSION, "V4.2.1")
+        self.assertEqual(APP_VERSION, "V4.3.0")
         self.assertEqual(recipe["large_file"]["matrix_start_row"], 123)
         self.assertEqual(recipe["input"]["layout_mode"], "height_matrix")
         window.close()
+
+    def test_v430_origin_tile_tracks_pipeline_state(self):
+        window = SurfaceAnalyzerPro()
+        self.assertEqual(window.pose_origin_tile.objectName(), "poseTile")
+        window.transform_pipeline = ["ORIGIN(0,0)"]
+        window._update_pipeline_label()
+        self.assertEqual(window.pose_origin_tile.objectName(), "poseTileActive")
+        window.close()
+
+    def test_v430_gap_worker_keeps_subtraction_semantics(self):
+        x = np.array([0.0, 1.0, 0.0, 1.0] * 3)
+        y = np.repeat([0.0, 1.0, 2.0], 4)
+        base = {'x': x, 'y': y, 'z': np.full(12, 1.0), 'name': 'base', 'sampled': False,
+                'metric_quality': {'extrema_preserved': True}}
+        stack = {'x': x, 'y': y, 'z': np.full(12, 1.25), 'name': 'stack', 'sampled': False,
+                 'metric_quality': {'extrema_preserved': True}}
+        result = GapAnalysisMixin._compute_gap_payload(
+            stack, base, None, 1e-9, lambda value, text: None, threading.Event())
+        np.testing.assert_allclose(result['z'], 0.25)
+        self.assertEqual(len(result['z']), 12)
+
+    def test_v430_streaming_sha256(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "source.bin"
+            path.write_bytes(b"surface-rxy" * 1000)
+            progress = []
+            value = sha256_file(path, lambda percent, text: progress.append(percent), threading.Event())
+            self.assertEqual(len(value), 64)
+            self.assertEqual(progress[-1], 100)
 
     def test_recipe_large_file_settings_are_clamped(self):
         window = SurfaceAnalyzerPro()

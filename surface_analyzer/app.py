@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.2.1."""
+"""Qt application shell for Surface Analyzer V4.3.0."""
 
 import sys
 import os
@@ -23,10 +23,12 @@ from PyQt6.QtWidgets import (
     QFileDialog, QLabel, QSplitter, QGroupBox, QGridLayout, QMessageBox,
     QScrollArea, QComboBox, QTabWidget, QDoubleSpinBox, QSpinBox, QCheckBox,
     QDialog, QDialogButtonBox, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
-    QStackedWidget, QSizeGrip,
+    QStackedWidget, QSizeGrip, QProgressBar, QMenu,
 )
-from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSettings
-from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen, QFont, QFontDatabase
+from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSettings, QThread, pyqtSignal
+from PyQt6.QtGui import (
+    QColor, QPixmap, QPainter, QPen, QFont, QFontDatabase, QShortcut, QKeySequence,
+)
 from scipy.spatial import cKDTree
 
 
@@ -47,10 +49,12 @@ from .mixins.parallelism import ParallelismMixin
 from .mixins.recipe import RecipeMixin
 from .mixins.roi import ROIMixin
 from .mixins.reporting import ReportingMixin
+from .workers import FunctionWorker
 
 
 
 class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, ParallelismMixin, RecipeMixin, ROIMixin, ReportingMixin, QMainWindow):
+    background_status = pyqtSignal(str, int)
     APP_VERSION = APP_VERSION
     DISPLAY_POINT_LIMIT = DISPLAY_POINT_LIMIT
     LARGE_TEXT_FILE_BYTES = LARGE_TEXT_FILE_BYTES
@@ -72,7 +76,11 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                     family = loaded[0]
             app.setFont(QFont(family, 9))
         self.setWindowTitle(f"面型及Rxy分析ZXY版 {self.APP_VERSION}")
-        self.resize(1860, 980)
+        screen = app.primaryScreen().availableGeometry() if app and app.primaryScreen() else None
+        if screen is not None:
+            self.resize(min(1860, int(screen.width() * 0.94)), min(980, int(screen.height() * 0.92)))
+        else:
+            self.resize(1600, 900)
 
         # 数据流
         self.absolute_raw_df = None
@@ -100,9 +108,11 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.height_matrix_pitch_y_um = 47.242
         self.height_matrix_z_unit = "µm"
         self.height_matrix_start_row = 0   # 0=自动识别；>0 为文件中的 1 基数据起始行
-        settings = QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer")
-        saved_layout = str(settings.value("input_layout_mode", "point_table"))
+        self.settings = QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer")
+        saved_layout = str(self.settings.value("input_layout_mode", "point_table"))
         self.input_layout_mode = saved_layout if saved_layout in ('point_table', 'height_matrix') else 'point_table'
+        self.use_system_frame = str(self.settings.value("use_system_frame", "false")).lower() in ("1", "true", "yes")
+        self.recent_files = [str(x) for x in self.settings.value("recent_files", [], type=list)]
         self.roi_enabled = False           # V3.8.4+: XY ROI 保留区域开关
         self.roi_shapes = []               # list[dict]，当前物料坐标系 X/Y(mm)
         self.roi_next_id = 1
@@ -151,7 +161,13 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.parallel_result = None
 
         self.selectors = []
+        self._task_thread = None
+        self._task_worker = None
+        self._task_controls = []
+        self.setAcceptDrops(True)
+        self.background_status.connect(self._show_status)
         self.init_ui()
+        self._install_shortcuts()
 
     def _apply_theme(self):
         """全局 QSS：只管视觉，不影响任何逻辑。objectName 驱动强调/危险/卡片样式。"""
@@ -196,10 +212,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             #stripEqn { color: #9aa4ae; font-family: 'Consolas','Microsoft YaHei'; font-size: 11px; }
             #metricCard { background: #f7f9fc; border: 1px solid #e6ebf1; border-radius: 12px; }
             #metricCardAccent { background: #eaf3fd; border: 1px solid #cbe0f4; border-radius: 12px; }
-            #metricTitle { color: #7e8893; font-size: 10px; font-weight: bold; }
-            #metricTitleAccent { color: #2f6db0; font-size: 10px; font-weight: bold; }
-            #metricValue { color: #14202c; font-family: 'Consolas','Microsoft YaHei'; font-size: 20px; font-weight: bold; }
-            #metricValueAccent { color: #2f6db0; font-family: 'Consolas','Microsoft YaHei'; font-size: 20px; font-weight: bold; }
+            #metricTitle { color: #7e8893; font-family: 'Microsoft YaHei UI'; font-size: 11px; font-weight: 600; }
+            #metricTitleAccent { color: #2f6db0; font-family: 'Microsoft YaHei UI'; font-size: 11px; font-weight: 600; }
+            #metricValue { color: #14202c; font-family: 'Consolas','Microsoft YaHei UI'; font-size: 20px; font-weight: bold; }
+            #metricValueAccent { color: #2f6db0; font-family: 'Consolas','Microsoft YaHei UI'; font-size: 20px; font-weight: bold; }
             #metricUnit { color: #aab2ba; font-size: 10px; }
             #plotCard { background: #ffffff; border: 1px solid #e9edf1; border-radius: 12px; }
             #plotDot { background: #2f6db0; border-radius: 4px; }
@@ -281,9 +297,11 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
     def init_ui(self):
         self._apply_theme()
-        # 无边框自绘标题栏：顶部应用栏兼任标题栏（拖动/双击最大化），状态栏带缩放手柄
-        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-        self.setMinimumSize(1180, 700)
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, not self.use_system_frame)
+        screen = QApplication.primaryScreen().availableGeometry() if QApplication.primaryScreen() else None
+        min_w = min(1180, max(900, int(screen.width() * 0.78))) if screen else 1080
+        min_h = min(700, max(620, int(screen.height() * 0.80))) if screen else 680
+        self.setMinimumSize(min_w, min_h)
         central = QWidget()
         central.setObjectName("centralRoot")
         self.setCentralWidget(central)
@@ -314,7 +332,17 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.btn_bigfile_settings = QPushButton(f"导入策略 · {layout_short}")
         self.btn_bigfile_settings.setToolTip("设置XYZ点表/Z矩阵布局、超大文本预抽样、矩阵Pitch和显示上限。")
         self.btn_bigfile_settings.clicked.connect(self.show_bigfile_settings_dialog)
-        for b in (self.btn_import_recipe, self.btn_export_recipe, self.btn_bigfile_settings):
+        self.btn_recent_files = QPushButton("最近文件")
+        self.recent_files_menu = QMenu(self.btn_recent_files)
+        self.btn_recent_files.setMenu(self.recent_files_menu)
+        self._refresh_recent_files_menu()
+        self.btn_system_frame = QPushButton("系统边框")
+        self.btn_system_frame.setCheckable(True)
+        self.btn_system_frame.setChecked(self.use_system_frame)
+        self.btn_system_frame.setToolTip("使用 Windows 原生标题栏和窗口边框；修改后立即生效并自动记忆。")
+        self.btn_system_frame.toggled.connect(self._set_system_frame_enabled)
+        for b in (self.btn_import_recipe, self.btn_export_recipe, self.btn_bigfile_settings,
+                  self.btn_recent_files, self.btn_system_frame):
             b.setFixedHeight(30)
             ab.addWidget(b)
 
@@ -327,6 +355,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             b.setFixedSize(36, 28)
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             ab.addWidget(b)
+        self.btn_win_min.setAccessibleName("最小化窗口")
+        self.btn_win_max.setAccessibleName("最大化或还原窗口")
+        self.btn_win_close.setAccessibleName("关闭窗口")
         self.btn_win_min.clicked.connect(self.showMinimized)
         self.btn_win_max.clicked.connect(self._toggle_max_restore)
         self.btn_win_close.clicked.connect(self.close)
@@ -350,7 +381,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self.tabs = QTabWidget()
-        self.tabs.setFixedWidth(440)
+        self.tabs.setMinimumWidth(360)
+        self.tabs.setMaximumWidth(540)
         tab_main = QWidget()
         self.setup_main_tab(tab_main)
         self.tabs.addTab(tab_main, "单层 / 主控分析")
@@ -381,12 +413,31 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
         splitter.addWidget(self.tabs)
         splitter.addWidget(self.right_stack)
+        splitter.setSizes([440, 1400])
         splitter.setStretchFactor(1, 4)
+        splitter.setChildrenCollapsible(False)
+        self.main_splitter = splitter
         body_l.addWidget(splitter)
         root.addWidget(body, 1)
 
         # 无边框窗口：用状态栏右下角缩放手柄实现拖拽缩放
         self.statusBar().setSizeGripEnabled(True)
+        self.task_progress = QProgressBar()
+        self.task_progress.setRange(0, 100)
+        self.task_progress.setFixedWidth(210)
+        self.task_progress.setVisible(False)
+        self.btn_cancel_task = QPushButton("取消")
+        self.btn_cancel_task.setFixedHeight(24)
+        self.btn_cancel_task.setVisible(False)
+        self.btn_cancel_task.clicked.connect(self._cancel_background_task)
+        self.statusBar().addPermanentWidget(self.task_progress)
+        self.statusBar().addPermanentWidget(self.btn_cancel_task)
+        for button in (self.btn_win_min, self.btn_win_max, self.btn_win_close):
+            button.setVisible(not self.use_system_frame)
+        self._task_controls = [
+            self.btn_open, self.btn_batch, self.btn_apply_map, self.btn_save,
+            self.btn_calc_gap, self.btn_calc_parallel, self.btn_import_recipe, self.btn_export_recipe,
+        ]
 
     def _toggle_max_restore(self):
         if self.isMaximized():
@@ -396,13 +447,131 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.showMaximized()
             self.btn_win_max.setText("❐")
 
+    def _show_status(self, message, timeout=0):
+        """Thread-safe status bar update used by background-capable mixins."""
+        app = QApplication.instance()
+        if app is not None and QThread.currentThread() is not app.thread():
+            self.background_status.emit(str(message), int(timeout))
+            return
+        self.statusBar().showMessage(str(message), int(timeout))
+
+    def _run_background_task(self, name, fn, on_success, on_error=None):
+        """Run a cooperative task while exposing progress and cancellation."""
+        if self._task_thread is not None:
+            QMessageBox.information(self, "任务进行中", "请等待当前任务完成或先取消。")
+            return False
+        thread = QThread(self)
+        worker = FunctionWorker(fn)
+        worker.moveToThread(thread)
+        self._task_thread = thread
+        self._task_worker = worker
+        self.task_progress.setValue(0)
+        self.task_progress.setFormat(f"{name} %p%")
+        self.task_progress.setVisible(True)
+        self.btn_cancel_task.setVisible(True)
+        for control in self._task_controls:
+            control.setEnabled(False)
+
+        worker.progress.connect(self._on_task_progress)
+        worker.succeeded.connect(on_success)
+        worker.failed.connect(on_error or (lambda message: QMessageBox.critical(self, f"{name}失败", message)))
+        worker.cancelled.connect(lambda: self._show_status(f"{name}已取消", 5000))
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._finish_background_task)
+        thread.started.connect(worker.run)
+        self._show_status(f"{name}正在执行，可在右下角查看进度或取消。")
+        thread.start()
+        return True
+
+    def _on_task_progress(self, value, message):
+        self.task_progress.setValue(max(0, min(100, int(value))))
+        if message:
+            self._show_status(message)
+
+    def _cancel_background_task(self):
+        if self._task_worker is not None:
+            self._task_worker.cancel()
+            self.btn_cancel_task.setEnabled(False)
+            self._show_status("正在取消，请等待当前计算步骤结束。")
+
+    def _finish_background_task(self):
+        self._task_thread = None
+        self._task_worker = None
+        self.task_progress.setVisible(False)
+        self.btn_cancel_task.setVisible(False)
+        self.btn_cancel_task.setEnabled(True)
+        for control in self._task_controls:
+            control.setEnabled(True)
+
+    def _set_system_frame_enabled(self, enabled):
+        self.use_system_frame = bool(enabled)
+        self.settings.setValue("use_system_frame", self.use_system_frame)
+        was_visible = self.isVisible()
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, not self.use_system_frame)
+        for button in (self.btn_win_min, self.btn_win_max, self.btn_win_close):
+            button.setVisible(not self.use_system_frame)
+        if was_visible:
+            self.show()
+
+    def _install_shortcuts(self):
+        self.shortcut_open = QShortcut(QKeySequence.StandardKey.Open, self)
+        self.shortcut_open.activated.connect(self.load_file)
+        self.shortcut_save = QShortcut(QKeySequence.StandardKey.Save, self)
+        self.shortcut_save.activated.connect(self.save_file)
+        self.shortcut_reset = QShortcut(QKeySequence("Ctrl+R"), self)
+        self.shortcut_reset.activated.connect(self.reset_all)
+
+    def _remember_recent_file(self, path):
+        path = str(Path(path).resolve())
+        self.recent_files = [p for p in self.recent_files if p.casefold() != path.casefold()]
+        self.recent_files.insert(0, path)
+        self.recent_files = self.recent_files[:10]
+        self.settings.setValue("recent_files", self.recent_files)
+        self._refresh_recent_files_menu()
+
+    def _refresh_recent_files_menu(self):
+        if not hasattr(self, "recent_files_menu"):
+            return
+        self.recent_files_menu.clear()
+        available = [p for p in self.recent_files if Path(p).is_file()]
+        if not available:
+            action = self.recent_files_menu.addAction("暂无最近文件")
+            action.setEnabled(False)
+            return
+        for path in available:
+            action = self.recent_files_menu.addAction(Path(path).name)
+            action.setToolTip(path)
+            action.triggered.connect(lambda checked=False, p=path: self.load_path(p))
+
+    def dragEnterEvent(self, event):
+        urls = event.mimeData().urls() if event.mimeData().hasUrls() else []
+        if len(urls) == 1 and self._is_supported_drop_file(urls[0].toLocalFile()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls() if event.mimeData().hasUrls() else []
+        if len(urls) == 1 and self._is_supported_drop_file(urls[0].toLocalFile()):
+            self.load_path(urls[0].toLocalFile())
+            event.acceptProposedAction()
+
+    @staticmethod
+    def _is_supported_drop_file(path):
+        return Path(path).suffix.lower() in {
+            ".csv", ".txt", ".tsv", ".dat", ".asc", ".xyz", ".xlsx", ".xls", ".xlsm"
+        }
+
     def _resize_edge_at(self, gpos):
         """根据全局光标位置判断是否贴近窗口边缘，返回组合 Qt.Edge 或 None。"""
         if self.isMaximized():
             return None
         p = self.mapFromGlobal(gpos)
         r = self.rect()
-        m = 6
+        dpi = self.logicalDpiX() or 96
+        m = max(6, round(6 * dpi / 96.0))
         parts = []
         if p.x() <= m:
             parts.append(Qt.Edge.LeftEdge)
@@ -434,7 +603,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
     def eventFilter(self, obj, event):
         """应用栏兼任标题栏：左键拖动移动窗口、双击最大化/还原；
         主体外缘 6px 作为缩放边，左键按下触发系统缩放（无边框窗口的边缘拉伸）。"""
-        if obj is getattr(self, '_appbar', None):
+        if obj is getattr(self, '_appbar', None) and not self.use_system_frame:
             et = event.type()
             if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 wh = self.windowHandle()
@@ -444,7 +613,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             elif et == QEvent.Type.MouseButtonDblClick:
                 self._toggle_max_restore()
                 return True
-        elif obj is getattr(self, '_body', None):
+        elif obj is getattr(self, '_body', None) and not self.use_system_frame:
             et = event.type()
             if et == QEvent.Type.MouseMove and not (event.buttons() & Qt.MouseButton.LeftButton):
                 edges = self._resize_edge_at(event.globalPosition().toPoint())
@@ -465,6 +634,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         v.setContentsMargins(12, 9, 12, 9)
         v.setSpacing(4)
         t = QLabel(title)
+        t.setMinimumHeight(18)
         t.setObjectName("metricTitleAccent" if accent else "metricTitle")
         value_label.setObjectName("metricValueAccent" if accent else "metricValue")
         v.addWidget(t)
@@ -515,7 +685,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.lbl_rx = QLabel("--")
         self.lbl_ry = QLabel("--")
         cards.addWidget(self._make_metric_card("平均厚度 Z (mm)", self.lbl_z), 1)
-        pv_card = self._make_metric_card("PV·BF平面残差 (µm)", self.lbl_pv, accent=True)
+        pv_card = self._make_metric_card("平面残差 PV (µm)", self.lbl_pv, accent=True)
         pv_card.setToolTip("相对最佳拟合平面的法向残差极差：仅去除整体高度和一阶倾斜，未去除二阶及以上曲率。")
         cards.addWidget(pv_card, 1)
         cards.addWidget(self._make_metric_card("TTV·Z极差 (µm)", self.lbl_ttv), 1)
@@ -603,7 +773,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.btn_reset_all = QPushButton("重置")
         self.btn_reset_all.setFixedHeight(38)
         self.btn_reset_all.setFixedWidth(92)
-        self.btn_reset_all.clicked.connect(self.reset_all)
+        self.btn_reset_all.clicked.connect(lambda: self.reset_all())
         file_layout.addWidget(self.btn_open)
         file_layout.addWidget(self.btn_reset_all)
         ll.addLayout(file_layout)
@@ -673,11 +843,14 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             ("⇄", "X-Y对调", self.add_swap, False, "X、Y 轴对调"),
             ("↕", "前后翻转", self.add_flipx, False, "X轴翻转(前后) = Y 镜像"),
             ("↔", "左右翻转", self.add_flipy, False, "Y轴翻转(左右) = X 镜像"),
-            ("⊕", "平移归零", self.add_origin, True, "平移归零(0,0)：X,Y 包围盒原点对齐"),
+            ("⊕", "平移归零", self.add_origin, False, "平移归零(0,0)：X,Y 包围盒原点对齐"),
             ("↶", "撤销", self.undo_transform, False, "撤销上一步姿态变换"),
         ]
         for i, (icon, name, func, active, tip) in enumerate(tiles):
-            grid_trans.addWidget(self._pose_tile(icon, name, func, active, tip), i // 4, i % 4)
+            tile = self._pose_tile(icon, name, func, active, tip)
+            if name == "平移归零":
+                self.pose_origin_tile = tile
+            grid_trans.addWidget(tile, i // 4, i % 4)
 
         tl.addLayout(grid_trans)
         self.lbl_pipeline = QLabel("变换路径: 原始状态")
@@ -903,9 +1076,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
         guide_lbl = QLabel(
             "<div style='line-height: 1.5; font-size: 12px; color: #333;'>"
-            "<b>🥪 堆叠胶厚(Gap)运算流程：</b><br>"
+            "<b>堆叠胶厚 (Gap) 运算流程：</b><br>"
             "公式：<span style='color:red; font-weight:bold;'>Inner Gap = 堆叠总成 - 单片1 [- 单片2]</span><br>"
-            "1. 务必确保所有数据在载入后，都点击了<b>[📍 平移归零]</b>，使X,Y坐标网格原点对齐。<br>"
+            "1. 务必确保所有数据在载入后，都点击了<b>[平移归零]</b>，使X,Y坐标网格原点对齐。<br>"
             "2. 依次载入不同层数据并存入下方对应的寄存器中（寄存器会显示来源文件名，请核对）。<br>"
             "3. 【对齐误差窗口】：用于补偿机台定位偏差。容差越大，匹配点越多，但过大可能匹配到错误邻居。<br>"
             "4. 右侧匹配诊断图会显示哪些堆叠点没有在单片层中找到容差内匹配点。"
@@ -914,39 +1087,39 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         guide_lbl.setWordWrap(True)
         ll.addWidget(guide_lbl)
 
-        grp_stack = QGroupBox("1️⃣ 堆叠总成数据 (Stack / 顶层)")
+        grp_stack = QGroupBox("1. 堆叠总成数据 (Stack / 顶层)")
         gl_stack = QVBoxLayout(grp_stack)
-        self.lbl_stack_status = QLabel("❌ 尚未设置"); self.lbl_stack_status.setStyleSheet("color: #c0392b; font-weight: bold;")
+        self.lbl_stack_status = QLabel("尚未设置"); self.lbl_stack_status.setStyleSheet("color: #c0392b; font-weight: bold;")
         self.lbl_stack_status.setWordWrap(True)
-        btn_set_stack = QPushButton("👆 将当前视图设为【堆叠总成】"); btn_set_stack.setFixedHeight(35)
+        btn_set_stack = QPushButton("将当前视图设为【堆叠总成】"); btn_set_stack.setFixedHeight(35)
         btn_set_stack.setObjectName("accentSoftBtn")
         btn_set_stack.clicked.connect(lambda: self.set_memory_slot('stack'))
         gl_stack.addWidget(self.lbl_stack_status); gl_stack.addWidget(btn_set_stack)
         ll.addWidget(grp_stack)
 
-        grp_base1 = QGroupBox("2️⃣ 单片 1 数据 (Base 1 / 底层)")
+        grp_base1 = QGroupBox("2. 单片 1 数据 (Base 1 / 底层)")
         gl_base1 = QVBoxLayout(grp_base1)
-        self.lbl_base1_status = QLabel("❌ 尚未设置"); self.lbl_base1_status.setStyleSheet("color: #c0392b; font-weight: bold;")
+        self.lbl_base1_status = QLabel("尚未设置"); self.lbl_base1_status.setStyleSheet("color: #c0392b; font-weight: bold;")
         self.lbl_base1_status.setWordWrap(True)
-        btn_set_base1 = QPushButton("👇 将当前视图设为【单片 1】"); btn_set_base1.setFixedHeight(35)
+        btn_set_base1 = QPushButton("将当前视图设为【单片 1】"); btn_set_base1.setFixedHeight(35)
         btn_set_base1.setObjectName("accentSoftBtn")
         btn_set_base1.clicked.connect(lambda: self.set_memory_slot('base1'))
         gl_base1.addWidget(self.lbl_base1_status); gl_base1.addWidget(btn_set_base1)
         ll.addWidget(grp_base1)
 
-        grp_base2 = QGroupBox("3️⃣ 单片 2 数据 (Base 2 / 夹层) [选填]")
+        grp_base2 = QGroupBox("3. 单片 2 数据 (Base 2 / 夹层) [选填]")
         gl_base2 = QVBoxLayout(grp_base2)
-        self.lbl_base2_status = QLabel("⭕ 可选空置"); self.lbl_base2_status.setStyleSheet("color: #7f8c8d; font-weight: bold;")
+        self.lbl_base2_status = QLabel("可选空置"); self.lbl_base2_status.setStyleSheet("color: #7f8c8d; font-weight: bold;")
         self.lbl_base2_status.setWordWrap(True)
         hl_b2 = QHBoxLayout()
-        btn_set_base2 = QPushButton("📥 设为【单片 2】"); btn_set_base2.setFixedHeight(35); btn_set_base2.clicked.connect(lambda: self.set_memory_slot('base2'))
-        btn_clear_base2 = QPushButton("✖ 清除"); btn_clear_base2.setFixedHeight(35)
+        btn_set_base2 = QPushButton("设为【单片 2】"); btn_set_base2.setFixedHeight(35); btn_set_base2.clicked.connect(lambda: self.set_memory_slot('base2'))
+        btn_clear_base2 = QPushButton("清除"); btn_clear_base2.setFixedHeight(35)
         btn_clear_base2.clicked.connect(lambda: self.clear_memory_slot('base2'))
         hl_b2.addWidget(btn_set_base2); hl_b2.addWidget(btn_clear_base2)
         gl_base2.addWidget(self.lbl_base2_status); gl_base2.addLayout(hl_b2)
         ll.addWidget(grp_base2)
 
-        btn_clear_all = QPushButton("🧹 清空全部寄存器")
+        btn_clear_all = QPushButton("清空全部寄存器")
         btn_clear_all.setFixedHeight(35)
         btn_clear_all.clicked.connect(self.clear_all_memory_slots)
         ll.addWidget(btn_clear_all)
@@ -954,7 +1127,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         ll.addStretch()
 
         hl_tol = QHBoxLayout()
-        lbl_tol = QLabel("⚙️ 坐标对齐误差窗口 (mm):")
+        lbl_tol = QLabel("坐标对齐误差窗口 (mm):")
         lbl_tol.setStyleSheet("font-weight: bold; color: #2c3e50;")
         hl_tol.addWidget(lbl_tol)
 
@@ -968,7 +1141,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         ll.addLayout(hl_tol)
 
         action_row = QHBoxLayout()
-        self.btn_calc_gap = QPushButton("📐 容差匹配点云并计算胶厚")
+        self.btn_calc_gap = QPushButton("容差匹配点云并计算胶厚")
         self.btn_calc_gap.setObjectName("accentBtn")
         self.btn_calc_gap.setFixedHeight(60)
         self.btn_calc_gap.clicked.connect(self.calculate_gap)
@@ -1053,6 +1226,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         ll.addLayout(ops)
 
         btn_calc = QPushButton("计算平行度")
+        self.btn_calc_parallel = btn_calc
         btn_calc.setObjectName("accentBtn")
         btn_calc.setFixedHeight(40)
         btn_calc.clicked.connect(self.calculate_parallelism)
@@ -1248,7 +1422,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         if self.transform_pipeline:
             action = self.transform_pipeline.pop()
             self.update_analysis()
-            self.statusBar().showMessage(f"已撤销操作: {action}", 3000)
+            self._show_status(f"已撤销操作: {action}", 3000)
         else:
             QMessageBox.information(self, "提示", "已经退回原始状态，没有可以撤销的操作了。")
 
@@ -1266,8 +1440,23 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
     def add_origin(self): self.transform_pipeline.append("ORIGIN(0,0)"); self.update_analysis()
 
-    def reset_all(self):
-        if self.df_raw is None: return
+    def reset_all(self, confirm=True):
+        if self.df_raw is None:
+            return
+        changed = bool(
+            self.transform_pipeline
+            or (self.manual_mask is not None and not np.all(self.manual_mask))
+            or self.cb_filter.currentIndex() != 0
+            or self.display_surface_mode != 'raw'
+            or self.roi_enabled
+            or self.roi_shapes
+        )
+        if confirm and changed and QMessageBox.question(
+                self, "确认重置",
+                "将清除当前姿态变换、滤波、ROI 和手动删点结果，并恢复原始显示。是否继续？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
+            return
         self.transform_pipeline = []
         self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
         self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
@@ -1286,7 +1475,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._update_surface_display_metrics()
         self.clear_rois(update=False)
         self.update_analysis()
-        self.statusBar().showMessage("系统已完全重置（滤波已关闭，显示已恢复原始Z）", 3000)
+        self._show_status("系统已完全重置（滤波已关闭，显示已恢复原始Z）", 3000)
 
     def get_final_transformed_data(self, df):
         """对当前 df 应用 transform_pipeline，结果带缓存。"""
@@ -1315,6 +1504,11 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         if self.transform_pipeline:
             t += " -> " + " -> ".join(action_names.get(a, a) for a in self.transform_pipeline)
         self.lbl_pipeline.setText(f"变换路径: {t}")
+        if hasattr(self, 'pose_origin_tile'):
+            active = "ORIGIN(0,0)" in self.transform_pipeline
+            self.pose_origin_tile.setObjectName("poseTileActive" if active else "poseTile")
+            self.pose_origin_tile.style().unpolish(self.pose_origin_tile)
+            self.pose_origin_tile.style().polish(self.pose_origin_tile)
 
     def _on_filter_param_changed(self):
         # 局部中位数(2) / 迭代σ裁剪(3) 模式下参数变化才需要重算
@@ -1397,7 +1591,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 self.current_coeffs = None
                 self.high_order_models = {}
                 self._clear_result_labels()
-                self.statusBar().showMessage("⚠ 有效点少于 3 个，无法拟合平面。请点击[♻️ 全部重置]恢复数据。", 10000)
+                self._show_status("有效点少于 3 个，无法拟合平面。请点击[重置]恢复数据。", 10000)
                 self.draw_plots(tx, ty, tz)
                 self.setup_selectors()
                 return
@@ -1417,7 +1611,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                     self.lbl_filter_info.setText(
                         f"滤波剔除: 0 点 | 手动删除: {manual_deleted} 点 | ROI保留: {len(idx)} 点 | 参与拟合: {len(idx)} 点")
                     self._refresh_roi_ui(update=False)
-                    self.statusBar().showMessage("⚠ ROI 内有效点少于 3 个，无法拟合平面。请调整或关闭 ROI。", 10000)
+                    self._show_status("ROI 内有效点少于 3 个，无法拟合平面。请调整或关闭 ROI。", 10000)
                     self.draw_plots(tx, ty, tz)
                     self.setup_selectors()
                     return
@@ -1434,7 +1628,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 sigma_k=self.spin_sigma.value(),
                 sigma_iters=self.spin_sigma_iter.value())
             if mode != 0 and keep.sum() < 3:
-                self.statusBar().showMessage("⚠ 滤波后点数不足 3 个，已自动退回未滤波状态。请调整参数。", 10000)
+                self._show_status("滤波后点数不足 3 个，已自动退回未滤波状态。请调整参数。", 10000)
                 self.active_idx = idx
             else:
                 self.active_idx = idx[keep]
@@ -1490,12 +1684,12 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.lbl_rx.setText(f"{approx}{rx:.2f}"); self.lbl_ry.setText(f"{approx}{ry:.2f}")
             self._update_surface_display_metrics()
             if quality['estimated']:
-                self.statusBar().showMessage(f"⚠ {quality['label']}：{quality['warning']}", 12000)
+                self._show_status(f"{quality['label']}：{quality['warning']}", 12000)
             self.draw_plots(tx, ty, tz)
             self.setup_selectors()
             self._refresh_roi_ui(update=False)
         except Exception as e:
-            self.statusBar().showMessage(f"⚠ 分析出错: {e}", 10000)
+            self._show_status(f"分析出错: {e}", 10000)
 
     def draw_plots(self, tx, ty, tz):
         roi_active = self._roi_is_active()
