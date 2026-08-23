@@ -1,6 +1,6 @@
 # Windows 安装与升级
 
-V4.2.0 使用与 Overlay Measure 相同的两层打包方式：
+V4.2.1 使用与 Overlay Measure 相同的两层打包方式：
 
 1. PyInstaller `onedir` 构建 `dist/SurfaceRxyZxyAnalyzer/`。
 2. Inno Setup 将运行目录封装为一个 `SurfaceRxyZxyAnalyzer_Setup_Vx.y.z.exe`。

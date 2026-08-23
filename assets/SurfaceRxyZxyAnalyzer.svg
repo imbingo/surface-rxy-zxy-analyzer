@@ -11,7 +11,7 @@
       <stop offset="1" stop-color="#C8F4F7" stop-opacity="0.12"/>
     </linearGradient>
     <clipPath id="surfaceClip">
-      <path d="M344 690 C426 538 514 516 606 642 C699 770 785 754 878 590 C790 648 712 616 628 520 C541 421 439 501 344 690 Z"/>
+      <path d="M344 745 C425 635 515 625 606 695 C699 780 785 770 878 650 C790 715 712 710 628 650 C541 588 439 625 344 745 Z"/>
     </clipPath>
   </defs>
 
@@ -25,12 +25,12 @@
         fill="#DDEFF3" stroke="#315A72" stroke-width="34" stroke-linejoin="round"/>
   <path d="M646 468 H716 L704 528 Q681 552 658 528 Z"
         fill="#69C1D4" stroke="#315A72" stroke-width="28" stroke-linejoin="round"/>
-  <path d="M681 548 L635 673 H727 Z" fill="url(#beam)"/>
-  <circle cx="681" cy="665" r="13" fill="#F0A264"/>
+  <path d="M681 548 L650 706 H712 Z" fill="url(#beam)"/>
+  <circle cx="681" cy="704" r="13" fill="#F0A264"/>
 
   <!-- Third-order saddle surface. -->
-  <path d="M344 690 C426 538 514 516 606 642 C699 770 785 754 878 590 C790 648 712 616 628 520 C541 421 439 501 344 690 Z"
+  <path d="M344 745 C425 635 515 625 606 695 C699 780 785 770 878 650 C790 715 712 710 628 650 C541 588 439 625 344 745 Z"
         fill="url(#surfaceColor)"/>
-  <path d="M344 690 C426 538 514 516 606 642 C699 770 785 754 878 590 C790 648 712 616 628 520 C541 421 439 501 344 690 Z"
+  <path d="M344 745 C425 635 515 625 606 695 C699 780 785 770 878 650 C790 715 712 710 628 650 C541 588 439 625 344 745 Z"
         fill="none" stroke="#315A72" stroke-opacity="0.16" stroke-width="6"/>
 </svg>
