@@ -35,6 +35,48 @@ from ..polynomial import fit_polynomial_surface, evaluate_polynomial_surface
 
 
 class ReportingMixin:
+    @staticmethod
+    def _import_trace_text(import_info):
+        info = import_info or {}
+        source_format = str(info.get('source_format') or '--')
+        valid = int(info.get('source_valid_rows', info.get('valid_rows', 0)) or 0)
+        missing = int(info.get('missing_points', 0) or 0)
+        bad = int(info.get('bad_rows', 0) or 0)
+        rows = info.get('matrix_rows'); cols = info.get('matrix_cols')
+        expected = info.get('expected_points')
+        topology = ''
+        if rows is not None and cols is not None:
+            topology = f" | 网格 {int(rows)}×{int(cols)}"
+        elif expected is not None:
+            topology = (f" | 预期/实际 {int(expected):,}/"
+                        f"{int(info.get('source_record_rows', 0) or 0):,}")
+        lines = [f"识别格式: {source_format}",
+                 f"源数据统计: 有效 {valid:,} | 缺测 {missing:,} | 坏行 {bad:,}{topology}"]
+        pitch_x = info.get('sampling_pitch_x_um')
+        pitch_y = info.get('sampling_pitch_y_um')
+        pitch_source = str(info.get('sampling_pitch_source') or '--')
+        coordinate_parts = []
+        if info.get('input_layout_mode') in ('height_matrix', 'zygo_xyz'):
+            coordinate_parts.append(
+                f"有效采样间距 X/Y={float(pitch_x):g}/{float(pitch_y):g} µm/点（{pitch_source}）")
+        camera = info.get('detected_camera_res_um')
+        if camera is not None:
+            coordinate_parts.append(f"CameraRes检测值 {float(camera):g} µm/点")
+        if coordinate_parts:
+            lines.append(" | ".join(coordinate_parts))
+        z_field = str(info.get('z_source_field') or '')
+        z_unit = str(info.get('z_source_unit') or '')
+        warning = str(info.get('completeness_warning') or '')
+        if z_field:
+            semantics = '（厚度分布）' if z_field.casefold() == 'thickness 1' else ''
+            z_line = f"Z来源: {z_field} | 原单位: {z_unit}{semantics}"
+            if warning:
+                z_line += f" | 完整性警告: {warning}"
+            lines.append(z_line)
+        elif warning:
+            lines.append(f"完整性警告: {warning}")
+        return lines
+
     def export_report_image(self):
         """导出当前测量的报告图（与批量处理同款：主页面全部信息 + 四视图）。
         默认命名 Result_<导入文件名>_<时间>.png。"""
@@ -116,6 +158,7 @@ class ReportingMixin:
                 f"# 源文件大小: {self.import_info.get('file_size_mb', 0.0):.1f} MB | 读入行数: {self.import_info.get('import_rows', 0)} | 有效点数: {self.import_info.get('valid_rows', len(self.df_raw) if self.df_raw is not None else 0)}",
                 f"# 显示上限: {self._display_limit()} 点 | 最近一次绘图显示: {self.last_displayed_points} 点",
             ]
+            meta.extend(f"# {line}" for line in self._import_trace_text(self.import_info))
             if quality['warning']:
                 meta.append(f"# 警告: {quality['warning']}")
             source_metadata = self.import_info.get('metadata') or {}
@@ -456,6 +499,9 @@ class ReportingMixin:
             f"手动删除: {self._manual_deletion_summary()}",
             f"显示模式: {display_surface_mode}",
         ]
+        import_trace = self._import_trace_text(import_info)
+        if import_trace:
+            meta_lines.extend(import_trace[:4])
         if roi_info.get('shape_lines'):
             roi_shape_text = "；".join(roi_info['shape_lines'][:4])
             if len(roi_info['shape_lines']) > 4:

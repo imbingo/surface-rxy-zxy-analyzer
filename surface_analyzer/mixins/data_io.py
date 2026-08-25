@@ -5,6 +5,8 @@ import os
 import re
 import mmap
 import json
+import random
+import shlex
 import tempfile
 from collections import deque
 from pathlib import Path
@@ -37,6 +39,22 @@ from ..widgets import NoWheelSpinBox, NoWheelDoubleSpinBox, NoWheelComboBox
 class DataIOMixin:
     TEXT_SUFFIXES = ('.csv', '.txt', '.tsv', '.dat', '.asc', '.xyz')
     EXCEL_SUFFIXES = ('.xlsx', '.xls', '.xlsm')
+
+    @staticmethod
+    def _input_layout_label(layout_mode):
+        return {
+            'point_table': 'XYZ点表',
+            'height_matrix': 'Z矩阵',
+            'zygo_xyz': 'Zygo XYZ',
+        }.get(str(layout_mode), 'XYZ点表')
+
+    @staticmethod
+    def _input_layout_short_label(layout_mode):
+        return {
+            'point_table': 'XYZ',
+            'height_matrix': 'Z矩阵',
+            'zygo_xyz': 'Zygo',
+        }.get(str(layout_mode), 'XYZ')
 
     @staticmethod
     def _process_ui_events():
@@ -178,6 +196,15 @@ class DataIOMixin:
             'grid_count': self.large_text_grid_count,
             'stride_n': self.large_text_stride_n,
             'height_matrix': False,
+            'source_format': '--',
+            'sampling_pitch_x_um': self.height_matrix_pitch_x_um,
+            'sampling_pitch_y_um': self.height_matrix_pitch_y_um,
+            'sampling_pitch_source': '--',
+            'detected_camera_res_um': None,
+            'missing_points': 0,
+            'bad_rows': 0,
+            'z_source_field': '',
+            'z_source_unit': '',
             'matrix_pitch_x_um': self.height_matrix_pitch_x_um,
             'matrix_pitch_y_um': self.height_matrix_pitch_y_um,
             'matrix_z_unit': self.height_matrix_z_unit,
@@ -191,7 +218,8 @@ class DataIOMixin:
             return
         info = getattr(self, 'import_info', {}) or {}
         strategy = info.get('strategy', '--')
-        layout_text = 'XYZ点表' if info.get('input_layout_mode', getattr(self, 'input_layout_mode', 'point_table')) == 'point_table' else 'Z矩阵'
+        layout_mode = info.get('input_layout_mode', getattr(self, 'input_layout_mode', 'point_table'))
+        layout_text = self._input_layout_label(layout_mode)
         file_size_mb = info.get('file_size_mb', 0.0)
         import_rows = info.get('import_rows', 0)
         display_limit = self._display_limit()
@@ -201,8 +229,15 @@ class DataIOMixin:
         notes = info.get('notes') or ''
         valid_rows = info.get('valid_rows', None)
         valid_text = f" | 有效 {int(valid_rows):,} 点" if valid_rows is not None else ""
+        missing_points = int(info.get('missing_points', 0) or 0)
+        bad_rows = int(info.get('bad_rows', 0) or 0)
+        issue_text = ''
+        if missing_points:
+            issue_text += f" | 缺测 {missing_points:,} 点"
+        if bad_rows:
+            issue_text += f" | 坏行 {bad_rows:,}"
         text = (f"导入状态: {layout_text} | {strategy} | {sampled_text} | 文件 {file_size_mb:.1f} MB | "
-                f"读入 {int(import_rows):,} 行{valid_text} | 显示 {int(shown):,}/{int(display_limit):,} 点")
+                f"读入 {int(import_rows):,} 行{valid_text}{issue_text} | 显示 {int(shown):,}/{int(display_limit):,} 点")
         if quality['estimated']:
             text += f" | 结果质量: {quality['label']}"
         if notes:
@@ -210,7 +245,8 @@ class DataIOMixin:
         if hasattr(self, 'lbl_import_status'):
             self.lbl_import_status.setText(text)
         if hasattr(self, 'btn_bigfile_settings'):
-            self.btn_bigfile_settings.setText(f"导入策略 · {'XYZ' if layout_text == 'XYZ点表' else 'Z矩阵'}")
+            self.btn_bigfile_settings.setText(
+                f"导入策略 · {self._input_layout_short_label(layout_mode)}")
             cfg = (f"大文件策略\n"
                    f"模式: {self._bigfile_mode_label()}\n"
                    f"自动抽样: {'开启' if self.auto_sample_large_text else '关闭'}\n"
@@ -243,11 +279,13 @@ class DataIOMixin:
         cb_input_layout = NoWheelComboBox()
         cb_input_layout.addItem("XYZ 点表", "point_table")
         cb_input_layout.addItem("Z 矩阵", "height_matrix")
+        cb_input_layout.addItem("Zygo XYZ", "zygo_xyz")
         layout_index = cb_input_layout.findData(getattr(self, 'input_layout_mode', 'point_table'))
         cb_input_layout.setCurrentIndex(layout_index if layout_index >= 0 else 0)
         cb_input_layout.setToolTip(
             "XYZ点表：文件中存在可映射的X/Y/Z逻辑列，也支持Excel单列内用分号封装多字段。\n"
-            "Z矩阵：文件主体是二维高度数组，X/Y由矩阵Pitch和行列位置生成。")
+            "Z矩阵：文件主体是二维高度数组，X/Y由采样间距和行列位置生成。\n"
+            "Zygo XYZ：Zygo XYZ Data File - Format 1；X/Y由手动采样间距生成。")
         layout_grid.addWidget(cb_input_layout, 0, 1)
         layout_note = QLabel("此选择会自动记忆，后续导入沿用；更换数据类型时再修改。")
         layout_note.setWordWrap(True)
@@ -323,20 +361,20 @@ class DataIOMixin:
         spin_display.setToolTip("仅限制右侧绘图显示点数，不改变已导入数据和Rx/Ry/PV/TTV计算。")
         grid.addWidget(spin_display, 7, 1)
 
-        grid.addWidget(QLabel("矩阵Pitch X(µm):"), 8, 0)
+        grid.addWidget(QLabel("X 采样间距 (µm/点):"), 8, 0)
         spin_pitch_x = NoWheelDoubleSpinBox()
         spin_pitch_x.setDecimals(4)
         spin_pitch_x.setRange(0.0001, 1e6)
         spin_pitch_x.setValue(float(self.height_matrix_pitch_x_um))
-        spin_pitch_x.setToolTip("VR/基恩士高度矩阵无表头或表头未写 Pitch 时，用该 X 像素间距生成 X(mm)。")
+        spin_pitch_x.setToolTip("Z矩阵与Zygo XYZ使用该X方向点间距生成实际物料坐标；普通点表不使用。")
         grid.addWidget(spin_pitch_x, 8, 1)
 
-        grid.addWidget(QLabel("矩阵Pitch Y(µm):"), 9, 0)
+        grid.addWidget(QLabel("Y 采样间距 (µm/点):"), 9, 0)
         spin_pitch_y = NoWheelDoubleSpinBox()
         spin_pitch_y.setDecimals(4)
         spin_pitch_y.setRange(0.0001, 1e6)
         spin_pitch_y.setValue(float(self.height_matrix_pitch_y_um))
-        spin_pitch_y.setToolTip("VR/基恩士高度矩阵无表头或表头未写 Pitch 时，用该 Y 像素间距生成 Y(mm)。")
+        spin_pitch_y.setToolTip("Z矩阵与Zygo XYZ使用该Y方向点间距生成实际物料坐标；普通点表不使用。")
         grid.addWidget(spin_pitch_y, 9, 1)
 
         grid.addWidget(QLabel("矩阵Z默认单位:"), 10, 0)
@@ -394,7 +432,16 @@ class DataIOMixin:
             spin_grid.setEnabled(cb_sample_method.currentData() == 'spatial_grid')
             sync_mode_from_values()
 
+        def update_layout_controls(*_args):
+            mode = str(cb_input_layout.currentData())
+            uses_pitch = mode in ('height_matrix', 'zygo_xyz')
+            spin_pitch_x.setEnabled(uses_pitch)
+            spin_pitch_y.setEnabled(uses_pitch)
+            cb_matrix_z_unit.setEnabled(mode == 'height_matrix')
+            spin_matrix_start.setEnabled(mode == 'height_matrix')
+
         cb_mode.currentIndexChanged.connect(apply_preset_from_combo)
+        cb_input_layout.currentIndexChanged.connect(update_layout_controls)
         chk_auto.toggled.connect(sync_mode_from_values)
         cb_sample_method.currentIndexChanged.connect(update_grid_enabled)
         spin_grid.valueChanged.connect(sync_mode_from_values)
@@ -402,6 +449,7 @@ class DataIOMixin:
         spin_import.valueChanged.connect(sync_mode_from_values)
         spin_display.valueChanged.connect(sync_mode_from_values)
         update_grid_enabled()
+        update_layout_controls()
 
         note = QLabel("说明：文件位置采样优先保证导入和交互流畅；空间网格采样会先扫描全文件确定 X/Y 范围，再按网格保留代表点、Z最小点和Z最大点。导入抽样会影响参与分析的数据量，显示上限只影响绘图。")
         note.setWordWrap(True)
@@ -442,13 +490,15 @@ class DataIOMixin:
             self.import_info['stride_n'] = self.large_text_stride_n
             self.import_info['matrix_pitch_x_um'] = self.height_matrix_pitch_x_um
             self.import_info['matrix_pitch_y_um'] = self.height_matrix_pitch_y_um
+            self.import_info['sampling_pitch_x_um'] = self.height_matrix_pitch_x_um
+            self.import_info['sampling_pitch_y_um'] = self.height_matrix_pitch_y_um
             self.import_info['matrix_z_unit'] = self.height_matrix_z_unit
             self.import_info['matrix_start_row'] = self.height_matrix_start_row
             self.import_info['input_layout_mode'] = self.input_layout_mode
             self._update_import_status_label()
             if old_display_limit != self.display_point_limit and self.df_raw is not None and self.active_idx is not None:
                 self.update_plots_only()
-            layout_text = "XYZ点表" if self.input_layout_mode == 'point_table' else "Z矩阵"
+            layout_text = self._input_layout_label(self.input_layout_mode)
             self._show_status(f"文件导入策略已更新：{layout_text}", 5000)
 
     @staticmethod
@@ -785,6 +835,7 @@ class DataIOMixin:
             values, values.shape[0], values.shape[1], pitch_x, pitch_y)
         self.import_info.update({
             'strategy': 'Excel高度矩阵全量读取',
+            'source_format': 'Excel Z矩阵',
             'sampled': False,
             'sample_method_key': 'full',
             'extrema_preserved': True,
@@ -795,7 +846,12 @@ class DataIOMixin:
             'matrix_coordinate_header': coordinate_header,
             'matrix_pitch_x_um': pitch_x,
             'matrix_pitch_y_um': pitch_y,
+            'sampling_pitch_x_um': pitch_x,
+            'sampling_pitch_y_um': pitch_y,
+            'sampling_pitch_source': '用户输入',
             'matrix_z_unit': z_unit,
+            'z_source_field': '矩阵高度值',
+            'z_source_unit': z_unit,
             'import_rows': int(values.size),
             'valid_rows': len(frame),
             'notes': f"Excel矩阵 {values.shape[0]}×{values.shape[1]} | 跳过前置说明 {selected['start']} 行",
@@ -1119,6 +1175,7 @@ class DataIOMixin:
         )
         self.import_info.update({
             'strategy': '高度矩阵倍率降采样导入',
+            'source_format': '文本Z矩阵',
             'sampled': True,
             'sample_method_key': 'stride',
             'extrema_preserved': False,
@@ -1129,7 +1186,12 @@ class DataIOMixin:
             'matrix_cols': ncols,
             'matrix_pitch_x_um': float(pitch_x_um),
             'matrix_pitch_y_um': float(pitch_y_um),
+            'sampling_pitch_x_um': float(pitch_x_um),
+            'sampling_pitch_y_um': float(pitch_y_um),
+            'sampling_pitch_source': meta_source,
             'matrix_z_unit': z_unit,
+            'z_source_field': '矩阵高度值',
+            'z_source_unit': z_unit,
             'matrix_data_start_row': data_line_no + 1,
             'matrix_header_rows_skipped': data_line_no,
             'matrix_start_row': int(getattr(self, 'height_matrix_start_row', 0)),
@@ -1277,6 +1339,7 @@ class DataIOMixin:
         )
         self.import_info.update({
             'strategy': '高度矩阵空间网格采样导入',
+            'source_format': '文本Z矩阵',
             'sampled': True,
             'sample_method_key': 'spatial_grid',
             'extrema_preserved': True,
@@ -1287,7 +1350,12 @@ class DataIOMixin:
             'matrix_cols': ncols,
             'matrix_pitch_x_um': float(pitch_x_um),
             'matrix_pitch_y_um': float(pitch_y_um),
+            'sampling_pitch_x_um': float(pitch_x_um),
+            'sampling_pitch_y_um': float(pitch_y_um),
+            'sampling_pitch_source': meta_source,
             'matrix_z_unit': z_unit,
+            'z_source_field': '矩阵高度值',
+            'z_source_unit': z_unit,
             'matrix_data_start_row': data_line_no + 1,
             'matrix_header_rows_skipped': data_line_no,
             'matrix_start_row': int(getattr(self, 'height_matrix_start_row', 0)),
@@ -1350,6 +1418,7 @@ class DataIOMixin:
             f"无效值规则: {invalid_text}。如识别范围不正确，可在“大文件策略”中填写矩阵数据起始行后重新导入。")
         self.import_info.update({
             'strategy': '高度矩阵全量读取',
+            'source_format': '文本Z矩阵',
             'sampled': False,
             'sample_method_key': 'full',
             'extrema_preserved': True,
@@ -1359,7 +1428,12 @@ class DataIOMixin:
             'matrix_cols': int(cols_count),
             'matrix_pitch_x_um': float(pitch_x),
             'matrix_pitch_y_um': float(pitch_y),
+            'sampling_pitch_x_um': float(pitch_x),
+            'sampling_pitch_y_um': float(pitch_y),
+            'sampling_pitch_source': meta_source,
             'matrix_z_unit': z_unit,
+            'z_source_field': '矩阵高度值',
+            'z_source_unit': z_unit,
             'matrix_data_start_row': data_line_no + 1,
             'matrix_header_rows_skipped': data_line_no,
             'matrix_start_row': int(getattr(self, 'height_matrix_start_row', 0)),
@@ -1686,6 +1760,420 @@ class DataIOMixin:
         })
         return df
 
+    @staticmethod
+    def _read_text_header(path, max_lines=50000):
+        """Return a usable text encoding and the requested leading lines."""
+        last_error = None
+        for enc in ('utf-8-sig', 'gbk', 'utf-16', 'latin-1'):
+            try:
+                lines = []
+                with open(path, 'r', encoding=enc, errors='strict') as handle:
+                    for _, line in zip(range(max_lines), handle):
+                        lines.append(line.rstrip('\r\n'))
+                return enc, lines
+            except (UnicodeError, OSError) as exc:
+                last_error = exc
+        raise ValueError(f"无法识别文本编码: {last_error}")
+
+    @classmethod
+    def _text_format_signature(cls, path):
+        """Detect only deterministic device signatures; never infer from numeric width."""
+        try:
+            enc, lines = cls._read_text_header(path, max_lines=12)
+        except Exception:
+            return None, None
+        first = lines[0].strip().lstrip('\ufeff') if lines else ''
+        if first == 'Zygo XYZ Data File - Format 1':
+            return 'zygo_xyz_format_1', enc
+        if 'Precitec Optronik' in first and 'FSS Explorer' in first:
+            return 'precitec_fss', enc
+        return None, enc
+
+    @staticmethod
+    def _reservoir_add(reservoir, item, seen_count, limit, rng):
+        if len(reservoir) < limit:
+            reservoir.append(item)
+            return
+        replacement = rng.randrange(seen_count)
+        if replacement < limit:
+            reservoir[replacement] = item
+
+    def _read_zygo_xyz(self, path, enc, file_size):
+        """Parse Zygo XYZ Data File - Format 1 without numeric-width heuristics."""
+        with open(path, 'r', encoding=enc, errors='strict') as handle:
+            header = [handle.readline().rstrip('\r\n') for _ in range(14)]
+        if not header or header[0].strip().lstrip('\ufeff') != 'Zygo XYZ Data File - Format 1':
+            raise ValueError("当前文件不是 Zygo XYZ Data File - Format 1。请检查导入类型或文件内容。")
+
+        try:
+            phase_tokens = shlex.split(header[3], posix=True)
+            if len(phase_tokens) < 4:
+                raise ValueError
+            origin_x = int(float(phase_tokens[0]))
+            origin_y = int(float(phase_tokens[1]))
+            phase_width = int(float(phase_tokens[2]))
+            phase_height = int(float(phase_tokens[3]))
+            if phase_width <= 0 or phase_height <= 0:
+                raise ValueError
+        except (ValueError, IndexError) as exc:
+            raise ValueError("Zygo 第4行 PhaseOrigin/PhaseWidth/PhaseHeight 解析失败。") from exc
+
+        try:
+            camera_tokens = shlex.split(header[7], posix=True)
+            if len(camera_tokens) < 8:
+                raise ValueError
+            camera_res_m = float(camera_tokens[6])
+            float(camera_tokens[7])  # 固定第8字段是时间戳，只校验，不参与分辨率识别。
+            if not np.isfinite(camera_res_m) or camera_res_m <= 0:
+                raise ValueError
+            camera_res_um = camera_res_m * 1e6
+        except (ValueError, IndexError) as exc:
+            raise ValueError(
+                "Zygo 第8行 CameraRes 解析失败；格式要求 CameraRes 为引号感知分词后的第7字段，时间戳为第8字段。") from exc
+
+        pitch_x = float(self.height_matrix_pitch_x_um)
+        pitch_y = float(self.height_matrix_pitch_y_um)
+        mismatch_x = abs(pitch_x - camera_res_um) / camera_res_um > 0.01
+        mismatch_y = abs(pitch_y - camera_res_um) / camera_res_um > 0.01
+        pitch_warning = ''
+        if mismatch_x or mismatch_y:
+            pitch_warning = (
+                f"手动采样间距 X/Y={pitch_x:g}/{pitch_y:g} µm/点与 CameraRes "
+                f"{camera_res_um:.4g} µm/点相差超过1%；坐标仍按手动值生成。")
+
+        auto_sample = bool(getattr(self, 'auto_sample_large_text', True))
+        sampled = auto_sample and file_size >= self._large_text_threshold_bytes()
+        method = str(getattr(self, 'large_file_sample_method', 'file_position'))
+        if method == 'stride':
+            method = 'file_position'
+        max_rows = self._large_text_import_limit()
+        rows = []
+        cells = {}
+        rng = random.Random(0)
+        valid_count = missing_count = bad_count = body_rows = 0
+        in_body = False
+        body_closed = False
+
+        if sampled and method == 'spatial_grid':
+            max_safe_side = self._max_safe_grid_side(max_rows)
+            requested = int(getattr(self, 'large_text_grid_count', 0))
+            auto_side = self._auto_spatial_grid_side(phase_width * phase_height, max_rows)
+            grid_side = min(requested if requested > 0 else auto_side, max_safe_side)
+        else:
+            grid_side = 0
+
+        def grid_key(pixel_x, pixel_y):
+            ix = int((pixel_x - origin_x) / max(phase_width, 1) * grid_side)
+            iy = int((pixel_y - origin_y) / max(phase_height, 1) * grid_side)
+            ix = min(max(ix, 0), grid_side - 1)
+            iy = min(max(iy, 0), grid_side - 1)
+            return iy * grid_side + ix
+
+        with open(path, 'r', encoding=enc, errors='ignore') as handle:
+            for line_no, line in enumerate(handle, start=1):
+                text = line.strip().lstrip('\ufeff')
+                if text == '#':
+                    if not in_body:
+                        in_body = True
+                    else:
+                        body_closed = True
+                        break
+                    continue
+                if not in_body or not text:
+                    continue
+                body_rows += 1
+                tokens = re.split(r'\s+', text)
+                if len(tokens) >= 4 and tokens[2].lower() == 'no' and tokens[3].lower() == 'data':
+                    try:
+                        pixel_x = int(float(tokens[0])); pixel_y = int(float(tokens[1]))
+                    except ValueError:
+                        bad_count += 1
+                        continue
+                    missing_count += 1
+                    if not sampled:
+                        rows.append((body_rows, [
+                            (pixel_x - origin_x) * pitch_x / 1000.0,
+                            (pixel_y - origin_y) * pitch_y / 1000.0,
+                            np.nan, pixel_y, pixel_x]))
+                    continue
+                if len(tokens) < 3:
+                    bad_count += 1
+                    continue
+                try:
+                    pixel_x = int(float(tokens[0])); pixel_y = int(float(tokens[1]))
+                    z_um = float(tokens[2])
+                except ValueError:
+                    bad_count += 1
+                    continue
+                if not np.isfinite(z_um):
+                    bad_count += 1
+                    continue
+                valid_count += 1
+                values = [
+                    (pixel_x - origin_x) * pitch_x / 1000.0,
+                    (pixel_y - origin_y) * pitch_y / 1000.0,
+                    z_um, pixel_y, pixel_x]
+                item = (body_rows, values)
+                if not sampled:
+                    rows.append(item)
+                elif method == 'file_position':
+                    self._reservoir_add(rows, item, valid_count, max_rows, rng)
+                else:
+                    key = grid_key(pixel_x, pixel_y)
+                    state = cells.get(key)
+                    if state is None:
+                        cells[key] = {'first': item, 'min': item, 'max': item}
+                    else:
+                        if z_um < state['min'][1][2]: state['min'] = item
+                        if z_um > state['max'][1][2]: state['max'] = item
+
+        if not in_body or not body_closed:
+            raise ValueError("Zygo 正文边界不完整：必须存在两个独立的 # 分隔行。")
+        if valid_count < 3:
+            raise ValueError("Zygo 正文有效高度点少于3个。")
+        if sampled and method == 'spatial_grid':
+            rows = []
+            for key in sorted(cells):
+                unique = {}
+                for item in (cells[key]['first'], cells[key]['min'], cells[key]['max']):
+                    unique[item[0]] = item
+                rows.extend(unique.values())
+        rows.sort(key=lambda item: item[0])
+        frame = pd.DataFrame([item[1] for item in rows],
+                             columns=['X', 'Y', 'Z', '_matrix_row', '_matrix_col'])
+
+        expected = phase_width * phase_height
+        note_parts = [
+            f"Zygo {phase_width}×{phase_height}",
+            f"有效 {valid_count:,}", f"缺测 {missing_count:,}", f"坏行 {bad_count:,}",
+            f"Pitch {pitch_x:g}/{pitch_y:g}µm（手动）",
+            f"CameraRes {camera_res_um:.4g}µm/点",
+        ]
+        if pitch_warning:
+            note_parts.append("Pitch偏差>1%")
+        strategy = 'Zygo XYZ全量读取'
+        sample_key = 'full'
+        extrema = True
+        if sampled and method == 'file_position':
+            strategy = 'Zygo XYZ文件位置流式采样'
+            sample_key = 'file_position'
+            extrema = False
+        elif sampled:
+            strategy = 'Zygo XYZ空间网格流式采样'
+            sample_key = 'spatial_grid'
+        metadata = {
+            'PhaseOriginX': origin_x, 'PhaseOriginY': origin_y,
+            'PhaseWidth': phase_width, 'PhaseHeight': phase_height,
+            'CameraRes_m_per_point': camera_res_m,
+            'CameraRes_timestamp': camera_tokens[7],
+        }
+        self.import_info.update({
+            'strategy': strategy,
+            'source_format': 'Zygo XYZ Data File - Format 1',
+            'sampled': sampled,
+            'sample_method_key': sample_key,
+            'extrema_preserved': extrema,
+            'import_rows': len(frame),
+            'source_valid_rows': valid_count,
+            'source_record_rows': body_rows,
+            'valid_rows': valid_count,
+            'missing_points': missing_count,
+            'bad_rows': bad_count,
+            'height_matrix': False,
+            'matrix_rows': phase_height,
+            'matrix_cols': phase_width,
+            'phase_origin_x': origin_x,
+            'phase_origin_y': origin_y,
+            'sampling_pitch_x_um': pitch_x,
+            'sampling_pitch_y_um': pitch_y,
+            'sampling_pitch_source': '用户输入',
+            'matrix_pitch_x_um': pitch_x,
+            'matrix_pitch_y_um': pitch_y,
+            'detected_camera_res_um': camera_res_um,
+            'z_source_field': 'Z height',
+            'z_source_unit': 'µm',
+            'metadata': metadata,
+            'notes': ' | '.join(note_parts),
+        })
+        self.last_import_note = '；'.join(note_parts) + ('。' + pitch_warning if pitch_warning else '')
+        return frame
+
+    @staticmethod
+    def _precitec_column_index(columns, expected):
+        target = re.sub(r'\s+', ' ', expected.strip()).casefold()
+        for index, column in enumerate(columns):
+            value = re.sub(r'\s+', ' ', str(column).strip()).casefold()
+            if value == target:
+                return index
+        raise ValueError(f"Precitec字段缺失: {expected}")
+
+    def _read_precitec_fss(self, path, enc, file_size):
+        """Parse Precitec FSS Explorer semicolon point tables and retain all columns."""
+        header_line_no = None
+        columns = None
+        preamble = []
+        with open(path, 'r', encoding=enc, errors='ignore') as handle:
+            for line_no, line in enumerate(handle, start=1):
+                text = line.strip().lstrip('\ufeff')
+                if text.startswith('#Encoder V;'):
+                    columns = self._trim_trailing_empty_tokens(
+                        [token.strip() for token in text[1:].split(';')])
+                    header_line_no = line_no
+                    break
+                if text:
+                    preamble.append(text)
+                if line_no >= 50000:
+                    break
+        if not columns or header_line_no is None:
+            raise ValueError("已识别 Precitec FSS 文件，但未找到 '#Encoder V;...' 字段行。")
+        if len(set(columns)) != len(columns):
+            raise ValueError("Precitec字段名存在重复，无法安全建立列映射。")
+        x_idx = self._precitec_column_index(columns, 'X Pos [mm]')
+        y_idx = self._precitec_column_index(columns, 'Y Pos [mm]')
+        z_idx = self._precitec_column_index(columns, 'Thickness 1')
+
+        header_text = '\n'.join(preamble)
+        points_match = re.search(r'PointsPerLine\s*:\s*(\d+)', header_text, re.I)
+        lines_match = re.search(r'NumberOfLines\s*:\s*(\d+)', header_text, re.I)
+        points_per_line = int(points_match.group(1)) if points_match else None
+        number_of_lines = int(lines_match.group(1)) if lines_match else None
+        expected_points = (points_per_line * number_of_lines
+                           if points_per_line is not None and number_of_lines is not None else None)
+
+        def iter_records():
+            with open(path, 'r', encoding=enc, errors='ignore') as handle:
+                for line_no, line in enumerate(handle, start=1):
+                    if line_no <= header_line_no:
+                        continue
+                    text = line.strip()
+                    if not text or text.startswith('#'):
+                        continue
+                    tokens = self._trim_trailing_empty_tokens(
+                        [token.strip() for token in text.split(';')])
+                    if len(tokens) != len(columns):
+                        yield line_no, None
+                        continue
+                    try:
+                        xyz = (float(tokens[x_idx]), float(tokens[y_idx]), float(tokens[z_idx]))
+                    except ValueError:
+                        yield line_no, None
+                        continue
+                    if not all(np.isfinite(value) for value in xyz):
+                        yield line_no, None
+                        continue
+                    yield line_no, tokens
+
+        auto_sample = bool(getattr(self, 'auto_sample_large_text', True))
+        sampled = auto_sample and file_size >= self._large_text_threshold_bytes()
+        method = str(getattr(self, 'large_file_sample_method', 'file_position'))
+        if method == 'stride': method = 'file_position'
+        max_rows = self._large_text_import_limit()
+        rows = []
+        valid_count = bad_count = source_rows = 0
+        rng = random.Random(0)
+
+        if sampled and method == 'spatial_grid':
+            x_min = y_min = np.inf
+            x_max = y_max = -np.inf
+            for _, tokens in iter_records():
+                source_rows += 1
+                if tokens is None:
+                    bad_count += 1
+                    continue
+                valid_count += 1
+                x = float(tokens[x_idx]); y = float(tokens[y_idx])
+                x_min = min(x_min, x); x_max = max(x_max, x)
+                y_min = min(y_min, y); y_max = max(y_max, y)
+            if valid_count < 3:
+                raise ValueError("Precitec有效 X/Y/Thickness 记录少于3条。")
+            max_safe_side = self._max_safe_grid_side(max_rows)
+            requested = int(getattr(self, 'large_text_grid_count', 0))
+            grid_side = min(requested if requested > 0 else self._auto_spatial_grid_side(valid_count, max_rows),
+                            max_safe_side)
+            x_span = x_max - x_min; y_span = y_max - y_min
+            cells = {}
+            for line_no, tokens in iter_records():
+                if tokens is None: continue
+                x = float(tokens[x_idx]); y = float(tokens[y_idx]); z = float(tokens[z_idx])
+                ix = 0 if x_span <= 0 else min(max(int((x - x_min) / x_span * grid_side), 0), grid_side - 1)
+                iy = 0 if y_span <= 0 else min(max(int((y - y_min) / y_span * grid_side), 0), grid_side - 1)
+                key = iy * grid_side + ix
+                item = (line_no, tokens)
+                state = cells.get(key)
+                if state is None:
+                    cells[key] = {'first': item, 'min': item, 'max': item}
+                else:
+                    if z < float(state['min'][1][z_idx]): state['min'] = item
+                    if z > float(state['max'][1][z_idx]): state['max'] = item
+            for key in sorted(cells):
+                unique = {}
+                for item in (cells[key]['first'], cells[key]['min'], cells[key]['max']):
+                    unique[item[0]] = item
+                rows.extend(unique.values())
+        else:
+            for line_no, tokens in iter_records():
+                source_rows += 1
+                if tokens is None:
+                    bad_count += 1
+                    continue
+                valid_count += 1
+                item = (line_no, tokens)
+                if not sampled:
+                    rows.append(item)
+                else:
+                    self._reservoir_add(rows, item, valid_count, max_rows, rng)
+
+        if valid_count < 3:
+            raise ValueError("Precitec有效 X/Y/Thickness 记录少于3条。")
+        rows.sort(key=lambda item: item[0])
+        frame = pd.DataFrame([item[1] for item in rows], columns=columns)
+        incomplete = expected_points is not None and source_rows != expected_points
+        completeness_warning = ''
+        if incomplete:
+            completeness_warning = f"预期 {expected_points:,} 条，实际数据记录 {source_rows:,} 条"
+        strategy = 'Precitec FSS全量读取'
+        sample_key = 'full'; extrema = True
+        if sampled and method == 'file_position':
+            strategy = 'Precitec FSS文件位置流式采样'; sample_key = 'file_position'; extrema = False
+        elif sampled:
+            strategy = 'Precitec FSS空间网格流式采样'; sample_key = 'spatial_grid'
+        metadata = {f'HeaderLine{i + 1}': value for i, value in enumerate(preamble)}
+        if points_per_line is not None: metadata['PointsPerLine'] = points_per_line
+        if number_of_lines is not None: metadata['NumberOfLines'] = number_of_lines
+        notes = [f"Precitec FSS", f"有效 {valid_count:,}", f"坏行 {bad_count:,}"]
+        if expected_points is not None:
+            notes.append(f"预期/实际 {expected_points:,}/{source_rows:,}")
+        if incomplete: notes.append('完整性警告')
+        self.import_info.update({
+            'strategy': strategy,
+            'source_format': 'Precitec FSS Explorer SCAN PATH DATA',
+            'sampled': sampled,
+            'sample_method_key': sample_key,
+            'extrema_preserved': extrema,
+            'import_rows': len(frame),
+            'source_valid_rows': valid_count,
+            'source_record_rows': source_rows,
+            'valid_rows': valid_count,
+            'missing_points': 0,
+            'bad_rows': bad_count,
+            'expected_points': expected_points,
+            'points_per_line': points_per_line,
+            'number_of_lines': number_of_lines,
+            'completeness_warning': completeness_warning,
+            'mapping_x_col': columns[x_idx],
+            'mapping_y_col': columns[y_idx],
+            'mapping_z_col': columns[z_idx],
+            'z_source_field': columns[z_idx],
+            'z_source_unit': 'µm',
+            'sampling_pitch_source': '不适用（物理坐标列）',
+            'metadata': metadata,
+            'notes': ' | '.join(notes),
+        })
+        self.last_import_note = '；'.join(notes)
+        if completeness_warning:
+            self.last_import_note += f"。完整性警告：{completeness_warning}。"
+        return frame
+
     def _read_table(self, path):
         """鲁棒读取表格文件：
         - 文本类(.csv/.txt/.tsv/.dat/.asc/.xyz): 自动尝试 utf-8-sig/gbk/utf-16/latin-1；自动识别分隔符；
@@ -1699,9 +2187,37 @@ class DataIOMixin:
         suffix = Path(path).suffix.lower()
         file_size = Path(path).stat().st_size
         layout_mode = getattr(self, 'input_layout_mode', 'point_table')
-        if layout_mode not in ('point_table', 'height_matrix'):
+        if layout_mode not in ('point_table', 'height_matrix', 'zygo_xyz'):
             layout_mode = 'point_table'
         self.import_info['input_layout_mode'] = layout_mode
+
+        signature = None
+        signature_encoding = None
+        if suffix in self.TEXT_SUFFIXES or suffix == '':
+            signature, signature_encoding = self._text_format_signature(path)
+        if layout_mode == 'zygo_xyz':
+            if suffix not in self.TEXT_SUFFIXES and suffix != '':
+                raise ValueError("Zygo XYZ 导入仅支持文本类文件。")
+            if signature != 'zygo_xyz_format_1':
+                raise ValueError(
+                    "当前选择了 Zygo XYZ，但文件首行不是 'Zygo XYZ Data File - Format 1'。\n"
+                    "请核对文件，或在导入策略中切换为 XYZ 点表。")
+            df = self._read_zygo_xyz(path, signature_encoding, file_size)
+            self.import_info['display_limit'] = self._display_limit()
+            self._update_import_status_label()
+            return df
+        if signature == 'zygo_xyz_format_1':
+            raise ValueError(
+                "检测到 Zygo XYZ Data File - Format 1。\n"
+                "为避免通用点表解析产生错误坐标，请在“导入策略”中选择“Zygo XYZ”后重新导入。")
+        if signature == 'precitec_fss' and layout_mode != 'point_table':
+            raise ValueError(
+                "检测到 Precitec FSS Explorer 点表。请在“导入策略”中选择“XYZ 点表”后重新导入。")
+        if signature == 'precitec_fss':
+            df = self._read_precitec_fss(path, signature_encoding, file_size)
+            self.import_info['display_limit'] = self._display_limit()
+            self._update_import_status_label()
+            return df
 
         if suffix in self.EXCEL_SUFFIXES:
             raw_excel = pd.read_excel(path, header=None, dtype=object)
@@ -1717,6 +2233,7 @@ class DataIOMixin:
                 df = pd.read_excel(path)
                 self.import_info.update({
                     'strategy': 'Excel点表全量读取',
+                    'source_format': 'Excel XYZ点表',
                     'sampled': False,
                     'sample_method_key': 'full',
                     'extrema_preserved': True,
@@ -1772,6 +2289,7 @@ class DataIOMixin:
                         df.columns = [f'Col{i+1}' for i in range(df.shape[1])]
                     self.import_info.update({
                         'strategy': '文本全量读取',
+                        'source_format': '通用文本XYZ点表',
                         'sampled': False,
                         'sample_method_key': 'full',
                         'extrema_preserved': True,
@@ -1803,6 +2321,7 @@ class DataIOMixin:
                                 df = df_try
                                 self.import_info.update({
                                     'strategy': '文本全量读取(回退嗅探)',
+                                    'source_format': '通用文本XYZ点表',
                                     'sampled': False,
                                     'sample_method_key': 'full',
                                     'extrema_preserved': True,
@@ -1866,13 +2385,25 @@ class DataIOMixin:
                     if tc.lower() in col.lower(): return i
                 return di if di < len(cols) else 0
 
-            if self.import_info.get('height_matrix') and all(c in cols for c in ('X', 'Y', 'Z')):
+            if (self.import_info.get('height_matrix') or
+                    self.import_info.get('source_format') == 'Zygo XYZ Data File - Format 1') \
+                    and all(c in cols for c in ('X', 'Y', 'Z')):
                 self.cb_x_col.setCurrentText('X')
                 self.cb_y_col.setCurrentText('Y')
                 self.cb_z_col.setCurrentText('Z')
                 self.cb_x_unit.setCurrentText('mm')
                 self.cb_y_unit.setCurrentText('mm')
-                self.cb_z_unit.setCurrentText(self.import_info.get('matrix_z_unit', self.height_matrix_z_unit))
+                if self.import_info.get('source_format') == 'Zygo XYZ Data File - Format 1':
+                    self.cb_z_unit.setCurrentText('µm')
+                else:
+                    self.cb_z_unit.setCurrentText(self.import_info.get('matrix_z_unit', self.height_matrix_z_unit))
+            elif self.import_info.get('source_format') == 'Precitec FSS Explorer SCAN PATH DATA':
+                self.cb_x_col.setCurrentText(self.import_info['mapping_x_col'])
+                self.cb_y_col.setCurrentText(self.import_info['mapping_y_col'])
+                self.cb_z_col.setCurrentText(self.import_info['mapping_z_col'])
+                self.cb_x_unit.setCurrentText('mm')
+                self.cb_y_unit.setCurrentText('mm')
+                self.cb_z_unit.setCurrentText('µm')
             elif len(cols) >= 3 and all(re.fullmatch(r'Col\d+', c) for c in cols):
                 # 无表头 X/Y/Z 文本默认按 Col1/Col2/Col3 映射，适配 Zeiss/XYZ 常见导出
                 self.cb_x_col.setCurrentIndex(0)
@@ -1900,7 +2431,7 @@ class DataIOMixin:
             if self.last_import_note:
                 self._show_status(self.last_import_note.replace('\n', ' | '), 15000)
                 self.btn_bigfile_settings.setToolTip(
-                    "设置XYZ点表/Z矩阵布局、超大文本预抽样、矩阵Pitch和显示上限。\n\n"
+                    "设置XYZ点表/Z矩阵/Zygo XYZ布局、超大文本预抽样、采样间距和显示上限。\n\n"
                     f"最近导入说明：\n{self.last_import_note}")
 
             # 寄存器保留提示（多层流程需要跨文件保留，故不自动清空）
@@ -1934,9 +2465,23 @@ class DataIOMixin:
                 raise ValueError("有效数据点少于 3 个，请检查列映射与单位选择。")
 
             unit_m = {"mm": 1.0, "µm": 1e-3, "nm": 1e-6}
-            temp_df['X'] = temp_df['X'] * unit_m[self.cb_x_unit.currentText()]
-            temp_df['Y'] = temp_df['Y'] * unit_m[self.cb_y_unit.currentText()]
-            temp_df['Z'] = temp_df['Z'] * unit_m[self.cb_z_unit.currentText()]
+            if self.import_info.get('source_format') == 'Zygo XYZ Data File - Format 1':
+                # Zygo专用解析器已经生成mm坐标，且标准正文Z固定为µm。
+                self.cb_x_unit.setCurrentText('mm')
+                self.cb_y_unit.setCurrentText('mm')
+                self.cb_z_unit.setCurrentText('µm')
+            x_unit = self.cb_x_unit.currentText()
+            y_unit = self.cb_y_unit.currentText()
+            z_unit = self.cb_z_unit.currentText()
+            temp_df['X'] = temp_df['X'] * unit_m[x_unit]
+            temp_df['Y'] = temp_df['Y'] * unit_m[y_unit]
+            temp_df['Z'] = temp_df['Z'] * unit_m[z_unit]
+
+            self.import_info['mapping_x_col'] = xc
+            self.import_info['mapping_y_col'] = yc
+            self.import_info['mapping_z_col'] = zc
+            self.import_info['z_source_field'] = zc
+            self.import_info['z_source_unit'] = z_unit
 
             out_cols = ['Z', 'X', 'Y']
             if '_matrix_row' in temp_df.columns and '_matrix_col' in temp_df.columns:

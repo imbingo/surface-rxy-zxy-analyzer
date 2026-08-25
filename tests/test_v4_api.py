@@ -12,7 +12,7 @@ import pandas as pd
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtWidgets import QApplication, QMessageBox, QDialog, QGroupBox, QLabel
 
 from surface_analyzer import AnalysisOptions, analyze_file, analyze_xyz, compare_plane_results
 from surface_analyzer import APP_VERSION
@@ -103,9 +103,183 @@ class V4ApiTests(unittest.TestCase):
         window.height_matrix_start_row = 123
         window.input_layout_mode = "height_matrix"
         recipe = window._current_recipe_dict()
-        self.assertEqual(APP_VERSION, "V4.3.0")
+        self.assertEqual(APP_VERSION, "V4.4.0")
         self.assertEqual(recipe["large_file"]["matrix_start_row"], 123)
+        self.assertEqual(recipe["large_file"]["sampling_pitch_x_um"],
+                         recipe["large_file"]["matrix_pitch_x_um"])
         self.assertEqual(recipe["input"]["layout_mode"], "height_matrix")
+        window.close()
+
+    def test_v440_zygo_xyz_uses_fixed_camera_field_and_manual_pitch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "zygo_demo.xyz"
+            path.write_text("\n".join([
+                "Zygo XYZ Data File - Format 1",
+                '0 3 0 0 "Tue Aug 25 16:59:23 2026"',
+                "0 0 3 3 1 255",
+                "10 20 3 3",
+                "",
+                "",
+                "",
+                "0 0 6.328e-07 0.5 1 0 5.067e-5 1787677163",
+                '3 2 0 0 0 666666 0 ""',
+                "0 0 1 33 0 0 0.1 60.4318 2 50",
+                "0 1 100 0 0 0 0 0 0 0",
+                '0 ""',
+                "1 5 0",
+                "#",
+                "10 20 No Data",
+                "11\t20\t2.0",
+                "12   20   3.0",
+                "10 21 4.0",
+                "11 21 No Data",
+                "12 21 6.0",
+                "10 22 7.0",
+                "11 22 8.0",
+                "12 22 No Data",
+                "#",
+            ]) + "\n", encoding="utf-8")
+            window = SurfaceAnalyzerPro()
+            window.input_layout_mode = "zygo_xyz"
+            window.height_matrix_pitch_x_um = 100.0
+            window.height_matrix_pitch_y_um = 200.0
+            frame = window._read_table(path)
+            self.assertEqual(window.import_info["source_format"],
+                             "Zygo XYZ Data File - Format 1")
+            self.assertAlmostEqual(window.import_info["detected_camera_res_um"], 50.67)
+            self.assertEqual(window.import_info["missing_points"], 3)
+            self.assertEqual(window.import_info["bad_rows"], 0)
+            self.assertEqual(window.import_info["matrix_rows"], 3)
+            self.assertEqual(window.import_info["matrix_cols"], 3)
+            self.assertEqual(len(frame), 9)
+            self.assertAlmostEqual(frame.loc[frame["_matrix_col"] == 12, "X"].iloc[0], 0.2)
+            self.assertAlmostEqual(frame.loc[frame["_matrix_row"] == 21, "Y"].iloc[0], 0.2)
+            self.assertTrue(frame["Z"].isna().sum() == 3)
+            window.close()
+
+    def test_v440_point_table_blocks_zygo_signature(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "zygo.xyz"
+            path.write_text("Zygo XYZ Data File - Format 1\n", encoding="utf-8")
+            window = SurfaceAnalyzerPro()
+            window.input_layout_mode = "point_table"
+            with self.assertRaisesRegex(ValueError, "Zygo XYZ"):
+                window._read_table(path)
+            window.close()
+
+    def test_v440_precitec_dat_keeps_fields_and_maps_physical_xyz(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scan.dat"
+            path.write_text("\n".join([
+                "Precitec Optronik - FSS Explorer v2.749 - SCAN PATH DATA;",
+                "ScanProgram: <PrecitecFSSExplorer>;",
+                "Gain Correction X:1.00000000, Y:1.00000000;",
+                "#Object: AreaScan; PointsPerLine: 3; NumberOfLines: 2; PercentileFilter: 50.00",
+                "#Attention: Encoder X/Y values are external axis corrected values",
+                "# real scanner position (X/Y, ENC X/Y) - external axis position",
+                "#Encoder V;Encoder Z;Encoder Y;Encoder X;Thickness 1;Intensity;X Pos [mm];Y Pos [mm]",
+                "1;2;-15848;-16353;240.38;3.99;-44.6810;-43.3014;",
+                "1;2;-15849;-16329;241.00;4.16;-44.6158;-43.3037;",
+                "1;2;-15849;-16304;bad;3.39;-44.5478;-43.3060;",
+                "1;2;-15847;-16271;242.00;3.44;-44.5000;-43.3000;",
+            ]) + "\n", encoding="utf-8")
+            window = SurfaceAnalyzerPro()
+            window.input_layout_mode = "point_table"
+            self.assertTrue(window.load_path(path))
+            self.assertEqual(window.import_info["source_format"],
+                             "Precitec FSS Explorer SCAN PATH DATA")
+            self.assertEqual(window.cb_x_col.currentText(), "X Pos [mm]")
+            self.assertEqual(window.cb_y_col.currentText(), "Y Pos [mm]")
+            self.assertEqual(window.cb_z_col.currentText(), "Thickness 1")
+            self.assertEqual(window.cb_x_unit.currentText(), "mm")
+            self.assertEqual(window.cb_y_unit.currentText(), "mm")
+            self.assertEqual(window.cb_z_unit.currentText(), "µm")
+            self.assertIn("Intensity", window.absolute_raw_df.columns)
+            self.assertEqual(window.import_info["expected_points"], 6)
+            self.assertEqual(window.import_info["source_record_rows"], 4)
+            self.assertEqual(window.import_info["bad_rows"], 1)
+            self.assertAlmostEqual(window.df_raw["Z"].iloc[0], 0.24038)
+            self.assertTrue(window.import_info["completeness_warning"])
+            trace = ReportingMixin._import_trace_text(window.import_info)
+            self.assertTrue(any("Thickness 1" in line and "厚度分布" in line for line in trace))
+            self.assertTrue(any("预期/实际 6/4" in line for line in trace))
+            window.close()
+
+    def test_v440_recipe_reads_old_pitch_aliases(self):
+        window = SurfaceAnalyzerPro()
+        recipe = window._current_recipe_dict()
+        recipe["large_file"].pop("sampling_pitch_x_um")
+        recipe["large_file"].pop("sampling_pitch_y_um")
+        recipe["large_file"]["matrix_pitch_x_um"] = 21.5
+        recipe["large_file"]["matrix_pitch_y_um"] = 22.5
+        with patch.object(QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok), \
+             patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.Ok):
+            window.apply_recipe(recipe, remap_current_data=False)
+        self.assertAlmostEqual(window.height_matrix_pitch_x_um, 21.5)
+        self.assertAlmostEqual(window.height_matrix_pitch_y_um, 22.5)
+        window.close()
+
+    def test_v440_device_stream_sampling_uses_real_xyz_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scan.dat"
+            records = []
+            for row in range(5):
+                for column in range(6):
+                    records.append(
+                        f"1;2;{-15000 + row};{-16000 + column};{200 + row + column};3.5;"
+                        f"{-40 + column * 0.1};{-30 + row * 0.1};")
+            path.write_text("\n".join([
+                "Precitec Optronik - FSS Explorer v2.749 - SCAN PATH DATA;",
+                "#Object: AreaScan; PointsPerLine: 6; NumberOfLines: 5;",
+                "#Encoder V;Encoder Z;Encoder Y;Encoder X;Thickness 1;Intensity;X Pos [mm];Y Pos [mm]",
+                *records,
+            ]) + "\n", encoding="utf-8")
+            window = SurfaceAnalyzerPro()
+            window.input_layout_mode = "point_table"
+            window.large_text_threshold_mb = 0
+            window.large_text_import_limit = 12
+            window.large_file_sample_method = "spatial_grid"
+            frame = window._read_table(path)
+            self.assertTrue(window.import_info["sampled"])
+            self.assertEqual(window.import_info["sample_method_key"], "spatial_grid")
+            self.assertLessEqual(len(frame), 12)
+            self.assertTrue(pd.to_numeric(frame["X Pos [mm]"]).between(-40, -39.5).all())
+            self.assertTrue(pd.to_numeric(frame["Thickness 1"]).between(200, 209).all())
+            self.assertEqual(window.import_info["source_valid_rows"], 30)
+            window.close()
+
+    def test_v440_import_dialog_has_three_layouts_and_correct_pitch_state(self):
+        window = SurfaceAnalyzerPro()
+        observed = {}
+
+        def inspect_dialog(dialog):
+            layout_group = next(group for group in dialog.findChildren(QGroupBox)
+                                if group.title() == "文件数据布局")
+            layout_combo = layout_group.layout().itemAtPosition(0, 1).widget()
+            strategy_group = next(group for group in dialog.findChildren(QGroupBox)
+                                  if group.title() == "Zeiss / TXT / ASC / XYZ 大文件策略")
+            grid = strategy_group.layout()
+            pitch_x = grid.itemAtPosition(8, 1).widget()
+            pitch_y = grid.itemAtPosition(9, 1).widget()
+            matrix_unit = grid.itemAtPosition(10, 1).widget()
+            labels = [label.text() for label in strategy_group.findChildren(QLabel)]
+            observed["layouts"] = [layout_combo.itemData(i) for i in range(layout_combo.count())]
+            observed["labels"] = labels
+            layout_combo.setCurrentIndex(layout_combo.findData("point_table"))
+            observed["point_pitch"] = (pitch_x.isEnabled(), pitch_y.isEnabled())
+            layout_combo.setCurrentIndex(layout_combo.findData("zygo_xyz"))
+            observed["zygo_pitch"] = (pitch_x.isEnabled(), pitch_y.isEnabled())
+            observed["zygo_matrix_unit"] = matrix_unit.isEnabled()
+            return QDialog.DialogCode.Rejected
+
+        with patch.object(QDialog, "exec", inspect_dialog):
+            window.show_bigfile_settings_dialog()
+        self.assertEqual(observed["layouts"], ["point_table", "height_matrix", "zygo_xyz"])
+        self.assertIn("X 采样间距 (µm/点):", observed["labels"])
+        self.assertIn("Y 采样间距 (µm/点):", observed["labels"])
+        self.assertEqual(observed["point_pitch"], (False, False))
+        self.assertEqual(observed["zygo_pitch"], (True, True))
+        self.assertFalse(observed["zygo_matrix_unit"])
         window.close()
 
     def test_v430_origin_tile_tracks_pipeline_state(self):
@@ -148,6 +322,8 @@ class V4ApiTests(unittest.TestCase):
             "display_limit": -1,
             "matrix_pitch_x_um": 1e20,
             "matrix_pitch_y_um": -5,
+            "sampling_pitch_x_um": 1e20,
+            "sampling_pitch_y_um": -5,
             "matrix_start_row": 999999,
         })
         with patch.object(QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok), \
@@ -266,7 +442,7 @@ class V4ApiTests(unittest.TestCase):
             recipe = source._current_recipe_dict()
             json.dumps(recipe, ensure_ascii=False)
             expected_mask = source.manual_mask.copy()
-            self.assertEqual(recipe["schema_version"], 3)
+            self.assertEqual(recipe["schema_version"], 4)
             self.assertEqual(len(recipe["manual_deletion"]["operations"]), 3)
             self.assertEqual(len(recipe["manual_deletion"]["source_sha256"]), 64)
             self.assertTrue(all(op["transform_pipeline"] == ["CW90"]

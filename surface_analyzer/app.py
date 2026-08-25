@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.3.0."""
+"""Qt application shell for Surface Analyzer V4.4.0."""
 
 import sys
 import os
@@ -110,7 +110,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.height_matrix_start_row = 0   # 0=自动识别；>0 为文件中的 1 基数据起始行
         self.settings = QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer")
         saved_layout = str(self.settings.value("input_layout_mode", "point_table"))
-        self.input_layout_mode = saved_layout if saved_layout in ('point_table', 'height_matrix') else 'point_table'
+        self.input_layout_mode = saved_layout if saved_layout in (
+            'point_table', 'height_matrix', 'zygo_xyz') else 'point_table'
         self.use_system_frame = str(self.settings.value("use_system_frame", "false")).lower() in ("1", "true", "yes")
         self.recent_files = [str(x) for x in self.settings.value("recent_files", [], type=list)]
         self.roi_enabled = False           # V3.8.4+: XY ROI 保留区域开关
@@ -134,6 +135,14 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             'grid_count': self.large_text_grid_count,
             'stride_n': self.large_text_stride_n,
             'height_matrix': False,
+            'source_format': '--',
+            'sampling_pitch_x_um': self.height_matrix_pitch_x_um,
+            'sampling_pitch_y_um': self.height_matrix_pitch_y_um,
+            'sampling_pitch_source': '--',
+            'missing_points': 0,
+            'bad_rows': 0,
+            'z_source_field': '',
+            'z_source_unit': '',
             'matrix_start_row': self.height_matrix_start_row,
             'notes': ''
         }
@@ -328,9 +337,12 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.btn_export_recipe = QPushButton("导出 Recipe")
         self.btn_export_recipe.setToolTip("保存当前单位、列映射、物料旋转组合、滤波、ROI、大文件显示和Gap参数。")
         self.btn_export_recipe.clicked.connect(self.export_recipe)
-        layout_short = "XYZ" if self.input_layout_mode == 'point_table' else "Z矩阵"
+        layout_short = {
+            'point_table': 'XYZ', 'height_matrix': 'Z矩阵', 'zygo_xyz': 'Zygo'
+        }.get(self.input_layout_mode, 'XYZ')
         self.btn_bigfile_settings = QPushButton(f"导入策略 · {layout_short}")
-        self.btn_bigfile_settings.setToolTip("设置XYZ点表/Z矩阵布局、超大文本预抽样、矩阵Pitch和显示上限。")
+        self.btn_bigfile_settings.setToolTip(
+            "设置XYZ点表/Z矩阵/Zygo XYZ布局、超大文本预抽样、采样间距和显示上限。")
         self.btn_bigfile_settings.clicked.connect(self.show_bigfile_settings_dialog)
         self.btn_recent_files = QPushButton("最近文件")
         self.recent_files_menu = QMenu(self.btn_recent_files)

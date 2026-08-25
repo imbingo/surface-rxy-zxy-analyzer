@@ -36,7 +36,7 @@ class RecipeMixin:
         """导出当前界面参数，不包含测量数据本身。"""
         return {
             'recipe_type': 'SurfaceRxyZxyAnalyzerRecipe',
-            'schema_version': 3,
+            'schema_version': 4,
             'app_version': self.APP_VERSION,
             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'column_mapping': {
@@ -66,6 +66,9 @@ class RecipeMixin:
                 'threshold_mb': int(self.large_text_threshold_mb),
                 'import_limit': int(self.large_text_import_limit),
                 'display_limit': int(self.display_point_limit),
+                'sampling_pitch_x_um': float(self.height_matrix_pitch_x_um),
+                'sampling_pitch_y_um': float(self.height_matrix_pitch_y_um),
+                # 旧字段别名暂时保留，便于旧版本回退读取。
                 'matrix_pitch_x_um': float(self.height_matrix_pitch_x_um),
                 'matrix_pitch_y_um': float(self.height_matrix_pitch_y_um),
                 'matrix_z_unit': str(self.height_matrix_z_unit),
@@ -119,7 +122,7 @@ class RecipeMixin:
         self.pending_recipe = recipe
         input_config = recipe.get('input', {}) or {}
         input_layout = str(input_config.get('layout_mode', getattr(self, 'input_layout_mode', 'point_table')))
-        if input_layout in ('point_table', 'height_matrix'):
+        if input_layout in ('point_table', 'height_matrix', 'zygo_xyz'):
             self.input_layout_mode = input_layout
             QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer").setValue(
                 "input_layout_mode", self.input_layout_mode)
@@ -166,9 +169,11 @@ class RecipeMixin:
         self.display_point_limit = bounded_int(
             lf.get('display_limit'), self.display_point_limit, 5000, 1000000)
         self.height_matrix_pitch_x_um = bounded_float(
-            lf.get('matrix_pitch_x_um'), self.height_matrix_pitch_x_um, 0.0001, 1e6)
+            lf.get('sampling_pitch_x_um', lf.get('matrix_pitch_x_um')),
+            self.height_matrix_pitch_x_um, 0.0001, 1e6)
         self.height_matrix_pitch_y_um = bounded_float(
-            lf.get('matrix_pitch_y_um'), self.height_matrix_pitch_y_um, 0.0001, 1e6)
+            lf.get('sampling_pitch_y_um', lf.get('matrix_pitch_y_um')),
+            self.height_matrix_pitch_y_um, 0.0001, 1e6)
         self.height_matrix_z_unit = self._normalize_unit_label(lf.get('matrix_z_unit', self.height_matrix_z_unit), self.height_matrix_z_unit)
         self.height_matrix_start_row = bounded_int(
             lf.get('matrix_start_row'), self.height_matrix_start_row, 0, 50000)
@@ -179,6 +184,8 @@ class RecipeMixin:
         self.import_info['stride_n'] = self.large_text_stride_n
         self.import_info['matrix_pitch_x_um'] = self.height_matrix_pitch_x_um
         self.import_info['matrix_pitch_y_um'] = self.height_matrix_pitch_y_um
+        self.import_info['sampling_pitch_x_um'] = self.height_matrix_pitch_x_um
+        self.import_info['sampling_pitch_y_um'] = self.height_matrix_pitch_y_um
         self.import_info['matrix_z_unit'] = self.height_matrix_z_unit
         self.import_info['matrix_start_row'] = self.height_matrix_start_row
         gap = recipe.get('gap', {}) or {}

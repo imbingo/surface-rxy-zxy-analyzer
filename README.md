@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.3.0
+# Surface Rxy ZXY Analyzer V4.4.0
 
-面型及 Rxy 分析工具当前版本为 **V4.3.0**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
+面型及 Rxy 分析工具当前版本为 **V4.4.0**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.3.0.py`：V4.3.0 Python 启动入口。
-- `start_surface_analyzer_v4_3_0.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.4.0.py`：V4.4.0 Python 启动入口。
+- `start_surface_analyzer_v4_4_0.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,27 +14,36 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_3_0.bat
+start_surface_analyzer_v4_4_0.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_3_0.bat
+.\start_surface_analyzer_v4_4_0.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_3_0.bat --check
+.\start_surface_analyzer_v4_4_0.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.3.0.py
+python .\面型及Rxy分析工具V4.4.0.py
 python -m surface_analyzer
 ```
+
+## V4.4.0 重点
+
+- 导入策略新增显式 `Zygo XYZ` 类型，严格解析 `Zygo XYZ Data File - Format 1` 的 Phase 参数、固定 CameraRes 字段和两个 `#` 之间的正文。
+- Zygo 坐标始终由用户填写的 X/Y 采样间距生成；CameraRes 仅作为检测值，相差超过 1% 时提示但不覆盖手动参数。
+- Zygo `No Data` 保留缺测统计与网格定位，不参与拟合；空格与 Tab 分隔均可读取，不在导入阶段翻转 Y。
+- `XYZ 点表`模式确定性识别 Precitec FSS Explorer `.dat`，保留 Encoder、Intensity 和扫描参数，并自动映射 `X Pos [mm]`、`Y Pos [mm]`、`Thickness 1`。
+- Precitec 导入核对 `PointsPerLine × NumberOfLines`，坏行和完整性警告写入状态、CSV 元数据与报告。
+- Recipe 升级为 schema 4，新增通用采样间距字段，同时保留旧矩阵 Pitch 别名用于版本回退。
 
 ## V4.3.0 重点
 
@@ -86,6 +95,7 @@ python -m surface_analyzer
 
 ## 文档
 
+- [V4.4.0 Zygo / Precitec 设备格式 Demo](demo_data/V4.4.0_设备格式Demo说明.md)
 - [V4.0.2 接口文档](docs/V4.0.2_接口文档.md)
 - [V4.0.2 模块架构](docs/V4.0.2_架构说明.md)
 - [V4.0.2 本地测试清单](docs/V4.0.2_本地测试清单.md)
