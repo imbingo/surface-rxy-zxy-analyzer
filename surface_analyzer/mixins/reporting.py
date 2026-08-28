@@ -52,6 +52,20 @@ class ReportingMixin:
                         f"{int(info.get('source_record_rows', 0) or 0):,}")
         lines = [f"识别格式: {source_format}",
                  f"源数据统计: 有效 {valid:,} | 缺测 {missing:,} | 坏行 {bad:,}{topology}"]
+        header_confidence = str(info.get('header_confidence') or '')
+        if header_confidence:
+            header_label = {'semantic': 'semantic', 'candidate': 'candidate',
+                            'generated': 'generated'}.get(header_confidence, header_confidence)
+            header_line = info.get('header_source_line')
+            mapping = info.get('auto_mapping_result') or info.get('header_auto_mapping') or {}
+            header_text = f"表头: {header_label}"
+            if header_line:
+                header_text += f" | 来源行 {int(header_line)}"
+            if mapping:
+                header_text += f" | 自动映射 {mapping}"
+            lines.append(header_text)
+        if info.get('sampling_downgraded'):
+            lines.append(f"采样降级: {info.get('sampling_downgrade_reason', '列语义不确定')}")
         pitch_x = info.get('sampling_pitch_x_um')
         pitch_y = info.get('sampling_pitch_y_um')
         pitch_source = str(info.get('sampling_pitch_source') or '--')
@@ -75,6 +89,11 @@ class ReportingMixin:
             lines.append(z_line)
         elif warning:
             lines.append(f"完整性警告: {warning}")
+        topology_reason = str(info.get('precitec_topology_reason') or '')
+        if topology_reason:
+            lines.append(
+                f"Precitec拓扑: {'矩阵8邻域' if info.get('precitec_topology_usable') else '自适应点云回退'}"
+                f" | {topology_reason} | 局部点距 {float(info.get('precitec_local_spacing_mm', 0.0) or 0.0):.6g} mm")
         return lines
 
     def export_report_image(self):

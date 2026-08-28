@@ -1,0 +1,8 @@
+Instrument=Demo;Serial=V450;Mode=Surface
+StagePos1;StagePos2;Thickness_AVG;Intensity
+
+# 表头与数据之间允许空行和注释，真实列名仍会保留
+0;0;0.102;51000
+1;0;0.103;50900
+0;1;0.104;50800
+1;1;0.105;50700

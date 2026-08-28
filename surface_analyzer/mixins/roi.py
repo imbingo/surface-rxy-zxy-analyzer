@@ -29,6 +29,8 @@ from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
 from ..polynomial import evaluate_polynomial_surface
+from ..smart_roi import build_adaptive_topology, grow_surface_roi
+from ..workers import TaskCancelled
 
 
 
@@ -46,12 +48,20 @@ class ROIMixin:
                     f"r={roi.get('radius', 0):.4f}")
         if roi.get('type') == 'smart_face':
             mode = str(roi.get('smart_mode', 'plane_residual'))
-            mode_text = "同平面" if mode == 'plane_residual' else "连通"
-            conn = "矩阵8邻域" if roi.get('connectivity') == 'matrix8' else "XY自动邻接"
+            version = int(roi.get('smart_algorithm_version', 1) or 1)
+            mode_text = ({'surface_following': '连续曲面', 'plane_residual': '严格同平面',
+                          'connected': '旧版连通'}.get(mode, mode))
+            conn = str(roi.get('topology_label') or
+                       ("矩阵8邻域" if roi.get('connectivity') == 'matrix8' else "XY自动邻接"))
             radius = float(roi.get('xy_radius_mm', 0.0))
             radius_text = f", 邻接r={radius:.4f}" if radius > 0 else ""
+            point_text = f", 点数={int(roi.get('point_count_at_create', 0)):,}"
+            fallback_text = (f", 回退={roi.get('topology_fallback_reason')}"
+                             if roi.get('topology_fallback_reason') else '')
             return (f"{name}: 智能抓面 seed=({roi.get('seed_x', 0):.4f}, {roi.get('seed_y', 0):.4f}), "
-                    f"Z={roi.get('seed_z', 0):.5f}, 容差={roi.get('z_tolerance_mm', 0):.4f}mm, {mode_text}, {conn}{radius_text}")
+                    f"Z={roi.get('seed_z', 0):.5f}, 容差={roi.get('z_tolerance_mm', 0):.4f}mm, "
+                    f"V{version}, {mode_text}, {roi.get('sensitivity', 'legacy')}, {conn}{radius_text}"
+                    f"{point_text}{fallback_text}")
         return (f"{name}: 矩形 cx={roi.get('cx', 0):.4f}, cy={roi.get('cy', 0):.4f}, "
                 f"w={roi.get('width', 0):.4f}, h={roi.get('height', 0):.4f}")
 
@@ -70,6 +80,7 @@ class ROIMixin:
                     'enabled': bool(raw.get('enabled', True)),
                 }
                 if typ == 'smart_face':
+                    algorithm_version = int(raw.get('smart_algorithm_version', 1) or 1)
                     roi.update({
                         'seed_x': float(raw.get('seed_x', raw.get('cx', 0.0))),
                         'seed_y': float(raw.get('seed_y', raw.get('cy', 0.0))),
@@ -81,9 +92,22 @@ class ROIMixin:
                         'morph_dilate_iters': 0,
                         'morph_erode_iters': 0,
                         'point_count_at_create': int(raw.get('point_count_at_create', 0) or 0),
+                        'smart_algorithm_version': 2 if algorithm_version >= 2 else 1,
+                        'sensitivity': str(raw.get('sensitivity', 'standard')),
+                        'topology_label': str(raw.get('topology_label', '')),
+                        'topology_method': str(raw.get('topology_method', '')),
+                        'topology_fallback_reason': str(raw.get('topology_fallback_reason', '')),
+                        'local_spacing_mm': max(float(raw.get('local_spacing_mm', 0.0) or 0.0), 0.0),
                     })
-                    if roi['smart_mode'] not in ('plane_residual', 'connected'):
-                        roi['smart_mode'] = 'plane_residual'
+                    if roi['smart_algorithm_version'] >= 2:
+                        if roi['smart_mode'] not in ('surface_following', 'plane_residual'):
+                            roi['smart_mode'] = 'surface_following'
+                        if roi['sensitivity'] not in ('strict', 'standard', 'loose'):
+                            roi['sensitivity'] = 'standard'
+                    else:
+                        if roi['smart_mode'] not in ('plane_residual', 'connected'):
+                            roi['smart_mode'] = 'plane_residual'
+                        roi['sensitivity'] = 'legacy'
                     if roi['connectivity'] not in ('matrix8', 'auto_xy'):
                         roi['connectivity'] = 'auto_xy'
                 else:
@@ -126,6 +150,10 @@ class ROIMixin:
 
     def _matrix_rc_for_current_data(self):
         if self.df_raw is None or '_matrix_row' not in self.df_raw.columns or '_matrix_col' not in self.df_raw.columns:
+            return None
+        info = getattr(self, 'import_info', {}) or {}
+        if (info.get('source_format') == 'Precitec FSS Explorer SCAN PATH DATA'
+                and not info.get('precitec_topology_usable', False)):
             return None
         try:
             return (self.df_raw['_matrix_row'].to_numpy(dtype=int),
@@ -303,6 +331,43 @@ class ROIMixin:
         x = np.asarray(x, dtype=float)
         y = np.asarray(y, dtype=float)
         z = np.asarray(z, dtype=float)
+        if int(roi.get('smart_algorithm_version', 1) or 1) >= 2:
+            finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+            finite_idx = np.flatnonzero(finite)
+            if len(finite_idx) < 3:
+                return np.zeros(len(x), dtype=bool)
+            finite_matrix = None
+            if matrix_rc is not None:
+                finite_matrix = (np.asarray(matrix_rc[0])[finite_idx],
+                                 np.asarray(matrix_rc[1])[finite_idx])
+            sensitivity = str(roi.get('sensitivity', 'standard'))
+            try:
+                topology = build_adaptive_topology(
+                    x[finite_idx], y[finite_idx], matrix_rc=finite_matrix,
+                    sensitivity=sensitivity, delaunay_limit=150000)
+                local_keep = grow_surface_roi(
+                    x[finite_idx], y[finite_idx], z[finite_idx],
+                    roi.get('seed_x', 0.0), roi.get('seed_y', 0.0),
+                    roi.get('z_tolerance_mm', 0.02), topology,
+                    mode=str(roi.get('smart_mode', 'surface_following')),
+                    sensitivity=sensitivity)
+                roi['topology_label'] = topology['topology']
+                roi['topology_method'] = topology['method']
+                roi['topology_fallback_reason'] = topology.get('fallback_reason', '')
+                roi['local_spacing_mm'] = float(topology.get('local_spacing_mm', 0.0))
+                result = np.zeros(len(x), dtype=bool)
+                result[finite_idx[local_keep]] = True
+                return result
+            except Exception as exc:
+                roi['topology_label'] = '拓扑失败'
+                roi['topology_method'] = 'failed'
+                roi['topology_fallback_reason'] = str(exc)
+                result = np.zeros(len(x), dtype=bool)
+                seed = int(finite_idx[np.argmin(
+                    (x[finite_idx] - float(roi.get('seed_x', 0.0))) ** 2 +
+                    (y[finite_idx] - float(roi.get('seed_y', 0.0))) ** 2)])
+                result[seed] = True
+                return result
         if str(roi.get('smart_mode', 'plane_residual')) == 'plane_residual':
             return self._smart_face_keep_mask_plane_residual(x, y, z, roi, update_radius=update_radius)
         if roi.get('connectivity') == 'matrix8' and matrix_rc is not None:
@@ -345,7 +410,8 @@ class ROIMixin:
             w.setEnabled((not is_circle) and (not is_smart))
         for w in (self.lbl_roi_r, self.spin_roi_r):
             w.setEnabled(is_circle and not is_smart)
-        for w in (self.lbl_smart_mode, self.cb_smart_mode, self.lbl_smart_tol,
+        for w in (self.lbl_smart_mode, self.cb_smart_mode,
+                  self.lbl_smart_sensitivity, self.cb_smart_sensitivity, self.lbl_smart_tol,
                   self.spin_smart_tol, self.lbl_smart_tol_hint):
             w.setEnabled(is_smart)
         for w in (self.lbl_smart_dilate, self.spin_smart_dilate, self.lbl_smart_erode, self.spin_smart_erode):
@@ -358,7 +424,7 @@ class ROIMixin:
         if self.selection_mode in ('roi_rect', 'roi_circle', 'roi_smart'):
             self.selection_mode = 'roi_smart' if is_smart else 'roi_circle' if is_circle else 'roi_rect'
             self.statusBar().showMessage(
-                "智能抓面模式：在 XY 图点击种子点；默认按同平面残差抓取，不自动补洞。"
+                "智能抓面模式：在 XY 图点击种子点；默认跟随连续Bow/Warpage，不跨孔洞且不自动补洞。"
                 if is_smart else
                 f"ROI 连续框选模式: {'圆形' if is_circle else '矩形'}。在 XY 图中继续拖拽添加区域。", 5000)
 
@@ -860,15 +926,67 @@ class ROIMixin:
             'seed_y': float(ty[seed_idx]),
             'seed_z': float(tz[seed_idx]),
             'z_tolerance_mm': float(self.spin_smart_tol.value()),
-            'smart_mode': str(self.cb_smart_mode.currentData()) if hasattr(self, 'cb_smart_mode') else 'plane_residual',
+            'smart_algorithm_version': 2,
+            'smart_mode': str(self.cb_smart_mode.currentData()) if hasattr(self, 'cb_smart_mode') else 'surface_following',
+            'sensitivity': (str(self.cb_smart_sensitivity.currentData())
+                            if hasattr(self, 'cb_smart_sensitivity') else 'standard'),
             'connectivity': connectivity,
             'xy_radius_mm': 0.0,
             'morph_dilate_iters': 0,
             'morph_erode_iters': 0,
         }
         matrix_rc = self._matrix_rc_for_current_data()
+        if len(finite_idx) >= 25000 and hasattr(self, '_run_background_task'):
+            snapshot_version = int(getattr(self, '_df_version', 0))
+            snapshot_pipeline = tuple(self.transform_pipeline)
+            finite_x = np.asarray(tx[finite_idx], dtype=float).copy()
+            finite_y = np.asarray(ty[finite_idx], dtype=float).copy()
+            finite_z = np.asarray(tz[finite_idx], dtype=float).copy()
+            finite_matrix = None
+            if matrix_rc is not None:
+                finite_matrix = (np.asarray(matrix_rc[0])[finite_idx].copy(),
+                                 np.asarray(matrix_rc[1])[finite_idx].copy())
+
+            def work(progress, cancel_event):
+                progress(5, '正在建立智能抓面拓扑')
+                topology = build_adaptive_topology(
+                    finite_x, finite_y, matrix_rc=finite_matrix,
+                    sensitivity=roi['sensitivity'], delaunay_limit=150000)
+                if cancel_event.is_set():
+                    raise TaskCancelled()
+                progress(55, f"正在按{topology['topology']}生长连续曲面")
+                local_keep = grow_surface_roi(
+                    finite_x, finite_y, finite_z, roi['seed_x'], roi['seed_y'],
+                    roi['z_tolerance_mm'], topology, mode=roi['smart_mode'],
+                    sensitivity=roi['sensitivity'])
+                if cancel_event.is_set():
+                    raise TaskCancelled()
+                progress(100, '智能抓面完成')
+                return {'local_keep': local_keep, 'topology': topology,
+                        'df_version': snapshot_version, 'pipeline': snapshot_pipeline}
+
+            def complete(result):
+                if (int(getattr(self, '_df_version', 0)) != result['df_version']
+                        or tuple(self.transform_pipeline) != result['pipeline']
+                        or self.df_raw is None or len(self.df_raw) != len(tx)):
+                    self._show_status('数据或姿态在抓面期间发生变化，本次结果已丢弃，请重新点击种子。', 8000)
+                    return
+                topology = result['topology']
+                roi['topology_label'] = topology['topology']
+                roi['topology_method'] = topology['method']
+                roi['topology_fallback_reason'] = topology.get('fallback_reason', '')
+                roi['local_spacing_mm'] = float(topology.get('local_spacing_mm', 0.0))
+                keep = np.zeros(len(tx), dtype=bool)
+                keep[finite_idx[np.asarray(result['local_keep'], dtype=bool)]] = True
+                self._complete_smart_face_roi(roi, keep & base_mask)
+
+            self._run_background_task('智能抓面', work, complete)
+            return
         keep = self._smart_face_keep_mask_for_arrays(
             tx, ty, tz, roi, matrix_rc=matrix_rc, update_radius=True) & base_mask
+        self._complete_smart_face_roi(roi, keep)
+
+    def _complete_smart_face_roi(self, roi, keep):
         count = int(np.sum(keep))
         if count < 3:
             self.statusBar().showMessage(
@@ -876,11 +994,14 @@ class ROIMixin:
             return
         roi['point_count_at_create'] = count
         self._add_roi_shape(roi, keep_roi_mode=True)
-        mode_text = "同平面残差" if roi.get('smart_mode') == 'plane_residual' else "连通抓取"
-        conn_text = "矩阵8邻域" if roi['connectivity'] == 'matrix8' else f"XY邻接r={roi.get('xy_radius_mm', 0):.4f}mm"
+        mode_text = "严格同平面" if roi.get('smart_mode') == 'plane_residual' else "连续曲面"
+        conn_text = roi.get('topology_label') or ("矩阵8邻域" if roi['connectivity'] == 'matrix8' else "自适应点云")
+        fallback_text = (f" | 回退原因: {roi['topology_fallback_reason']}"
+                         if roi.get('topology_fallback_reason') else '')
         self.statusBar().showMessage(
             f"已添加智能抓面 ROI: {count:,} 点 | 容差 {roi['z_tolerance_mm']:.4f} mm | "
-            f"{mode_text} | {conn_text}",
+            f"{mode_text} | {roi.get('sensitivity', 'standard')} | {conn_text} | "
+            f"局部点距 {roi.get('local_spacing_mm', 0.0):.5f} mm{fallback_text}",
             8000)
 
     def on_select(self, eclick, erelease, view_type):
@@ -963,3 +1084,28 @@ class ROIMixin:
         self.update_analysis()
         self.statusBar().showMessage(
             f"已记录第 {len(self.manual_delete_operations)} 次手动删除；{self._manual_deletion_summary()}", 8000)
+
+    def undo_manual_deletion(self):
+        """Undo only the most recently confirmed manual deletion operation."""
+        if self.df_raw is None or not self.manual_delete_operations:
+            self.statusBar().showMessage("当前没有可撤销的手动删点操作。", 4000)
+            return
+        removed = self.manual_delete_operations.pop()
+        replay_mask = np.ones(len(self.df_raw), dtype=bool)
+        replayed = []
+        for operation in self._clean_manual_delete_operations(self.manual_delete_operations):
+            selected = self._manual_delete_mask_for_operation(operation, replay_mask)
+            replay_mask &= ~selected
+            operation['selected_count'] = int(np.sum(selected))
+            replayed.append(operation)
+        self.manual_delete_operations = replayed
+        self.manual_mask = replay_mask
+        self.pending_delete_operation = None
+        if self.temp_selected_mask is None or len(self.temp_selected_mask) != len(self.df_raw):
+            self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
+        else:
+            self.temp_selected_mask.fill(False)
+        self.update_analysis()
+        self.statusBar().showMessage(
+            f"已撤销最近一次删点（原删除 {int(removed.get('selected_count', 0)):,} 点）；"
+            f"剩余 {len(self.manual_delete_operations)} 次删除记录。", 8000)

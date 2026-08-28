@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.4.0
+# Surface Rxy ZXY Analyzer V4.5.0
 
-面型及 Rxy 分析工具当前版本为 **V4.4.0**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
+面型及 Rxy 分析工具当前版本为 **V4.5.0**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.4.0.py`：V4.4.0 Python 启动入口。
-- `start_surface_analyzer_v4_4_0.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.5.0.py`：V4.5.0 Python 启动入口。
+- `start_surface_analyzer_v4_5_0.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,27 +14,38 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_4_0.bat
+start_surface_analyzer_v4_5_0.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_4_0.bat
+.\start_surface_analyzer_v4_5_0.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_4_0.bat --check
+.\start_surface_analyzer_v4_5_0.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.4.0.py
+python .\面型及Rxy分析工具V4.5.0.py
 python -m surface_analyzer
 ```
+
+## V4.5.0 重点
+
+- 普通 CSV/TXT/TSV/DAT/ASC/XYZ、单列分隔 Excel 和多列 Excel 共用新的表头状态机；支持空行、注释式表头、自定义设备字段和重复列名稳定改名。
+- X/Y/Z、Position、Coordinate、Height、Thickness 及 `µm/μm/um/mm/nm` 单位统一语义识别；UI 保留原始列名并允许用户修改自动映射。
+- 超大文件只有在 X/Y/Z 语义唯一时才执行空间网格采样；语义不确定会明确降级文件位置采样，不再静默使用前三列。
+- Precitec 按 `PointsPerLine × NumberOfLines` 和原始记录序号重建网格，坏行保留为空洞；自动识别蛇形扫描并校验行内连续性、行间分离和尺寸完整性。
+- 新版智能抓面默认“连续曲面抓取”，矩阵/Precitec 使用真实 8 邻域，普通点云优先 Delaunay、失败时回退自适应 kNN，可连续跟随 Bow/Warpage 并在孔洞、台阶和侧壁停止。
+- 智能抓面增加严格/标准/宽松三档；状态和报告记录实际拓扑、局部点距、抓取点数及回退原因。
+- Recipe 升级为 schema 5；旧智能 ROI 缺少算法版本时继续按 legacy 算法重放，不静默改变历史点数。
+- 新增“撤销删点”按钮，只撤销最近一次已确认的手动删除，不影响姿态变换、滤波或 ROI。
 
 ## V4.4.0 重点
 
@@ -95,6 +106,7 @@ python -m surface_analyzer
 
 ## 文档
 
+- [V4.5.0 表头与智能抓面 Demo](demo_data/V4.5.0_表头与智能抓面Demo说明.md)
 - [V4.4.0 Zygo / Precitec 设备格式 Demo](demo_data/V4.4.0_设备格式Demo说明.md)
 - [V4.0.2 接口文档](docs/V4.0.2_接口文档.md)
 - [V4.0.2 模块架构](docs/V4.0.2_架构说明.md)

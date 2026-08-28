@@ -8,6 +8,7 @@ import json
 import random
 import shlex
 import tempfile
+import unicodedata
 from collections import deque
 from pathlib import Path
 from datetime import datetime
@@ -205,6 +206,13 @@ class DataIOMixin:
             'bad_rows': 0,
             'z_source_field': '',
             'z_source_unit': '',
+            'header_source_line': None,
+            'header_confidence': 'generated',
+            'header_source': 'generated',
+            'header_auto_mapping': {},
+            'header_unit_hints': {},
+            'sampling_downgraded': False,
+            'sampling_downgrade_reason': '',
             'matrix_pitch_x_um': self.height_matrix_pitch_x_um,
             'matrix_pitch_y_um': self.height_matrix_pitch_y_um,
             'matrix_z_unit': self.height_matrix_z_unit,
@@ -236,12 +244,23 @@ class DataIOMixin:
             issue_text += f" | 缺测 {missing_points:,} 点"
         if bad_rows:
             issue_text += f" | 坏行 {bad_rows:,}"
+        header_confidence = str(info.get('header_confidence', '') or '')
+        header_line = info.get('header_source_line')
+        header_text = ''
+        if header_confidence:
+            confidence_label = {'semantic': '语义表头', 'candidate': '候选表头',
+                                'generated': '生成列名'}.get(header_confidence, header_confidence)
+            header_text = f" | {confidence_label}"
+            if header_line:
+                header_text += f"(第{int(header_line)}行)"
         text = (f"导入状态: {layout_text} | {strategy} | {sampled_text} | 文件 {file_size_mb:.1f} MB | "
-                f"读入 {int(import_rows):,} 行{valid_text}{issue_text} | 显示 {int(shown):,}/{int(display_limit):,} 点")
+                f"读入 {int(import_rows):,} 行{valid_text}{issue_text}{header_text} | 显示 {int(shown):,}/{int(display_limit):,} 点")
         if quality['estimated']:
             text += f" | 结果质量: {quality['label']}"
         if notes:
             text += f" | {notes}"
+        if info.get('sampling_downgraded'):
+            text += f" | 采样降级: {info.get('sampling_downgrade_reason', '列语义不确定')}"
         if hasattr(self, 'lbl_import_status'):
             self.lbl_import_status.setText(text)
         if hasattr(self, 'btn_bigfile_settings'):
@@ -560,13 +579,127 @@ class DataIOMixin:
         return sum(cls._is_float_token(t) for t in tokens) >= 3
 
     @staticmethod
-    def _looks_like_xyz_header(tokens):
-        cleaned = [re.sub(r'[^a-z0-9]+', '', str(token).strip().lower()) for token in tokens]
-        has_x = any(value == 'x' or value.startswith('xmm') or value.startswith('xum') for value in cleaned)
-        has_y = any(value == 'y' or value.startswith('ymm') or value.startswith('yum') for value in cleaned)
-        has_z = any(value == 'z' or value.startswith('zmm') or value.startswith('zum')
-                    or value.startswith('height') for value in cleaned)
-        return has_x and has_y and has_z
+    def _normalize_header_label(value):
+        """Normalize only for matching; the original label is kept for the UI."""
+        text = unicodedata.normalize('NFKC', str(value).replace('\ufeff', '').strip())
+        text = text.replace('µ', 'u').replace('μ', 'u').lower()
+        text = re.sub(r'[\[\](){}_/\\-]+', ' ', text)
+        return re.sub(r'\s+', ' ', text).strip()
+
+    @classmethod
+    def _header_axis_kind(cls, value):
+        normalized = cls._normalize_header_label(value)
+        compact = re.sub(r'[^a-z0-9\u4e00-\u9fff]+', '', normalized)
+        words = set(re.findall(r'[a-z]+|[\u4e00-\u9fff]+', normalized))
+
+        def axis_match(axis):
+            if compact in (axis, f'{axis}mm', f'{axis}um', f'{axis}nm'):
+                return True
+            if f'{axis}坐标' in compact or f'坐标{axis}' in compact:
+                return True
+            return axis in words and bool(words & {'pos', 'position', 'coordinate', 'coord'})
+
+        if axis_match('x'):
+            return 'x'
+        if axis_match('y'):
+            return 'y'
+        if axis_match('z'):
+            return 'z'
+        if any(term in compact for term in ('height', 'thickness', '厚度', '高度')):
+            return 'z'
+        return None
+
+    @classmethod
+    def _header_unit_hint(cls, value):
+        normalized = cls._normalize_header_label(value)
+        compact = re.sub(r'[^a-z0-9]+', '', normalized)
+        if re.search(r'(^|\W)nm($|\W)', normalized) or compact.endswith('nm'):
+            return 'nm'
+        if re.search(r'(^|\W)um($|\W)', normalized) or compact.endswith('um'):
+            return 'µm'
+        if re.search(r'(^|\W)mm($|\W)', normalized) or compact.endswith('mm'):
+            return 'mm'
+        return None
+
+    @classmethod
+    def _header_semantics(cls, tokens):
+        axis_candidates = {'x': [], 'y': [], 'z': []}
+        unit_hints = {}
+        for index, token in enumerate(tokens):
+            axis = cls._header_axis_kind(token)
+            if axis:
+                axis_candidates[axis].append(index)
+                unit = cls._header_unit_hint(token)
+                if unit:
+                    unit_hints[axis] = unit
+        mapping = {
+            axis: indices[0]
+            for axis, indices in axis_candidates.items()
+            if len(indices) == 1
+        }
+        unambiguous = len(mapping) == 3 and len(set(mapping.values())) == 3
+        return {
+            'mapping': mapping,
+            'unit_hints': unit_hints,
+            'unambiguous': unambiguous,
+            'axis_candidates': axis_candidates,
+        }
+
+    @classmethod
+    def _looks_like_xyz_header(cls, tokens):
+        return bool(cls._header_semantics(tokens)['unambiguous'])
+
+    @staticmethod
+    def _dedupe_header_tokens(tokens):
+        result = []
+        seen = {}
+        for index, token in enumerate(tokens, start=1):
+            base = str(token).replace('\ufeff', '').strip() or f'Col{index}'
+            key = base.casefold()
+            seen[key] = seen.get(key, 0) + 1
+            result.append(base if seen[key] == 1 else f'{base}_{seen[key]}')
+        return result
+
+    @classmethod
+    def _is_plausible_custom_header(cls, tokens, sep=None):
+        cleaned = [str(token).replace('\ufeff', '').strip() for token in tokens]
+        nonempty = [token for token in cleaned if token]
+        if len(cleaned) < 2 or len(nonempty) < 2:
+            return False
+        if len({token.casefold() for token in nonempty}) < 2:
+            return False
+        if sum(cls._is_float_token(token) for token in nonempty) >= max(1, len(nonempty) - 1):
+            return False
+        joined = ' '.join(nonempty)
+        assignment_marks = joined.count(':') + joined.count('=')
+        if assignment_marks >= max(2, int(np.ceil(len(cleaned) * 0.3))):
+            return False
+        if len(joined) > max(240, len(cleaned) * 60) or any(len(token) > 100 for token in nonempty):
+            return False
+        sentence_words = re.findall(r'[A-Za-z\u4e00-\u9fff]+', joined)
+        if len(cleaned) <= 3 and len(sentence_words) > 16:
+            return False
+        return True
+
+    @classmethod
+    def _header_candidate_info(cls, tokens, sep, expected_ncols=None):
+        original = [str(token).replace('\ufeff', '').strip() for token in tokens]
+        if expected_ncols is not None and len(original) != int(expected_ncols):
+            return None
+        semantics = cls._header_semantics(original)
+        if semantics['unambiguous']:
+            confidence = 'semantic'
+        elif cls._is_plausible_custom_header(original, sep):
+            confidence = 'candidate'
+        else:
+            return None
+        return {
+            'tokens': cls._dedupe_header_tokens(original),
+            'sep': sep,
+            'confidence': confidence,
+            'mapping': semantics['mapping'] if semantics['unambiguous'] else {},
+            'unit_hints': semantics['unit_hints'] if semantics['unambiguous'] else {},
+        }
 
     @classmethod
     def _token_to_float(cls, value):
@@ -585,7 +718,7 @@ class DataIOMixin:
         candidates = []
         run = None
         min_data_rows = 3
-        previous_non_numeric = None
+        header_candidate = None
 
         def finish_run(end_line_no=None):
             nonlocal run
@@ -624,9 +757,23 @@ class DataIOMixin:
                 if line_no >= max(0, int(start_line_no)) + max_scan_lines:
                     return best_candidate(run)
                 stripped = line.strip().lstrip('\ufeff')
-                if not stripped or stripped.startswith('#'):
+                if not stripped:
                     finish_run(line_no)
-                    previous_non_numeric = None
+                    continue
+                is_comment = stripped.startswith('#')
+                candidate_text = stripped[1:].strip() if is_comment else stripped
+                if is_comment and not candidate_text:
+                    finish_run(line_no)
+                    continue
+                if is_comment:
+                    candidate_sep = cls._detect_sep_from_line(candidate_text)
+                    candidate_tokens = cls._trim_trailing_empty_tokens(
+                        cls._split_text_line(candidate_text, candidate_sep))
+                    candidate = cls._header_candidate_info(candidate_tokens, candidate_sep)
+                    if candidate and candidate['confidence'] == 'semantic':
+                        candidate['line_no'] = line_no
+                        header_candidate = candidate
+                    finish_run(line_no)
                     continue
                 sep = cls._detect_sep_from_line(stripped)
                 tokens = cls._trim_trailing_empty_tokens(cls._split_text_line(stripped, sep))
@@ -641,39 +788,44 @@ class DataIOMixin:
                     )
                     if not same_run:
                         finish_run(line_no)
-                        header_tokens = None
-                        header_line_no = None
-                        header_sep = None
-                        if previous_non_numeric and previous_non_numeric['line_no'] == line_no - 1:
-                            prior = previous_non_numeric['tokens']
-                            if len(prior) == len(tokens) and cls._looks_like_xyz_header(prior):
-                                header_tokens = [str(t).replace('\ufeff', '').strip()
-                                                 for t in prior]
-                                header_line_no = previous_non_numeric['line_no']
-                                header_sep = previous_non_numeric['sep']
+                        chosen_header = None
+                        if (header_candidate and header_candidate['sep'] == sep
+                                and len(header_candidate['tokens']) == len(tokens)):
+                            chosen_header = header_candidate
                         run = {
                             'encoding': enc,
                             'sep': sep,
                             'ncols': len(tokens),
                             'data_line_no': line_no,
-                            'header_tokens': header_tokens,
+                            'header_tokens': (list(chosen_header['tokens'])
+                                              if chosen_header else None),
                             'first_numeric_line': stripped,
-                            'header_line_no': header_line_no,
-                            'header_sep': header_sep,
+                            'header_line_no': (chosen_header.get('line_no')
+                                               if chosen_header else None),
+                            'header_sep': (chosen_header.get('sep') if chosen_header else None),
+                            'header_confidence': (chosen_header.get('confidence')
+                                                  if chosen_header else 'generated'),
+                            'header_mapping': (dict(chosen_header.get('mapping', {}))
+                                               if chosen_header else {}),
+                            'header_unit_hints': (dict(chosen_header.get('unit_hints', {}))
+                                                  if chosen_header else {}),
                             'count': 1,
                             'last_line_no': line_no,
                         }
                     else:
                         run['count'] += 1
                         run['last_line_no'] = line_no
-                    previous_non_numeric = None
+                    header_candidate = None
                     # 宽矩阵读取单行成本很高；确认稳定后即可停止布局扫描。
                     if ((layout_mode == 'height_matrix' and run['ncols'] >= 8 and run['count'] >= 32)
                             or run['count'] >= 512):
                         return best_candidate(run)
                     continue
                 finish_run(line_no)
-                previous_non_numeric = {'tokens': tokens, 'line_no': line_no, 'sep': sep}
+                candidate = cls._header_candidate_info(tokens, sep)
+                if candidate:
+                    candidate['line_no'] = line_no
+                header_candidate = candidate
         finish_run(run['last_line_no'] + 1 if run is not None else None)
         return best_candidate()
 
@@ -722,20 +874,42 @@ class DataIOMixin:
         physical_col = candidate['physical_col']
         delimiter = candidate['delimiter']
         start = int(candidate['start'])
-        header_tokens = None
-        header_row = start - 1
-        if header_row >= 0:
-            header_value = raw.at[header_row, physical_col]
-            header_text = '' if pd.isna(header_value) else str(header_value).strip()
-            possible = self._trim_trailing_empty_tokens(self._split_text_line(header_text, delimiter))
-            if len(possible) == candidate['ncols'] and self._looks_like_xyz_header(possible):
-                header_tokens = [str(token).strip() or f'Col{i+1}' for i, token in enumerate(possible)]
-        if not header_tokens or len(set(header_tokens)) != len(header_tokens):
-            header_tokens = [f'Col{i+1}' for i in range(candidate['ncols'])]
+        header_info = None
+        header_row = None
+        for row_index in range(start):
+            value = raw.at[row_index, physical_col]
+            text = '' if pd.isna(value) else str(value).strip()
+            if not text:
+                continue
+            is_comment = text.startswith('#')
+            candidate_text = text[1:].strip() if is_comment else text
+            possible = self._trim_trailing_empty_tokens(
+                self._split_text_line(candidate_text, delimiter))
+            possible_info = self._header_candidate_info(
+                possible, delimiter, expected_ncols=candidate['ncols'])
+            if is_comment and possible_info and possible_info['confidence'] != 'semantic':
+                continue
+            if possible_info:
+                header_info = possible_info
+                header_row = row_index
+            elif not is_comment:
+                header_info = None
+                header_row = None
+        header_tokens = (list(header_info['tokens']) if header_info else
+                         [f'Col{i+1}' for i in range(candidate['ncols'])])
 
-        frame = pd.DataFrame(candidate['rows'], columns=header_tokens)
+        logical_rows = []
+        for row_index in range(start, len(raw)):
+            value = raw.at[row_index, physical_col]
+            text = '' if pd.isna(value) else str(value).strip()
+            if not text or text.startswith('#'):
+                continue
+            tokens = self._trim_trailing_empty_tokens(self._split_text_line(text, delimiter))
+            if len(tokens) == candidate['ncols']:
+                logical_rows.append(tokens)
+        frame = pd.DataFrame(logical_rows or candidate['rows'], columns=header_tokens)
         metadata = {}
-        metadata_end = header_row if header_tokens[0] != 'Col1' else start
+        metadata_end = header_row if header_row is not None else start
         for row_index in range(max(0, metadata_end)):
             value = raw.at[row_index, physical_col]
             text = '' if pd.isna(value) else str(value).strip()
@@ -747,6 +921,7 @@ class DataIOMixin:
         delimiter_label = {';': ';', '；': '；', '\t': 'Tab', '|': '|', ',': ','}[delimiter]
         self.import_info.update({
             'strategy': 'Excel单列分隔式XYZ读取',
+            'source_format': 'Excel单列分隔XYZ点表',
             'sampled': False,
             'sample_method_key': 'full',
             'extrema_preserved': True,
@@ -754,6 +929,11 @@ class DataIOMixin:
             'packed_single_column': True,
             'packed_delimiter': delimiter_label,
             'packed_physical_column': int(physical_col) + 1 if isinstance(physical_col, (int, np.integer)) else str(physical_col),
+            'header_source_line': (header_row + 1) if header_row is not None else None,
+            'header_confidence': header_info['confidence'] if header_info else 'generated',
+            'header_source': 'excel_single_column',
+            'header_auto_mapping': dict(header_info.get('mapping', {})) if header_info else {},
+            'header_unit_hints': dict(header_info.get('unit_hints', {})) if header_info else {},
             'metadata': metadata,
             'notes': f"单列拆分 {delimiter_label} | 跳过前置说明 {start} 行",
         })
@@ -1028,14 +1208,8 @@ class DataIOMixin:
             return False
         layout.update(prepared)
         header = [str(x).strip().lower() for x in (layout.get('header_tokens') or [])]
-        if header:
-            cleaned = {re.sub(r'[^a-z0-9]+', '', h) for h in header[:8]}
-            has_x = any(h == 'x' or h.startswith('xmm') or h.startswith('xum') for h in cleaned)
-            has_y = any(h == 'y' or h.startswith('ymm') or h.startswith('yum') for h in cleaned)
-            has_z = any(h == 'z' or h.startswith('zmm') or h.startswith('zum')
-                        or h.startswith('height') for h in cleaned)
-            if has_x and has_y and has_z:
-                return False
+        if header and self._header_semantics(header)['unambiguous']:
+            return False
 
         target_cols = int(layout['ncols'])
         raw_cols = int(layout.get('raw_ncols', target_cols))
@@ -1445,25 +1619,15 @@ class DataIOMixin:
         return df
 
     def _infer_xyz_column_indices(self, column_names, ncols):
-        """大文件空间采样发生在列映射 UI 之前，只能按列名/常规 XYZ 顺序推断。"""
+        """Return unambiguous semantic XYZ columns, never guess positional columns."""
         if ncols < 3:
-            raise ValueError("空间网格采样需要至少 3 列数值数据（X/Y/Z）。")
-        names = [str(c).strip().lower() for c in (column_names or [])]
-
-        def find_axis(axis, fallback):
-            candidates = []
-            for i, name in enumerate(names[:ncols]):
-                cleaned = re.sub(r'[^a-z0-9]+', '', name)
-                if cleaned == axis or cleaned.startswith(axis):
-                    candidates.append(i)
-            return candidates[0] if candidates else fallback
-
-        x_idx = find_axis('x', 0)
-        y_idx = find_axis('y', 1)
-        z_idx = find_axis('z', 2)
-        if len({x_idx, y_idx, z_idx}) < 3:
-            x_idx, y_idx, z_idx = 0, 1, 2
-        return x_idx, y_idx, z_idx
+            return None
+        names = list(column_names or [])[:ncols]
+        semantics = self._header_semantics(names)
+        if not semantics['unambiguous']:
+            return None
+        mapping = semantics['mapping']
+        return mapping['x'], mapping['y'], mapping['z']
 
     def _max_safe_grid_side(self, max_rows):
         # 每格最多保留：代表点 + Z最小点 + Z最大点。
@@ -1480,6 +1644,15 @@ class DataIOMixin:
             method = 'file_position'
         if method == 'file_position':
             return self._sample_large_text_by_position(path, enc, sep, ncols, column_names)
+        if self._infer_xyz_column_indices(column_names, ncols) is None:
+            reason = '表头无法唯一确定 X/Y/Z，已从空间网格采样降级为文件位置采样'
+            self.import_info['sampling_downgraded'] = True
+            self.import_info['sampling_downgrade_reason'] = reason
+            self._show_status(reason, 12000)
+            frame = self._sample_large_text_by_position(path, enc, sep, ncols, column_names)
+            self.import_info['notes'] = f"{self.import_info.get('notes', '')} | {reason}".strip(' |')
+            self.last_import_note += f"\n{reason}；未静默使用前三列。"
+            return frame
         return self._sample_large_text_by_spatial_grid(path, enc, sep, ncols, column_names)
 
     def _sample_large_text_by_stride(self, path, enc, sep, ncols, column_names=None):
@@ -1620,7 +1793,10 @@ class DataIOMixin:
         """
         file_size = Path(path).stat().st_size
         max_rows = self._large_text_import_limit()
-        x_idx, y_idx, z_idx = self._infer_xyz_column_indices(column_names, ncols)
+        inferred = self._infer_xyz_column_indices(column_names, ncols)
+        if inferred is None:
+            raise ValueError("空间网格采样需要能从表头唯一识别 X/Y/Z；当前列语义不明确。")
+        x_idx, y_idx, z_idx = inferred
         cols = column_names if column_names and len(column_names) == ncols else [f'Col{i+1}' for i in range(ncols)]
 
         x_min = y_min = z_min = np.inf
@@ -1998,6 +2174,109 @@ class DataIOMixin:
         self.last_import_note = '；'.join(note_parts) + ('。' + pitch_warning if pitch_warning else '')
         return frame
 
+    def _read_multi_column_excel(self, path, raw):
+        """Read Excel point tables with optional metadata, comments and blank rows."""
+        best = None
+        run = None
+        header_candidate = None
+
+        def finish_run():
+            nonlocal best, run
+            if run is not None and len(run['rows']) >= 3:
+                score = len(run['rows']) * run['ncols']
+                if best is None or score > best['score']:
+                    best = dict(run, score=score)
+            run = None
+
+        for row_index in range(len(raw)):
+            values = raw.iloc[row_index].tolist()
+            tokens = self._trim_trailing_empty_tokens(
+                ['' if pd.isna(value) else str(value).strip() for value in values])
+            if not tokens or not any(tokens):
+                finish_run()
+                continue
+            first = str(tokens[0]).strip()
+            is_comment = first.startswith('#')
+            if is_comment:
+                comment_tokens = list(tokens)
+                comment_tokens[0] = first[1:].strip()
+                possible = self._header_candidate_info(comment_tokens, 'excel')
+                if possible and possible['confidence'] == 'semantic':
+                    possible['line_no'] = row_index
+                    header_candidate = possible
+                finish_run()
+                continue
+            if self._looks_like_point_record_row(tokens):
+                same_run = run is not None and run['ncols'] == len(tokens) and row_index == run['end'] + 1
+                if not same_run:
+                    finish_run()
+                    selected_header = None
+                    if header_candidate and len(header_candidate['tokens']) == len(tokens):
+                        selected_header = dict(header_candidate)
+                    run = {
+                        'start': row_index,
+                        'end': row_index,
+                        'ncols': len(tokens),
+                        'rows': [tokens],
+                        'header': selected_header,
+                    }
+                else:
+                    run['rows'].append(tokens)
+                    run['end'] = row_index
+                header_candidate = None
+                continue
+            finish_run()
+            possible = self._header_candidate_info(tokens, 'excel')
+            if possible:
+                possible['line_no'] = row_index
+            header_candidate = possible
+        finish_run()
+
+        if best is None:
+            raise ValueError("Excel中未找到至少连续3行、每行至少含3个数值字段的XYZ点表数据区。")
+        header_info = best.get('header')
+        columns = (list(header_info['tokens']) if header_info else
+                   [f'Col{i+1}' for i in range(best['ncols'])])
+        table_rows = []
+        for row_index in range(best['start'], len(raw)):
+            values = raw.iloc[row_index].tolist()[:best['ncols']]
+            tokens = ['' if pd.isna(value) else str(value).strip() for value in values]
+            if not any(tokens):
+                continue
+            if len(tokens) < best['ncols']:
+                tokens.extend([''] * (best['ncols'] - len(tokens)))
+            table_rows.append(tokens)
+        frame = pd.DataFrame(table_rows or best['rows'], columns=columns)
+        header_row = header_info.get('line_no') if header_info else None
+        metadata = {}
+        for row_index in range(best['start']):
+            if header_row is not None and row_index == header_row:
+                continue
+            values = raw.iloc[row_index].tolist()
+            items = [str(value).strip() for value in values if not pd.isna(value) and str(value).strip()]
+            if items:
+                metadata[f'HeaderLine{row_index + 1}'] = ' | '.join(items)
+        self.import_info.update({
+            'strategy': 'Excel点表数据区读取',
+            'source_format': 'Excel XYZ点表',
+            'sampled': False,
+            'sample_method_key': 'full',
+            'extrema_preserved': True,
+            'import_rows': len(frame),
+            'header_source_line': (header_row + 1) if header_row is not None else None,
+            'header_confidence': header_info['confidence'] if header_info else 'generated',
+            'header_source': 'excel_multi_column',
+            'header_auto_mapping': dict(header_info.get('mapping', {})) if header_info else {},
+            'header_unit_hints': dict(header_info.get('unit_hints', {})) if header_info else {},
+            'metadata': metadata,
+            'preamble_rows_skipped': int(best['start']),
+            'notes': f"Excel数据区第 {best['start'] + 1} 行开始 | 表头 {header_info['confidence'] if header_info else 'generated'}",
+        })
+        self.last_import_note = (
+            f"Excel点表从第 {best['start'] + 1} 行开始；"
+            f"表头来源：{('第 ' + str(header_row + 1) + ' 行') if header_row is not None else '自动生成'}。")
+        return frame
+
     @staticmethod
     def _precitec_column_index(columns, expected):
         target = re.sub(r'\s+', ' ', expected.strip()).casefold()
@@ -2026,8 +2305,7 @@ class DataIOMixin:
                     break
         if not columns or header_line_no is None:
             raise ValueError("已识别 Precitec FSS 文件，但未找到 '#Encoder V;...' 字段行。")
-        if len(set(columns)) != len(columns):
-            raise ValueError("Precitec字段名存在重复，无法安全建立列映射。")
+        columns = self._dedupe_header_tokens(columns)
         x_idx = self._precitec_column_index(columns, 'X Pos [mm]')
         y_idx = self._precitec_column_index(columns, 'Y Pos [mm]')
         z_idx = self._precitec_column_index(columns, 'Thickness 1')
@@ -2041,6 +2319,7 @@ class DataIOMixin:
                            if points_per_line is not None and number_of_lines is not None else None)
 
         def iter_records():
+            record_index = 0
             with open(path, 'r', encoding=enc, errors='ignore') as handle:
                 for line_no, line in enumerate(handle, start=1):
                     if line_no <= header_line_no:
@@ -2048,20 +2327,22 @@ class DataIOMixin:
                     text = line.strip()
                     if not text or text.startswith('#'):
                         continue
+                    current_index = record_index
+                    record_index += 1
                     tokens = self._trim_trailing_empty_tokens(
                         [token.strip() for token in text.split(';')])
                     if len(tokens) != len(columns):
-                        yield line_no, None
+                        yield current_index, line_no, None
                         continue
                     try:
                         xyz = (float(tokens[x_idx]), float(tokens[y_idx]), float(tokens[z_idx]))
                     except ValueError:
-                        yield line_no, None
+                        yield current_index, line_no, None
                         continue
                     if not all(np.isfinite(value) for value in xyz):
-                        yield line_no, None
+                        yield current_index, line_no, None
                         continue
-                    yield line_no, tokens
+                    yield current_index, line_no, tokens
 
         auto_sample = bool(getattr(self, 'auto_sample_large_text', True))
         sampled = auto_sample and file_size >= self._large_text_threshold_bytes()
@@ -2071,16 +2352,39 @@ class DataIOMixin:
         rows = []
         valid_count = bad_count = source_rows = 0
         rng = random.Random(0)
+        topology_rows = {}
+
+        def observe_topology(record_index, tokens):
+            if points_per_line is None or points_per_line <= 0 or tokens is None:
+                return
+            row_no, raw_col = divmod(int(record_index), int(points_per_line))
+            state = topology_rows.setdefault(row_no, {
+                'first': None, 'last': None, 'sum_x': 0.0, 'sum_y': 0.0,
+                'count': 0, 'steps': [], 'previous': None,
+            })
+            x = float(tokens[x_idx]); y = float(tokens[y_idx])
+            point = (raw_col, x, y)
+            if state['first'] is None or raw_col < state['first'][0]:
+                state['first'] = point
+            if state['last'] is None or raw_col > state['last'][0]:
+                state['last'] = point
+            if state['previous'] is not None and raw_col == state['previous'][0] + 1:
+                step = float(np.hypot(x - state['previous'][1], y - state['previous'][2]))
+                if np.isfinite(step) and step > 0:
+                    state['steps'].append(step)
+            state['previous'] = point
+            state['sum_x'] += x; state['sum_y'] += y; state['count'] += 1
 
         if sampled and method == 'spatial_grid':
             x_min = y_min = np.inf
             x_max = y_max = -np.inf
-            for _, tokens in iter_records():
+            for record_index, _, tokens in iter_records():
                 source_rows += 1
                 if tokens is None:
                     bad_count += 1
                     continue
                 valid_count += 1
+                observe_topology(record_index, tokens)
                 x = float(tokens[x_idx]); y = float(tokens[y_idx])
                 x_min = min(x_min, x); x_max = max(x_max, x)
                 y_min = min(y_min, y); y_max = max(y_max, y)
@@ -2092,32 +2396,33 @@ class DataIOMixin:
                             max_safe_side)
             x_span = x_max - x_min; y_span = y_max - y_min
             cells = {}
-            for line_no, tokens in iter_records():
+            for record_index, line_no, tokens in iter_records():
                 if tokens is None: continue
                 x = float(tokens[x_idx]); y = float(tokens[y_idx]); z = float(tokens[z_idx])
                 ix = 0 if x_span <= 0 else min(max(int((x - x_min) / x_span * grid_side), 0), grid_side - 1)
                 iy = 0 if y_span <= 0 else min(max(int((y - y_min) / y_span * grid_side), 0), grid_side - 1)
                 key = iy * grid_side + ix
-                item = (line_no, tokens)
+                item = (record_index, line_no, tokens)
                 state = cells.get(key)
                 if state is None:
                     cells[key] = {'first': item, 'min': item, 'max': item}
                 else:
-                    if z < float(state['min'][1][z_idx]): state['min'] = item
-                    if z > float(state['max'][1][z_idx]): state['max'] = item
+                    if z < float(state['min'][2][z_idx]): state['min'] = item
+                    if z > float(state['max'][2][z_idx]): state['max'] = item
             for key in sorted(cells):
                 unique = {}
                 for item in (cells[key]['first'], cells[key]['min'], cells[key]['max']):
                     unique[item[0]] = item
                 rows.extend(unique.values())
         else:
-            for line_no, tokens in iter_records():
+            for record_index, line_no, tokens in iter_records():
                 source_rows += 1
                 if tokens is None:
                     bad_count += 1
                     continue
                 valid_count += 1
-                item = (line_no, tokens)
+                observe_topology(record_index, tokens)
+                item = (record_index, line_no, tokens)
                 if not sampled:
                     rows.append(item)
                 else:
@@ -2126,7 +2431,65 @@ class DataIOMixin:
         if valid_count < 3:
             raise ValueError("Precitec有效 X/Y/Thickness 记录少于3条。")
         rows.sort(key=lambda item: item[0])
-        frame = pd.DataFrame([item[1] for item in rows], columns=columns)
+        frame = pd.DataFrame([item[2] for item in rows], columns=columns)
+
+        topology_valid = False
+        topology_reason = ''
+        serpentine_rows = set()
+        local_steps = []
+        line_centers = []
+        reference_vector = None
+        if points_per_line and number_of_lines and topology_rows:
+            for row_no in sorted(topology_rows):
+                state = topology_rows[row_no]
+                first, last = state['first'], state['last']
+                if first is not None and last is not None and last[0] > first[0]:
+                    vector = np.array([last[1] - first[1], last[2] - first[2]], dtype=float)
+                    if np.linalg.norm(vector) > 0 and reference_vector is None:
+                        reference_vector = vector
+                    if reference_vector is not None and np.dot(vector, reference_vector) < 0:
+                        serpentine_rows.add(int(row_no))
+                local_steps.extend(state['steps'])
+                if state['count']:
+                    line_centers.append((row_no, state['sum_x'] / state['count'], state['sum_y'] / state['count']))
+            reasons = []
+            if source_rows != expected_points:
+                reasons.append('记录数与表头尺寸不一致')
+            if max(topology_rows) >= number_of_lines:
+                reasons.append('记录行号超出 NumberOfLines')
+            if reference_vector is None:
+                reasons.append('无法识别扫描线方向')
+            steps = np.asarray(local_steps, dtype=float)
+            if steps.size:
+                median_step = float(np.median(steps))
+                p95_step = float(np.percentile(steps, 95))
+                if median_step <= 0 or p95_step > median_step * 12.0:
+                    reasons.append('行内连续性异常')
+            else:
+                median_step = 0.0
+                reasons.append('缺少连续行内点')
+            if len(line_centers) >= 2:
+                centers = np.asarray([[item[1], item[2]] for item in line_centers], dtype=float)
+                center_steps = np.linalg.norm(np.diff(centers, axis=0), axis=1)
+                center_steps = center_steps[np.isfinite(center_steps) & (center_steps > 0)]
+                if center_steps.size == 0:
+                    reasons.append('扫描线之间没有物理分离')
+            else:
+                reasons.append('有效扫描线不足2条')
+            topology_valid = not reasons
+            topology_reason = '验证通过' if topology_valid else '；'.join(reasons)
+            matrix_rows = []
+            matrix_cols = []
+            for record_index, _, _ in rows:
+                row_no, raw_col = divmod(int(record_index), int(points_per_line))
+                col_no = points_per_line - 1 - raw_col if row_no in serpentine_rows else raw_col
+                matrix_rows.append(row_no)
+                matrix_cols.append(col_no)
+            frame['_matrix_row'] = matrix_rows
+            frame['_matrix_col'] = matrix_cols
+        else:
+            median_step = 0.0
+            topology_reason = '缺少 PointsPerLine/NumberOfLines，回退普通点云拓扑'
         incomplete = expected_points is not None and source_rows != expected_points
         completeness_warning = ''
         if incomplete:
@@ -2166,9 +2529,21 @@ class DataIOMixin:
             'z_source_field': columns[z_idx],
             'z_source_unit': 'µm',
             'sampling_pitch_source': '不适用（物理坐标列）',
+            'precitec_topology_valid': bool(topology_valid),
+            'precitec_topology_usable': bool(topology_valid and not sampled),
+            'precitec_topology_reason': topology_reason,
+            'precitec_serpentine_rows': len(serpentine_rows),
+            'precitec_local_spacing_mm': float(median_step),
+            'header_source_line': int(header_line_no),
+            'header_confidence': 'semantic',
+            'header_source': 'precitec',
+            'header_auto_mapping': {'x': x_idx, 'y': y_idx, 'z': z_idx},
+            'header_unit_hints': {'x': 'mm', 'y': 'mm', 'z': 'µm'},
             'metadata': metadata,
             'notes': ' | '.join(notes),
         })
+        notes.append(f"拓扑: {topology_reason}")
+        self.import_info['notes'] = ' | '.join(notes)
         self.last_import_note = '；'.join(notes)
         if completeness_warning:
             self.last_import_note += f"。完整性警告：{completeness_warning}。"
@@ -2230,16 +2605,7 @@ class DataIOMixin:
             if nonempty_excel.shape[1] == 1:
                 df = self._read_packed_single_column_excel(path, raw_excel)
             else:
-                df = pd.read_excel(path)
-                self.import_info.update({
-                    'strategy': 'Excel点表全量读取',
-                    'source_format': 'Excel XYZ点表',
-                    'sampled': False,
-                    'sample_method_key': 'full',
-                    'extrema_preserved': True,
-                    'import_rows': len(df),
-                    'notes': 'Excel不做预抽样'
-                })
+                df = self._read_multi_column_excel(path, raw_excel)
         elif suffix in self.TEXT_SUFFIXES or suffix == '':
             last_err = None
             df = None
@@ -2298,6 +2664,12 @@ class DataIOMixin:
                     })
                 self.import_info['metadata'] = text_metadata
                 self.import_info['preamble_rows_skipped'] = int(layout['data_line_no'])
+                self.import_info['header_source_line'] = (
+                    int(layout['header_line_no']) + 1 if layout.get('header_line_no') is not None else None)
+                self.import_info['header_confidence'] = layout.get('header_confidence', 'generated')
+                self.import_info['header_source'] = 'text'
+                self.import_info['header_auto_mapping'] = dict(layout.get('header_mapping', {}))
+                self.import_info['header_unit_hints'] = dict(layout.get('header_unit_hints', {}))
                 if text_metadata:
                     self.import_info['notes'] += f" | 前置参数 {len(text_metadata)} 项"
             else:
@@ -2340,7 +2712,8 @@ class DataIOMixin:
                              f"支持: {', '.join(self.TEXT_SUFFIXES + self.EXCEL_SUFFIXES)}")
 
         # 清理列名: 去 BOM、去首尾空白
-        df.columns = [str(c).replace('\ufeff', '').strip() for c in df.columns]
+        df.columns = self._dedupe_header_tokens(
+            [str(c).replace('\ufeff', '').strip() for c in df.columns])
 
         # 如果列名仍像数字，说明第一行可能是数据；统一改为 Col1..ColN
         def _is_num(s):
@@ -2380,11 +2753,6 @@ class DataIOMixin:
             for cb in [self.cb_x_col, self.cb_y_col, self.cb_z_col]:
                 cb.blockSignals(True); cb.clear(); cb.addItems(cols); cb.blockSignals(False)
 
-            def guess_index(tc, di):
-                for i, col in enumerate(cols):
-                    if tc.lower() in col.lower(): return i
-                return di if di < len(cols) else 0
-
             if (self.import_info.get('height_matrix') or
                     self.import_info.get('source_format') == 'Zygo XYZ Data File - Format 1') \
                     and all(c in cols for c in ('X', 'Y', 'Z')):
@@ -2410,9 +2778,26 @@ class DataIOMixin:
                 self.cb_y_col.setCurrentIndex(1)
                 self.cb_z_col.setCurrentIndex(2)
             else:
-                self.cb_x_col.setCurrentIndex(guess_index('x', 1))
-                self.cb_y_col.setCurrentIndex(guess_index('y', 2))
-                self.cb_z_col.setCurrentIndex(guess_index('z', 0))
+                semantic = self._header_semantics(cols)
+                if semantic['unambiguous']:
+                    mapping = semantic['mapping']
+                    self.cb_x_col.setCurrentIndex(mapping['x'])
+                    self.cb_y_col.setCurrentIndex(mapping['y'])
+                    self.cb_z_col.setCurrentIndex(mapping['z'])
+                    units = semantic.get('unit_hints', {})
+                    if units.get('x'): self.cb_x_unit.setCurrentText(units['x'])
+                    if units.get('y'): self.cb_y_unit.setCurrentText(units['y'])
+                    if units.get('z'): self.cb_z_unit.setCurrentText(units['z'])
+                else:
+                    # 自定义表头保留真实名称，但不臆测语义；仅给出稳定的初始选择供用户修改。
+                    self.cb_x_col.setCurrentIndex(0)
+                    self.cb_y_col.setCurrentIndex(1 if len(cols) > 1 else 0)
+                    self.cb_z_col.setCurrentIndex(2 if len(cols) > 2 else 0)
+            self.import_info['auto_mapping_result'] = {
+                'x': self.cb_x_col.currentText(),
+                'y': self.cb_y_col.currentText(),
+                'z': self.cb_z_col.currentText(),
+            }
             if self.pending_recipe is not None:
                 units = self.pending_recipe.get('units', {}) or {}
                 self._safe_set_combo_text(self.cb_x_unit, units.get('x_unit'))

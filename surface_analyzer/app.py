@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.4.0."""
+"""Qt application shell for Surface Analyzer V4.5.0."""
 
 import sys
 import os
@@ -447,8 +447,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         for button in (self.btn_win_min, self.btn_win_max, self.btn_win_close):
             button.setVisible(not self.use_system_frame)
         self._task_controls = [
-            self.btn_open, self.btn_batch, self.btn_apply_map, self.btn_save,
+            self.btn_open, self.btn_reset_all, self.btn_batch, self.btn_apply_map, self.btn_save,
             self.btn_calc_gap, self.btn_calc_parallel, self.btn_import_recipe, self.btn_export_recipe,
+            self.btn_roi_mouse, self.btn_del, self.btn_undo_del,
         ]
 
     def _toggle_max_restore(self):
@@ -994,6 +995,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.spin_roi_w = NoWheelDoubleSpinBox(); self.spin_roi_h = NoWheelDoubleSpinBox()
         self.spin_roi_r = NoWheelDoubleSpinBox()
         self.cb_smart_mode = NoWheelComboBox()
+        self.cb_smart_sensitivity = NoWheelComboBox()
         self.spin_smart_tol = NoWheelDoubleSpinBox()
         self.spin_smart_dilate = NoWheelSpinBox()
         self.spin_smart_erode = NoWheelSpinBox()
@@ -1006,9 +1008,16 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.spin_smart_tol.setSingleStep(0.01)
         self.spin_smart_tol.setValue(0.02)
         self.spin_smart_tol.setToolTip("智能抓面容差，单位 mm。导入文件后会按当前 Z 分布给出推荐值。")
-        self.cb_smart_mode.addItem("同平面抓取", "plane_residual")
-        self.cb_smart_mode.addItem("连通抓取", "connected")
-        self.cb_smart_mode.setToolTip("同平面抓取按种子附近局部平面残差筛选，不做补洞；连通抓取按 XY 邻接和高度连续扩展。")
+        self.cb_smart_mode.addItem("连续曲面抓取", "surface_following")
+        self.cb_smart_mode.addItem("严格同平面抓取", "plane_residual")
+        self.cb_smart_mode.setToolTip(
+            "连续曲面抓取会跟随正常Bow/Warpage，并在台阶、侧壁、孔洞和突变处停止。\n"
+            "严格同平面抓取使用种子附近的固定局部平面。")
+        self.cb_smart_sensitivity.addItem("严格", "strict")
+        self.cb_smart_sensitivity.addItem("标准", "standard")
+        self.cb_smart_sensitivity.addItem("宽松", "loose")
+        self.cb_smart_sensitivity.setCurrentIndex(1)
+        self.cb_smart_sensitivity.setToolTip("控制连续曲面允许的局部残差、法向变化和邻接边长度；默认标准。")
         for sp in (self.spin_smart_dilate, self.spin_smart_erode):
             sp.setRange(0, 20)
             sp.setValue(0)
@@ -1023,6 +1032,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.lbl_roi_h = QLabel("高度:")
         self.lbl_roi_r = QLabel("半径:")
         self.lbl_smart_mode = QLabel("抓面模式:")
+        self.lbl_smart_sensitivity = QLabel("灵敏度:")
         self.lbl_smart_tol = QLabel("抓面容差:")
         self.lbl_smart_dilate = QLabel("抓面膨胀:")
         self.lbl_smart_erode = QLabel("抓面收缩:")
@@ -1031,18 +1041,19 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.lbl_smart_dilate.setVisible(False)
         self.lbl_smart_erode.setVisible(False)
         for lab in (self.lbl_roi_cx, self.lbl_roi_cy, self.lbl_roi_w, self.lbl_roi_h, self.lbl_roi_r,
-                    self.lbl_smart_mode, self.lbl_smart_tol):
+                    self.lbl_smart_mode, self.lbl_smart_sensitivity, self.lbl_smart_tol):
             lab.setFixedWidth(58)
         adv.addWidget(self.lbl_roi_w, 2, 0); adv.addWidget(self.spin_roi_w, 2, 1)
         adv.addWidget(self.lbl_roi_h, 3, 0); adv.addWidget(self.spin_roi_h, 3, 1)
         adv.addWidget(self.lbl_roi_r, 4, 0); adv.addWidget(self.spin_roi_r, 4, 1)
         adv.addWidget(self.lbl_smart_mode, 5, 0); adv.addWidget(self.cb_smart_mode, 5, 1)
-        adv.addWidget(self.lbl_smart_tol, 6, 0); adv.addWidget(self.spin_smart_tol, 6, 1)
-        adv.addWidget(self.lbl_smart_tol_hint, 7, 0, 1, 2)
+        adv.addWidget(self.lbl_smart_sensitivity, 6, 0); adv.addWidget(self.cb_smart_sensitivity, 6, 1)
+        adv.addWidget(self.lbl_smart_tol, 7, 0); adv.addWidget(self.spin_smart_tol, 7, 1)
+        adv.addWidget(self.lbl_smart_tol_hint, 8, 0, 1, 2)
         self.btn_roi_add_input = QPushButton("添加输入ROI")
         self.btn_roi_add_input.setObjectName("accentSoftBtn")
         self.btn_roi_add_input.clicked.connect(self.add_roi_from_inputs)
-        adv.addWidget(self.btn_roi_add_input, 8, 0, 1, 2)
+        adv.addWidget(self.btn_roi_add_input, 9, 0, 1, 2)
         rg.addWidget(self.roi_advanced_widget, 7, 0, 1, 2)
         ll.addWidget(roi_group)
         self._sync_roi_input_state()
@@ -1071,7 +1082,14 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.btn_del.setFixedHeight(36)
         self.btn_del.setFixedWidth(132)
         self.btn_del.clicked.connect(self.apply_manual_deletion)
+        self.btn_undo_del = QPushButton("撤销删点")
+        self.btn_undo_del.setObjectName("secondaryBtn")
+        self.btn_undo_del.setFixedHeight(36)
+        self.btn_undo_del.setFixedWidth(88)
+        self.btn_undo_del.setToolTip("撤销最近一次已确认的手动框选删除；不会撤销姿态变换、滤波或ROI。")
+        self.btn_undo_del.clicked.connect(self.undo_manual_deletion)
         action_row.addWidget(self.btn_save)
+        action_row.addWidget(self.btn_undo_del)
         action_row.addWidget(self.btn_del)
         ll.addLayout(action_row)
 
