@@ -64,6 +64,17 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+# Qt 6 on Windows uses the operating system ICU. The Codex/Poppler runtime can
+# leak an unrelated ICU build into PATH while packaging; PyInstaller would then
+# collect it next to the application and shadow the compatible system DLLs.
+a.binaries = type(a.binaries)(
+    entry for entry in a.binaries
+    if not (
+        Path(entry[0]).name.lower() in {"icuuc.dll", "icuin.dll"}
+        or Path(entry[0]).name.lower().startswith("icudt")
+    )
+)
 pyz = PYZ(a.pure)
 
 exe = EXE(
