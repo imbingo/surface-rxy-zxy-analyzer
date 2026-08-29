@@ -249,6 +249,69 @@ def _robust_local_plane(x, y, z, indices):
     return np.array([a, b, c], dtype=float), normal
 
 
+def grow_surface_roi_v2(x, y, z, seed_x, seed_y, tolerance_mm, topology,
+                        mode='surface_following', sensitivity='standard'):
+    """Exact V4.5.0 Smart ROI V2 implementation for historical Recipe replay."""
+    x = np.asarray(x, dtype=float); y = np.asarray(y, dtype=float); z = np.asarray(z, dtype=float)
+    adjacency = topology['adjacency']
+    if len(x) == 0:
+        return np.zeros(0, dtype=bool)
+    seed = int(np.argmin((x - float(seed_x)) ** 2 + (y - float(seed_y)) ** 2))
+    config = SENSITIVITY.get(str(sensitivity), SENSITIVITY['standard'])
+    tolerance = max(float(tolerance_mm), 1e-12) * float(config['residual_factor'])
+    seed_neighborhood = _graph_neighborhood(adjacency, seed, target=36, max_depth=5)
+    seed_plane, seed_normal = _robust_local_plane(x, y, z, seed_neighborhood)
+    if seed_plane is None:
+        result = np.zeros(len(x), dtype=bool); result[seed] = True
+        return result
+    if str(mode) == 'plane_residual':
+        residual = np.abs(z - (seed_plane[0] * x + seed_plane[1] * y + seed_plane[2]))
+        candidate = np.isfinite(residual) & (residual <= tolerance)
+        visited = np.zeros(len(x), dtype=bool); visited[seed] = True
+        queue = deque([seed])
+        while queue:
+            current = queue.popleft()
+            for neighbor in adjacency[current]:
+                neighbor = int(neighbor)
+                if not visited[neighbor] and candidate[neighbor]:
+                    visited[neighbor] = True; queue.append(neighbor)
+        return visited
+    normal_limit = np.deg2rad(float(config['normal_deg']))
+    plane_cache = {seed: (seed_plane, seed_normal)}
+
+    def local_plane(index):
+        value = plane_cache.get(index)
+        if value is None:
+            neighborhood = _graph_neighborhood(adjacency, index, target=24, max_depth=4)
+            value = _robust_local_plane(x, y, z, neighborhood)
+            plane_cache[index] = value
+        return value
+
+    visited = np.zeros(len(x), dtype=bool); visited[seed] = True
+    queue = deque([seed])
+    while queue:
+        current = queue.popleft()
+        current_plane, current_normal = local_plane(current)
+        if current_plane is None:
+            continue
+        for neighbor in adjacency[current]:
+            neighbor = int(neighbor)
+            if visited[neighbor]:
+                continue
+            predicted = (current_plane[0] * x[neighbor] + current_plane[1] * y[neighbor]
+                         + current_plane[2])
+            if abs(float(z[neighbor] - predicted)) > tolerance:
+                continue
+            neighbor_plane, neighbor_normal = local_plane(neighbor)
+            if neighbor_plane is None:
+                continue
+            cosine = float(np.clip(np.dot(current_normal, neighbor_normal), -1.0, 1.0))
+            if np.arccos(cosine) > normal_limit:
+                continue
+            visited[neighbor] = True; queue.append(neighbor)
+    return visited
+
+
 def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
                      mode='surface_following', sensitivity='standard',
                      candidate_mask=None, progress=None, cancel_event=None, stats=None,

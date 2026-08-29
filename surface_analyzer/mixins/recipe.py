@@ -36,7 +36,7 @@ class RecipeMixin:
         """导出当前界面参数，不包含测量数据本身。"""
         return {
             'recipe_type': 'SurfaceRxyZxyAnalyzerRecipe',
-            'schema_version': 5,
+            'schema_version': 6,
             'app_version': self.APP_VERSION,
             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'column_mapping': {
@@ -225,7 +225,7 @@ class RecipeMixin:
         self._invalidate_effective_roi_mask_cache()
         legacy_smart_count = sum(
             1 for shape in self.roi_shapes
-            if shape.get('type') == 'smart_face' and int(shape.get('smart_algorithm_version', 1)) == 1)
+            if shape.get('type') == 'smart_face' and int(shape.get('smart_algorithm_version', 1)) < 3)
         if hasattr(self, 'chk_roi_enable'):
             self.chk_roi_enable.blockSignals(True)
             self.chk_roi_enable.setChecked(self.roi_enabled)
@@ -251,6 +251,6 @@ class RecipeMixin:
             msg += " 手动删除操作因校验未通过而未重放。"
         if legacy_smart_count:
             msg += (f" 含 {legacy_smart_count} 个旧版智能ROI，已按 legacy 算法重放以保持历史点数；"
-                    "删除后重新抓面才会使用V2连续曲面算法。")
+                    "删除后重新抓面才会使用V3粗到细连续曲面算法。")
         self.statusBar().showMessage(msg, 8000)
         QMessageBox.information(self, "Recipe导入完成", msg)

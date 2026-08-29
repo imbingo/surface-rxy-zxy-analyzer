@@ -118,7 +118,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.roi_enabled = False           # V3.8.4+: XY ROI 保留区域开关
         self.roi_shapes = []               # list[dict]，当前物料坐标系 X/Y(mm)
         self.roi_next_id = 1
-        self.selection_mode = 'delete'     # delete / roi_rect / roi_circle / roi_smart
+        self.selection_mode = 'delete'     # delete / roi_rect / roi_circle / roi_smart / roi_smart_gate
+        self._pending_smart_gates = {}
         self.last_roi_keep_count = None
         self.import_info = {               # 导入状态：用于UI与导出元数据
             'file_size_bytes': 0,
@@ -1060,10 +1061,22 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         adv.addWidget(self.lbl_smart_sensitivity, 6, 0); adv.addWidget(self.cb_smart_sensitivity, 6, 1)
         adv.addWidget(self.lbl_smart_tol, 7, 0); adv.addWidget(self.spin_smart_tol, 7, 1)
         adv.addWidget(self.lbl_smart_tol_hint, 8, 0, 1, 2)
+        smart_gate_row = QHBoxLayout()
+        self.btn_smart_gate = QPushButton("框定候选范围")
+        self.btn_smart_gate.setCheckable(True)
+        self.btn_smart_gate.setObjectName("secondaryBtn")
+        self.btn_smart_gate.setToolTip("可在XY/XZ/YZ视图拖框；多个视图范围取交集，再点击种子抓面。")
+        self.btn_smart_gate.toggled.connect(self.toggle_smart_gate_mode)
+        self.btn_clear_smart_gates = QPushButton("清除范围")
+        self.btn_clear_smart_gates.setObjectName("secondaryBtn")
+        self.btn_clear_smart_gates.clicked.connect(self.clear_pending_smart_gates)
+        smart_gate_row.addWidget(self.btn_smart_gate)
+        smart_gate_row.addWidget(self.btn_clear_smart_gates)
+        adv.addLayout(smart_gate_row, 9, 0, 1, 2)
         self.btn_roi_add_input = QPushButton("添加输入ROI")
         self.btn_roi_add_input.setObjectName("accentSoftBtn")
         self.btn_roi_add_input.clicked.connect(self.add_roi_from_inputs)
-        adv.addWidget(self.btn_roi_add_input, 9, 0, 1, 2)
+        adv.addWidget(self.btn_roi_add_input, 10, 0, 1, 2)
         rg.addWidget(self.roi_advanced_widget, 7, 0, 1, 2)
         ll.addWidget(roi_group)
         self._sync_roi_input_state()
@@ -1827,10 +1840,13 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.canvas.ax_xy.scatter(xy_x, xy_y, c=xy_z, **sc_params, zorder=2)
         set_xy_equal_aspect(self.canvas.ax_xy)
         self._draw_roi_overlays(self.canvas.ax_xy)
+        self._draw_smart_gate_overlays(self.canvas.ax_xy, 'XY')
         if len(detail_x) > 0:
             self.canvas.ax3d.scatter(detail_x, detail_y, detail_z, c=detail_z, **sc_params)
             self.canvas.ax_xz.scatter(detail_x, detail_z, c=detail_z, **sc_params)
             self.canvas.ax_yz.scatter(detail_y, detail_z, c=detail_z, **sc_params)
+        self._draw_smart_gate_overlays(self.canvas.ax_xz, 'XZ')
+        self._draw_smart_gate_overlays(self.canvas.ax_yz, 'YZ')
 
         if roi_x is not None and len(roi_x) > 0:
             roi_params = {

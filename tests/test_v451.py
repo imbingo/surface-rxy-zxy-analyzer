@@ -17,7 +17,7 @@ from surface_analyzer.app import SurfaceAnalyzerPro
 from surface_analyzer.mixins.analysis import AnalysisMixin
 import surface_analyzer.mixins.roi as roi_module
 import surface_analyzer.smart_roi as smart_module
-from surface_analyzer.smart_roi import build_adaptive_topology, grow_surface_roi
+from surface_analyzer.smart_roi import build_adaptive_topology, grow_surface_roi, grow_surface_roi_v2
 
 
 def _grow_v450_reference(x, y, z, seed_x, seed_y, tolerance_mm, topology,
@@ -93,7 +93,7 @@ class V451CacheTests(unittest.TestCase):
             'type': 'smart_face',
             'seed_x': float(tx[seed]), 'seed_y': float(ty[seed]), 'seed_z': float(tz[seed]),
             'z_tolerance_mm': 0.01,
-            'smart_algorithm_version': 2,
+            'smart_algorithm_version': 3,
             'smart_mode': 'surface_following',
             'sensitivity': 'standard',
             'connectivity': 'auto_xy',
@@ -191,6 +191,20 @@ class V451CacheTests(unittest.TestCase):
         self.assertGreater(stats['fast_accept'], int(len(x1) * 0.8))
         self.assertLess(stats['local_plane_fits'], old_fits * 0.35)
 
+    def test_v2_recipe_algorithm_replays_v450_mask_exactly(self):
+        rows, cols = 36, 48
+        yy, xx = np.mgrid[0:rows, 0:cols]
+        x = xx.ravel() * 0.05
+        y = yy.ravel() * 0.06
+        z = 1.0 + 0.001 * (x - 1.0) ** 2 + 0.0012 * (y - 0.8) ** 2
+        topology = build_adaptive_topology(
+            x, y, matrix_rc=(yy.ravel(), xx.ravel()), sensitivity='standard')
+        expected, _ = _grow_v450_reference(
+            x, y, z, x[10 * cols + 8], y[10 * cols + 8], 0.008, topology)
+        replayed = grow_surface_roi_v2(
+            x, y, z, x[10 * cols + 8], y[10 * cols + 8], 0.008, topology)
+        self.assertTrue(np.array_equal(replayed, expected))
+
     def test_coarse_to_fine_follows_bow_but_stops_step_and_candidate_hole(self):
         rows, cols = 60, 90
         yy, xx = np.mgrid[0:rows, 0:cols]
@@ -287,6 +301,23 @@ class V451CacheTests(unittest.TestCase):
         with patch.object(window, '_run_background_task', return_value=True) as background:
             window.add_smart_face_roi_from_seed(0.5, 0.5)
         background.assert_called_once()
+        window.close()
+
+    def test_smart_candidate_gates_intersect_across_views(self):
+        window = SurfaceAnalyzerPro()
+        x = np.array([0.0, 1.0, 2.0, 1.0])
+        y = np.array([0.0, 1.0, 1.0, 2.0])
+        z = np.array([1.00, 1.01, 1.02, 1.03])
+        roi = {
+            'optional_xy_gate': {
+                'bounds': {'x_min': 0.5, 'x_max': 1.5, 'y_min': 0.5, 'y_max': 2.5},
+                'display_mode': 'raw_z_mm'},
+            'optional_xz_gate': {
+                'bounds': {'x_min': 0.5, 'x_max': 1.5, 'y_min': 1.005, 'y_max': 1.025},
+                'display_mode': 'raw_z_mm'},
+        }
+        keep = window._smart_candidate_gate_mask(x, y, z, roi)
+        self.assertTrue(np.array_equal(keep, np.array([False, True, False, False])))
         window.close()
 
 

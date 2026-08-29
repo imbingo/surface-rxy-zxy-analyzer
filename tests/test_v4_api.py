@@ -442,7 +442,7 @@ class V4ApiTests(unittest.TestCase):
             recipe = source._current_recipe_dict()
             json.dumps(recipe, ensure_ascii=False)
             expected_mask = source.manual_mask.copy()
-            self.assertEqual(recipe["schema_version"], 5)
+            self.assertEqual(recipe["schema_version"], 6)
             self.assertEqual(len(recipe["manual_deletion"]["operations"]), 3)
             self.assertEqual(len(recipe["manual_deletion"]["source_sha256"]), 64)
             self.assertTrue(all(op["transform_pipeline"] == ["CW90"]

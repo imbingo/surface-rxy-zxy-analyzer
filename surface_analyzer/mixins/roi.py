@@ -30,7 +30,7 @@ from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
 from ..polynomial import evaluate_polynomial_surface
-from ..smart_roi import build_adaptive_topology, grow_surface_roi
+from ..smart_roi import build_adaptive_topology, grow_surface_roi, grow_surface_roi_v2
 from ..workers import TaskCancelled
 
 
@@ -285,6 +285,26 @@ class ROIMixin:
                         'topology_fallback_reason': str(raw.get('topology_fallback_reason', '')),
                         'local_spacing_mm': max(float(raw.get('local_spacing_mm', 0.0) or 0.0), 0.0),
                     })
+                    for gate_key in ('optional_xy_gate', 'optional_xz_gate', 'optional_yz_gate'):
+                        gate = raw.get(gate_key)
+                        if not isinstance(gate, dict):
+                            continue
+                        bounds = gate.get('bounds', {}) or {}
+                        try:
+                            vals = [float(bounds[k]) for k in ('x_min', 'x_max', 'y_min', 'y_max')]
+                        except (KeyError, TypeError, ValueError):
+                            continue
+                        if not np.isfinite(vals).all():
+                            continue
+                        cleaned_gate = {
+                            'view': str(gate.get('view', gate_key[9:11])).upper(),
+                            'bounds': {'x_min': min(vals[0], vals[1]), 'x_max': max(vals[0], vals[1]),
+                                       'y_min': min(vals[2], vals[3]), 'y_max': max(vals[2], vals[3])},
+                            'display_mode': str(gate.get('display_mode', 'raw_z_mm')),
+                            'display_plane_coeffs': gate.get('display_plane_coeffs'),
+                            'display_polynomial_model': gate.get('display_polynomial_model'),
+                        }
+                        roi[gate_key] = cleaned_gate
                     if roi['smart_algorithm_version'] >= 2:
                         if roi['smart_mode'] not in ('surface_following', 'plane_residual'):
                             roi['smart_mode'] = 'surface_following'
@@ -531,18 +551,29 @@ class ROIMixin:
                     x, y, z, matrix_rc, sensitivity)
                 topology = topology_entry['topology']
                 finite_idx = topology_entry['finite_idx']
+                algorithm_version = int(roi.get('smart_algorithm_version', 2) or 2)
+                candidate = self._smart_candidate_gate_mask(x, y, z, roi)[finite_idx]
                 grow_started = time.perf_counter()
                 growth_stats = {}
                 seed_index = int(roi.get('seed_index', -1) or -1)
                 seed_matches = np.flatnonzero(finite_idx == seed_index)
                 local_seed_index = int(seed_matches[0]) if len(seed_matches) else None
-                local_keep = grow_surface_roi(
-                    x[finite_idx], y[finite_idx], z[finite_idx],
-                    roi.get('seed_x', 0.0), roi.get('seed_y', 0.0),
-                    roi.get('z_tolerance_mm', 0.02), topology,
-                    mode=str(roi.get('smart_mode', 'surface_following')),
-                    sensitivity=sensitivity, stats=growth_stats,
-                    seed_index=local_seed_index)
+                if algorithm_version == 2:
+                    local_keep = grow_surface_roi_v2(
+                        x[finite_idx], y[finite_idx], z[finite_idx],
+                        roi.get('seed_x', 0.0), roi.get('seed_y', 0.0),
+                        roi.get('z_tolerance_mm', 0.02), topology,
+                        mode=str(roi.get('smart_mode', 'surface_following')),
+                        sensitivity=sensitivity)
+                    growth_stats['algorithm'] = 'v2_legacy_replay'
+                else:
+                    local_keep = grow_surface_roi(
+                        x[finite_idx], y[finite_idx], z[finite_idx],
+                        roi.get('seed_x', 0.0), roi.get('seed_y', 0.0),
+                        roi.get('z_tolerance_mm', 0.02), topology,
+                        mode=str(roi.get('smart_mode', 'surface_following')),
+                        sensitivity=sensitivity, candidate_mask=candidate, stats=growth_stats,
+                        seed_index=local_seed_index)
                 roi['topology_label'] = topology['topology']
                 roi['topology_method'] = topology['method']
                 roi['topology_fallback_reason'] = topology.get('fallback_reason', '')
@@ -581,6 +612,37 @@ class ROIMixin:
                 pass
         return self._smart_face_keep_mask_auto_xy(x, y, z, roi, update_radius=update_radius)
 
+    @staticmethod
+    def _gate_plot_z(x, y, z, gate):
+        model = gate.get('display_polynomial_model')
+        if isinstance(model, dict):
+            return (z - evaluate_polynomial_surface(model, x, y)) * 1000.0
+        coeffs = gate.get('display_plane_coeffs')
+        if gate.get('display_mode') == 'detrended_um' and coeffs is not None and len(coeffs) == 3:
+            return (z - (float(coeffs[0]) * x + float(coeffs[1]) * y + float(coeffs[2]))) * 1000.0
+        return z
+
+    def _smart_candidate_gate_mask(self, x, y, z, roi):
+        keep = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+        for key, view in (('optional_xy_gate', 'XY'), ('optional_xz_gate', 'XZ'),
+                          ('optional_yz_gate', 'YZ')):
+            gate = roi.get(key)
+            if not isinstance(gate, dict):
+                continue
+            b = gate.get('bounds', {})
+            plot_z = self._gate_plot_z(x, y, z, gate)
+            if view == 'XY':
+                inside = ((x >= b['x_min']) & (x <= b['x_max']) &
+                          (y >= b['y_min']) & (y <= b['y_max']))
+            elif view == 'XZ':
+                inside = ((x >= b['x_min']) & (x <= b['x_max']) &
+                          (plot_z >= b['y_min']) & (plot_z <= b['y_max']))
+            else:
+                inside = ((y >= b['x_min']) & (y <= b['x_max']) &
+                          (plot_z >= b['y_min']) & (plot_z <= b['y_max']))
+            keep &= inside
+        return keep
+
     def _roi_keep_mask_for_arrays(self, x, y, z=None, roi_shapes=None, roi_enabled=None, matrix_rc=None):
         shapes = self.roi_shapes if roi_shapes is None else (roi_shapes or [])
         if not self._roi_is_active(roi_enabled, shapes):
@@ -616,7 +678,8 @@ class ROIMixin:
             w.setEnabled(is_circle and not is_smart)
         for w in (self.lbl_smart_mode, self.cb_smart_mode,
                   self.lbl_smart_sensitivity, self.cb_smart_sensitivity, self.lbl_smart_tol,
-                  self.spin_smart_tol, self.lbl_smart_tol_hint):
+                  self.spin_smart_tol, self.lbl_smart_tol_hint,
+                  self.btn_smart_gate, self.btn_clear_smart_gates):
             w.setEnabled(is_smart)
         for w in (self.lbl_smart_dilate, self.spin_smart_dilate, self.lbl_smart_erode, self.spin_smart_erode):
             w.setEnabled(False)
@@ -628,7 +691,7 @@ class ROIMixin:
         if self.selection_mode in ('roi_rect', 'roi_circle', 'roi_smart'):
             self.selection_mode = 'roi_smart' if is_smart else 'roi_circle' if is_circle else 'roi_rect'
             self.statusBar().showMessage(
-                "智能抓面模式：在 XY 图点击种子点；默认跟随连续Bow/Warpage，不跨孔洞且不自动补洞。"
+                "智能抓面模式：在 XY/XZ/YZ 任一图点击种子点；默认跟随连续Bow/Warpage，不跨孔洞且不自动补洞。"
                 if is_smart else
                 f"ROI 连续框选模式: {'圆形' if is_circle else '矩形'}。在 XY 图中继续拖拽添加区域。", 5000)
 
@@ -718,7 +781,7 @@ class ROIMixin:
 
     def add_roi_from_inputs(self):
         if self.cb_roi_shape.currentIndex() == 2:
-            self.statusBar().showMessage("智能抓面需要在 XY 图点击种子点生成 ROI。", 5000)
+            self.statusBar().showMessage("智能抓面需要在 XY/XZ/YZ 任一图点击种子点生成 ROI。", 5000)
             return
         cx = float(self.spin_roi_cx.value())
         cy = float(self.spin_roi_cy.value())
@@ -741,12 +804,31 @@ class ROIMixin:
             self.temp_selected_mask.fill(False)
             self.update_plots_only()
         if self.selection_mode == 'roi_smart':
-            self.statusBar().showMessage("智能抓面模式已开启：请在 XY 俯视图中点击种子点，可连续添加多个 ROI。", 8000)
+            self.statusBar().showMessage("智能抓面模式已开启：请在 XY/XZ/YZ 任一视图点击种子点，可连续添加多个 ROI。", 8000)
         else:
             self.statusBar().showMessage("ROI 连续框选模式已开启：请在 XY 俯视图中拖拽，可连续添加多个 ROI。", 8000)
 
+    def toggle_smart_gate_mode(self, checked):
+        if checked:
+            self.selection_mode = 'roi_smart_gate'
+            self.statusBar().showMessage(
+                "候选范围模式：可在XY/XZ/YZ拖框，多个视图取交集；完成后关闭本按钮并点击种子。", 10000)
+        else:
+            self.selection_mode = 'roi_smart'
+            self.statusBar().showMessage("候选范围已保留，请在XY/XZ/YZ任一视图点击种子。", 7000)
+
+    def clear_pending_smart_gates(self):
+        self._pending_smart_gates = {}
+        self.statusBar().showMessage("已清除待创建智能ROI的候选范围。", 5000)
+        if self.df_raw is not None:
+            self.update_plots_only()
+
     def set_delete_selection_mode(self, show_message=True):
         self.selection_mode = 'delete'
+        if hasattr(self, 'btn_smart_gate'):
+            self.btn_smart_gate.blockSignals(True)
+            self.btn_smart_gate.setChecked(False)
+            self.btn_smart_gate.blockSignals(False)
         self.pending_delete_operation = None
         if hasattr(self, 'btn_roi_mouse'):
             self.btn_roi_mouse.blockSignals(True)
@@ -861,6 +943,28 @@ class ROIMixin:
                 patch = MplRectangle((cx - w / 2.0, cy - h / 2.0), w, h, fill=False,
                                      edgecolor=edge, linewidth=1.8, linestyle=style, alpha=alpha)
             patch.set_zorder(3)
+            ax.add_patch(patch)
+
+    def _draw_smart_gate_overlays(self, ax, view):
+        key = f"optional_{str(view).lower()}_gate"
+        gates = []
+        pending = (getattr(self, '_pending_smart_gates', {}) or {}).get(key)
+        if pending is not None:
+            gates.append((pending, '#ef8b2c'))
+        for roi in self.roi_shapes:
+            if roi.get('type') == 'smart_face' and roi.get(key) is not None:
+                gates.append((roi[key], '#2f6db0'))
+        for gate, color in gates:
+            b = gate.get('bounds', {})
+            try:
+                patch = MplRectangle(
+                    (float(b['x_min']), float(b['y_min'])),
+                    float(b['x_max']) - float(b['x_min']),
+                    float(b['y_max']) - float(b['y_min']),
+                    fill=False, edgecolor=color, linewidth=1.5, linestyle='--', alpha=0.9)
+            except (KeyError, TypeError, ValueError):
+                continue
+            patch.set_zorder(5)
             ax.add_patch(patch)
 
     def _manual_delete_sample_signature(self):
@@ -1202,6 +1306,8 @@ class ROIMixin:
             'morph_dilate_iters': 0,
             'morph_erode_iters': 0,
         }
+        roi.update({key: dict(value) for key, value in
+                    (getattr(self, '_pending_smart_gates', {}) or {}).items()})
         matrix_rc = self._matrix_rc_for_current_data()
         topology_key = self._smart_topology_cache_key(
             tx, ty, tz, matrix_rc, roi['sensitivity'])
@@ -1221,6 +1327,7 @@ class ROIMixin:
             cached_topology = topology_entry['topology'] if topology_entry is not None else None
             seed_matches = np.flatnonzero(finite_idx_snapshot == seed_idx)
             local_seed_index = int(seed_matches[0]) if len(seed_matches) else None
+            candidate_snapshot = self._smart_candidate_gate_mask(tx, ty, tz, roi)[finite_idx_snapshot]
 
             def work(progress, cancel_event):
                 topology_started = time.perf_counter()
@@ -1250,7 +1357,7 @@ class ROIMixin:
                     finite_x, finite_y, finite_z, roi['seed_x'], roi['seed_y'],
                     roi['z_tolerance_mm'], topology, mode=roi['smart_mode'],
                     sensitivity=roi['sensitivity'], progress=grow_progress,
-                    cancel_event=cancel_event, stats=growth_stats,
+                    candidate_mask=candidate_snapshot, cancel_event=cancel_event, stats=growth_stats,
                     seed_index=local_seed_index)
                 if cancel_event.is_set():
                     raise TaskCancelled()
@@ -1307,6 +1414,7 @@ class ROIMixin:
                 f"智能抓面只得到 {count} 点，未添加。请调大抓面容差或点击面内更稳定的位置。", 8000)
             return
         roi['point_count_at_create'] = count
+        self._pending_smart_gates = {}
         cache_context = ((tx, ty, tz, matrix_rc)
                          if tx is not None and ty is not None and tz is not None else None)
         self._add_roi_shape(
@@ -1327,6 +1435,20 @@ class ROIMixin:
         if self.df_raw is None or self.active_idx is None: return
         x1, y1, x2, y2 = eclick.xdata, eclick.ydata, erelease.xdata, erelease.ydata
         if None in (x1, y1, x2, y2): return
+
+        if self.selection_mode == 'roi_smart_gate':
+            operation = self._build_manual_delete_operation(view_type, x1, y1, x2, y2)
+            gate = {key: operation.get(key) for key in (
+                'view', 'bounds', 'display_mode', 'display_plane_coeffs',
+                'display_polynomial_model')}
+            key = {'XY': 'optional_xy_gate', 'XZ': 'optional_xz_gate',
+                   'YZ': 'optional_yz_gate'}[str(view_type).upper()]
+            self._pending_smart_gates[key] = gate
+            views = '/'.join(k[9:11].upper() for k in self._pending_smart_gates)
+            self.statusBar().showMessage(
+                f"已记录候选范围 {views}；可继续在其他视图框选，完成后关闭候选范围按钮并点击种子。", 9000)
+            self.update_plots_only()
+            return
 
         if self.selection_mode == 'roi_smart':
             return
