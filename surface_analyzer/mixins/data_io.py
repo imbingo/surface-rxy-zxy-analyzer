@@ -2880,10 +2880,13 @@ class DataIOMixin:
             self.import_info['display_limit'] = self._display_limit()
             self._update_import_status_label()
             self._df_version += 1
+            self._invalidate_smart_roi_runtime_cache(
+                topology=True, masks=True, reason='数据或列映射已更新')
             if preserve_analysis_settings:
                 self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
                 self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
                 self.manual_delete_operations = []
+                self._manual_delete_mask_history = []
                 self.pending_delete_operation = None
                 self.current_coeffs = None
                 self._trans_cache_key = None

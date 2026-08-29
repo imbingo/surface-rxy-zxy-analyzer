@@ -195,6 +195,8 @@ class RecipeMixin:
             self.apply_mapping(preserve_analysis_settings=True)
         valid_actions = {'CW90', 'CCW90', 'ROT180', 'SWAP', 'FLIPX', 'FLIPY', 'ORIGIN(0,0)'}
         self.transform_pipeline = [a for a in (recipe.get('transform_pipeline', []) or []) if a in valid_actions]
+        self._invalidate_smart_roi_runtime_cache(
+            topology=True, masks=True, reason='Recipe姿态或ROI定义已更新')
         self._update_pipeline_label()
         flt = recipe.get('filter', {}) or {}
         mode_index = max(0, min(int(flt.get('mode_index', 0)), self.cb_filter.count() - 1))
@@ -220,6 +222,7 @@ class RecipeMixin:
         roi = recipe.get('roi', {}) or {}
         self.roi_enabled = bool(roi.get('enabled', self.roi_enabled))
         self.roi_shapes = self._clean_roi_shapes(roi.get('shapes', self.roi_shapes))
+        self._invalidate_effective_roi_mask_cache()
         legacy_smart_count = sum(
             1 for shape in self.roi_shapes
             if shape.get('type') == 'smart_face' and int(shape.get('smart_algorithm_version', 1)) == 1)

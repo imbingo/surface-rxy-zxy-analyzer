@@ -163,6 +163,8 @@ class GapAnalysisMixin:
         self._update_gap_diagnostic(payload['diagnostic'])
         self.df_raw = pd.DataFrame({'Z': payload['z'], 'X': payload['x'], 'Y': payload['y']})
         self._df_version += 1
+        self._invalidate_smart_roi_runtime_cache(
+            topology=True, masks=True, reason='Gap结果替换当前数据')
         self.absolute_raw_df = None
         self.current_source_name = payload['name']
         self.lbl_source.setText(f"当前数据: {payload['name']}")
@@ -179,6 +181,7 @@ class GapAnalysisMixin:
         self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
         self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
         self.manual_delete_operations = []
+        self._manual_delete_mask_history = []
         self.pending_delete_operation = None
         self.current_coeffs = None
         self.clear_rois(update=False)

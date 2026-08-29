@@ -88,6 +88,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.manual_mask = None
         self.temp_selected_mask = None
         self.manual_delete_operations = []
+        self._manual_delete_mask_history = []
         self.pending_delete_operation = None
         self.active_idx = None
         self.transform_pipeline = []
@@ -158,6 +159,15 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._df_version = 0
         self._trans_cache_key = None
         self._trans_cache_data = None
+
+        # Smart ROI runtime caches. These are intentionally not serialized into
+        # Recipe files: topology belongs to one loaded dataset and a keep mask
+        # belongs to one runtime ROI definition.
+        self._smart_topology_cache = {}
+        self._smart_roi_mask_cache = {}
+        self._effective_roi_mask_cache_key = None
+        self._effective_roi_mask_cache = None
+        self.smart_roi_performance = {}
 
         # 多层计算寄存器：dict {'x','y','z','name','n'} 或 None
         self.data_base1 = None
@@ -1451,24 +1461,32 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
     def undo_transform(self):
         if self.transform_pipeline:
             action = self.transform_pipeline.pop()
+            self._invalidate_smart_roi_runtime_cache(
+                topology=True, masks=True, reason='撤销姿态变换')
             self.update_analysis()
             self._show_status(f"已撤销操作: {action}", 3000)
         else:
             QMessageBox.information(self, "提示", "已经退回原始状态，没有可以撤销的操作了。")
 
-    def add_cw90(self): self.transform_pipeline.append("CW90"); self.update_analysis()
+    def _append_transform(self, action):
+        self.transform_pipeline.append(action)
+        self._invalidate_smart_roi_runtime_cache(
+            topology=True, masks=True, reason=f'姿态变换: {action}')
+        self.update_analysis()
 
-    def add_ccw90(self): self.transform_pipeline.append("CCW90"); self.update_analysis()
+    def add_cw90(self): self._append_transform("CW90")
 
-    def add_rot180(self): self.transform_pipeline.append("ROT180"); self.update_analysis()
+    def add_ccw90(self): self._append_transform("CCW90")
 
-    def add_swap(self): self.transform_pipeline.append("SWAP"); self.update_analysis()
+    def add_rot180(self): self._append_transform("ROT180")
 
-    def add_flipx(self): self.transform_pipeline.append("FLIPX"); self.update_analysis()
+    def add_swap(self): self._append_transform("SWAP")
 
-    def add_flipy(self): self.transform_pipeline.append("FLIPY"); self.update_analysis()
+    def add_flipx(self): self._append_transform("FLIPX")
 
-    def add_origin(self): self.transform_pipeline.append("ORIGIN(0,0)"); self.update_analysis()
+    def add_flipy(self): self._append_transform("FLIPY")
+
+    def add_origin(self): self._append_transform("ORIGIN(0,0)")
 
     def reset_all(self, confirm=True):
         if self.df_raw is None:
@@ -1488,9 +1506,12 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
             return
         self.transform_pipeline = []
+        self._invalidate_smart_roi_runtime_cache(
+            topology=True, masks=True, reason='全部重置')
         self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
         self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
         self.manual_delete_operations = []
+        self._manual_delete_mask_history = []
         self.pending_delete_operation = None
         self.current_coeffs = None
         self.high_order_models = {}
@@ -1610,6 +1631,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         try:
             tx, ty, tz = self.get_final_transformed_data(self.df_raw)
             self._update_pipeline_label()
+            matrix_rc = self._matrix_rc_for_current_data()
+            roi_mask_all = None
 
             manual_deleted = int((~self.manual_mask).sum())
             idx = np.where(self.manual_mask)[0]
@@ -1622,13 +1645,13 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 self.high_order_models = {}
                 self._clear_result_labels()
                 self._show_status("有效点少于 3 个，无法拟合平面。请点击[重置]恢复数据。", 10000)
-                self.draw_plots(tx, ty, tz)
+                self.draw_plots(tx, ty, tz, roi_mask_all=roi_mask_all)
                 self.setup_selectors()
                 return
 
             if self._roi_is_active():
-                roi_mask_all = self._roi_keep_mask_for_arrays(
-                    tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data())
+                roi_mask_all = self._get_effective_roi_mask_cached(
+                    tx, ty, tz, matrix_rc=matrix_rc)
                 idx = idx[roi_mask_all[idx]]
                 self.last_roi_keep_count = int(len(idx))
                 if len(idx) < 3:
@@ -1640,9 +1663,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                     self._clear_result_labels()
                     self.lbl_filter_info.setText(
                         f"滤波剔除: 0 点 | 手动删除: {manual_deleted} 点 | ROI保留: {len(idx)} 点 | 参与拟合: {len(idx)} 点")
-                    self._refresh_roi_ui(update=False)
+                    self._refresh_roi_ui(update=False, effective_roi_mask=roi_mask_all)
                     self._show_status("ROI 内有效点少于 3 个，无法拟合平面。请调整或关闭 ROI。", 10000)
-                    self.draw_plots(tx, ty, tz)
+                    self.draw_plots(tx, ty, tz, roi_mask_all=roi_mask_all)
                     self.setup_selectors()
                     return
 
@@ -1715,21 +1738,22 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self._update_surface_display_metrics()
             if quality['estimated']:
                 self._show_status(f"{quality['label']}：{quality['warning']}", 12000)
-            self.draw_plots(tx, ty, tz)
+            self.draw_plots(tx, ty, tz, roi_mask_all=roi_mask_all)
             self.setup_selectors()
-            self._refresh_roi_ui(update=False)
+            self._refresh_roi_ui(update=False, effective_roi_mask=roi_mask_all)
         except Exception as e:
             self._show_status(f"分析出错: {e}", 10000)
 
-    def draw_plots(self, tx, ty, tz):
+    def draw_plots(self, tx, ty, tz, roi_mask_all=None):
         roi_active = self._roi_is_active()
         xy_plot_idx = self.active_idx
         detail_plot_idx = self.active_idx
         roi_plot_idx = None
         if roi_active and self.manual_mask is not None:
             all_idx = np.where(self.manual_mask)[0]
-            roi_mask_all = self._roi_keep_mask_for_arrays(
-                tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data())
+            if roi_mask_all is None:
+                roi_mask_all = self._get_effective_roi_mask_cached(
+                    tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data())
             roi_plot_idx = all_idx[roi_mask_all[all_idx]]
             xy_plot_idx = all_idx
             detail_plot_idx = self.active_idx
@@ -1842,4 +1866,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         if self.df_raw is None or self.active_idx is None:
             return
         tx, ty, tz = self.get_final_transformed_data(self.df_raw)
-        self.draw_plots(tx, ty, tz)
+        roi_mask_all = None
+        if self._roi_is_active():
+            roi_mask_all = self._get_effective_roi_mask_cached(
+                tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data())
+        self.draw_plots(tx, ty, tz, roi_mask_all=roi_mask_all)
