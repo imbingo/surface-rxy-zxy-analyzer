@@ -530,12 +530,13 @@ class ROIMixin:
                 topology = topology_entry['topology']
                 finite_idx = topology_entry['finite_idx']
                 grow_started = time.perf_counter()
+                growth_stats = {}
                 local_keep = grow_surface_roi(
                     x[finite_idx], y[finite_idx], z[finite_idx],
                     roi.get('seed_x', 0.0), roi.get('seed_y', 0.0),
                     roi.get('z_tolerance_mm', 0.02), topology,
                     mode=str(roi.get('smart_mode', 'surface_following')),
-                    sensitivity=sensitivity)
+                    sensitivity=sensitivity, stats=growth_stats)
                 roi['topology_label'] = topology['topology']
                 roi['topology_method'] = topology['method']
                 roi['topology_fallback_reason'] = topology.get('fallback_reason', '')
@@ -547,6 +548,7 @@ class ROIMixin:
                     'topology_seconds': 0.0 if topology_hit else float(topology_entry['build_seconds']),
                     'grow_seconds': float(time.perf_counter() - grow_started),
                     'points': int(len(finite_idx)),
+                    **growth_stats,
                 }
                 self.smart_roi_performance = dict(performance)
                 if int(roi.get('id', 0) or 0) > 0:
@@ -1197,10 +1199,17 @@ class ROIMixin:
                     raise TaskCancelled()
                 progress(55, f"正在按{topology['topology']}生长连续曲面")
                 grow_started = time.perf_counter()
+                growth_stats = {}
+
+                def grow_progress(value, processed, total):
+                    overall = 55 + int(max(0, min(100, value)) * 0.35)
+                    progress(overall, f"正在跟踪连续曲面，已处理 {processed:,} / {total:,} 点")
+
                 local_keep = grow_surface_roi(
                     finite_x, finite_y, finite_z, roi['seed_x'], roi['seed_y'],
                     roi['z_tolerance_mm'], topology, mode=roi['smart_mode'],
-                    sensitivity=roi['sensitivity'])
+                    sensitivity=roi['sensitivity'], progress=grow_progress,
+                    cancel_event=cancel_event, stats=growth_stats)
                 if cancel_event.is_set():
                     raise TaskCancelled()
                 progress(100, '智能抓面完成')
@@ -1209,7 +1218,8 @@ class ROIMixin:
                         'topology_hit': topology_hit,
                         'topology_seconds': float(topology_seconds),
                         'grow_seconds': float(time.perf_counter() - grow_started),
-                        'finite_idx': finite_idx_snapshot}
+                        'finite_idx': finite_idx_snapshot,
+                        'growth_stats': growth_stats}
 
             def complete(result):
                 if (int(getattr(self, '_df_version', 0)) != result['df_version']
@@ -1232,6 +1242,7 @@ class ROIMixin:
                     'topology_seconds': result['topology_seconds'],
                     'grow_seconds': result['grow_seconds'],
                     'points': int(len(result['finite_idx'])),
+                    **dict(result.get('growth_stats', {})),
                 }
                 self.smart_roi_performance = dict(performance)
                 self._complete_smart_face_roi(

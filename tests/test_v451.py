@@ -1,18 +1,73 @@
 import os
 import tempfile
 import unittest
+from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+import pandas as pd
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt6.QtWidgets import QApplication
 
 from surface_analyzer.app import SurfaceAnalyzerPro
+from surface_analyzer.mixins.analysis import AnalysisMixin
 import surface_analyzer.mixins.roi as roi_module
+import surface_analyzer.smart_roi as smart_module
+from surface_analyzer.smart_roi import build_adaptive_topology, grow_surface_roi
+
+
+def _grow_v450_reference(x, y, z, seed_x, seed_y, tolerance_mm, topology,
+                         sensitivity='standard'):
+    """Exact V4.5.0 surface-following loop retained only for regression comparison."""
+    x = np.asarray(x, dtype=float); y = np.asarray(y, dtype=float); z = np.asarray(z, dtype=float)
+    adjacency = topology['adjacency']
+    seed = int(np.argmin((x - float(seed_x)) ** 2 + (y - float(seed_y)) ** 2))
+    config = smart_module.SENSITIVITY[str(sensitivity)]
+    tolerance = max(float(tolerance_mm), 1e-12) * float(config['residual_factor'])
+    neighborhood = smart_module._graph_neighborhood(adjacency, seed, target=36, max_depth=5)
+    seed_plane, seed_normal = smart_module._robust_local_plane(x, y, z, neighborhood)
+    fits = 1
+    plane_cache = {seed: (seed_plane, seed_normal)}
+
+    def local_plane(index):
+        nonlocal fits
+        value = plane_cache.get(index)
+        if value is None:
+            local = smart_module._graph_neighborhood(adjacency, index, target=24, max_depth=4)
+            value = smart_module._robust_local_plane(x, y, z, local)
+            plane_cache[index] = value
+            fits += 1
+        return value
+
+    visited = np.zeros(len(x), dtype=bool); visited[seed] = True
+    queue = deque([seed])
+    normal_limit = np.deg2rad(float(config['normal_deg']))
+    while queue:
+        current = queue.popleft()
+        current_plane, current_normal = local_plane(current)
+        if current_plane is None:
+            continue
+        for neighbor in adjacency[current]:
+            neighbor = int(neighbor)
+            if visited[neighbor]:
+                continue
+            predicted = (current_plane[0] * x[neighbor] + current_plane[1] * y[neighbor]
+                         + current_plane[2])
+            if abs(float(z[neighbor] - predicted)) > tolerance:
+                continue
+            neighbor_plane, neighbor_normal = local_plane(neighbor)
+            if neighbor_plane is None:
+                continue
+            cosine = float(np.clip(np.dot(current_normal, neighbor_normal), -1.0, 1.0))
+            if np.arccos(cosine) > normal_limit:
+                continue
+            visited[neighbor] = True
+            queue.append(neighbor)
+    return visited, fits
 
 
 class V451CacheTests(unittest.TestCase):
@@ -109,6 +164,88 @@ class V451CacheTests(unittest.TestCase):
                     tx, ty, tz, matrix_rc, roi2['sensitivity']))
             self.assertEqual(calls, {'build': 1, 'grow': 2})
             window.close()
+
+    def test_coarse_to_fine_matches_smooth_components_and_reduces_plane_fits(self):
+        rows, cols = 80, 100
+        yy, xx = np.mgrid[0:rows, 0:cols]
+        x1 = xx.ravel() * 0.04
+        y1 = yy.ravel() * 0.05
+        z1 = (1.0 + 0.0012 * (x1 - np.mean(x1)) ** 2
+              + 0.0008 * (y1 - np.mean(y1)) ** 2)
+        # A distant overlapping-shape island must remain disconnected.
+        x = np.concatenate([x1, x1 + 8.0])
+        y = np.concatenate([y1, y1])
+        z = np.concatenate([z1, z1 + 0.08])
+        topology = build_adaptive_topology(x, y, sensitivity='standard')
+        old_mask, old_fits = _grow_v450_reference(
+            x, y, z, np.mean(x1), np.mean(y1), 0.01, topology)
+        stats = {}
+        new_mask = grow_surface_roi(
+            x, y, z, np.mean(x1), np.mean(y1), 0.01, topology,
+            mode='surface_following', sensitivity='standard', stats=stats)
+        intersection = int(np.sum(old_mask & new_mask))
+        union = int(np.sum(old_mask | new_mask))
+        self.assertGreaterEqual(intersection / max(union, 1), 0.995)
+        self.assertEqual(int(new_mask[:len(x1)].sum()), len(x1))
+        self.assertEqual(int(new_mask[len(x1):].sum()), 0)
+        self.assertGreater(stats['fast_accept'], int(len(x1) * 0.8))
+        self.assertLess(stats['local_plane_fits'], old_fits * 0.35)
+
+    def test_coarse_to_fine_follows_bow_but_stops_step_and_candidate_hole(self):
+        rows, cols = 60, 90
+        yy, xx = np.mgrid[0:rows, 0:cols]
+        x = xx.ravel() * 0.05
+        y = yy.ravel() * 0.06
+        z = 1.0 + 0.001 * (x - 1.2) ** 2 + 0.0015 * (y - 1.5) ** 2
+        z = z + np.where(xx.ravel() >= 58, 0.05, 0.0)
+        candidate = np.ones(len(x), dtype=bool)
+        hole = ((xx.ravel() >= 20) & (xx.ravel() <= 25)
+                & (yy.ravel() >= 22) & (yy.ravel() <= 30))
+        candidate[hole] = False
+        topology = build_adaptive_topology(
+            x, y, matrix_rc=(yy.ravel(), xx.ravel()), sensitivity='standard')
+        stats = {}
+        seed_index = 30 * cols + 10
+        keep = grow_surface_roi(
+            x, y, z, x[seed_index], y[seed_index], 0.008, topology,
+            mode='surface_following', sensitivity='standard',
+            candidate_mask=candidate, stats=stats)
+        self.assertEqual(int(np.sum(keep & (xx.ravel() >= 58))), 0)
+        self.assertEqual(int(np.sum(keep & hole)), 0)
+        self.assertGreater(int(np.sum(keep & (xx.ravel() < 58))), int(rows * 58 * 0.9))
+        self.assertGreater(stats['fast_reject'], 0)
+        self.assertGreater(stats['selected'], 0)
+
+    def test_v403_golden_step_demo_preserves_measurement_metrics(self):
+        """The long-used V4.0.3 release demo is the calculation golden sample."""
+        path = (Path(__file__).resolve().parents[1] / 'demo_data'
+                / 'V3.9_StepDemo_XYZ_points.csv')
+        frame = pd.read_csv(path, encoding='utf-8-sig')
+        measure = frame.loc[frame['Region'].eq('measure')]
+        x = measure['X'].to_numpy(dtype=float)
+        y = measure['Y'].to_numpy(dtype=float)
+        z = measure['Z'].to_numpy(dtype=float) * 1e-3
+        expected = {
+            0: (9990, 76.64709166344717, 50.83765405181541,
+                87.00100859572585, 86.95604076754779, 2.6412270043697212),
+            1: (9969, 84.4660502121436, 57.07610167148963,
+                5.673462124705125, 5.459594006088254, 0.7978453402959608),
+            2: (9972, 83.95117091370226, 57.1820337622445,
+                6.359967533560135, 6.255248881201983, 0.799457797388855),
+            3: (9935, 85.8995859073149, 57.44059521600744,
+                5.111752799455305, 4.672557210980752, 0.7855656636186766),
+        }
+        for mode, golden in expected.items():
+            with self.subTest(filter_mode=mode):
+                keep = AnalysisMixin.filter_keep_mask(
+                    x, y, z, mode, k=12, threshold_mm=0.005,
+                    sigma_k=3.0, sigma_iters=5)
+                metrics = AnalysisMixin.compute_plane_metrics(x[keep], y[keep], z[keep])
+                point_count, rx, ry, ttv, pv, rms = golden
+                self.assertEqual(int(keep.sum()), point_count)
+                for key, value in (('rx', rx), ('ry', ry), ('ttv', ttv),
+                                   ('pv', pv), ('rms', rms)):
+                    self.assertAlmostEqual(metrics[key], value, delta=1e-9)
 
 
 if __name__ == '__main__':
