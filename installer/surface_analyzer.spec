@@ -26,6 +26,8 @@ demo_files = [
     project_root / "demo_data" / "V3.9_StepDemo_README.txt",
     project_root / "demo_data" / "V3.9_StepDemo_VR_height_matrix.csv",
     project_root / "demo_data" / "V3.9_StepDemo_XYZ_points.csv",
+    project_root / "demo_data" / "V4.5.1_重叠双层_Bow孔洞台阶_Demo.csv",
+    project_root / "demo_data" / "V4.5.1_SmartROI_Demo说明.md",
 ]
 datas = [(str(path), "demo_data") for path in demo_files if path.exists()]
 if icon_png.exists():

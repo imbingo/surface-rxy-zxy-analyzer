@@ -116,6 +116,7 @@ python -m surface_analyzer
 
 ## 文档
 
+- [V4.5.1 多视图智能抓面 Demo](demo_data/V4.5.1_SmartROI_Demo说明.md)
 - [V4.5.0 表头与智能抓面 Demo](demo_data/V4.5.0_表头与智能抓面Demo说明.md)
 - [V4.4.0 Zygo / Precitec 设备格式 Demo](demo_data/V4.4.0_设备格式Demo说明.md)
 - [V4.0.2 接口文档](docs/V4.0.2_接口文档.md)
