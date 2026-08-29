@@ -251,7 +251,8 @@ def _robust_local_plane(x, y, z, indices):
 
 def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
                      mode='surface_following', sensitivity='standard',
-                     candidate_mask=None, progress=None, cancel_event=None, stats=None):
+                     candidate_mask=None, progress=None, cancel_event=None, stats=None,
+                     seed_index=None):
     """Grow one connected surface with a fast interior path and precise boundary path.
 
     ``candidate_mask`` is a hard gate only; it never changes topology. ``stats`` is
@@ -273,7 +274,12 @@ def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
     if len(candidate) != len(x):
         raise ValueError('candidate_mask长度与点数不一致')
     candidate &= np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
-    seed = int(np.argmin((x - float(seed_x)) ** 2 + (y - float(seed_y)) ** 2))
+    if seed_index is None:
+        seed = int(np.argmin((x - float(seed_x)) ** 2 + (y - float(seed_y)) ** 2))
+    else:
+        seed = int(seed_index)
+        if seed < 0 or seed >= len(x):
+            raise ValueError('seed_index超出点云范围')
     if not candidate[seed]:
         return np.zeros(len(x), dtype=bool)
     config = SENSITIVITY.get(str(sensitivity), SENSITIVITY['standard'])

@@ -1756,7 +1756,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                     tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data())
             roi_plot_idx = all_idx[roi_mask_all[all_idx]]
             xy_plot_idx = all_idx
-            detail_plot_idx = self.active_idx
+            detail_plot_idx = (all_idx if self.selection_mode == 'roi_smart'
+                               else self.active_idx)
         display_limit = self._display_limit()
 
         def sample_for_display(source_idx):
@@ -1767,6 +1768,11 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
         xy_plot_idx, xy_sampled = sample_for_display(xy_plot_idx)
         detail_plot_idx, detail_sampled = sample_for_display(detail_plot_idx)
+        self._smart_seed_view_indices = {
+            'XY': np.asarray(xy_plot_idx, dtype=int).copy(),
+            'XZ': np.asarray(detail_plot_idx, dtype=int).copy(),
+            'YZ': np.asarray(detail_plot_idx, dtype=int).copy(),
+        }
         if xy_sampled or detail_sampled:
             self.statusBar().showMessage(
                 f"数据共 {len(self.active_idx):,} 点；XY显示 {len(xy_plot_idx):,} 点，3D/XZ/YZ显示 {len(detail_plot_idx):,} 点，指标仍按当前分析数据计算。", 5000)

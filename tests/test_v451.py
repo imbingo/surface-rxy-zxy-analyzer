@@ -247,6 +247,48 @@ class V451CacheTests(unittest.TestCase):
                                    ('pv', pv), ('rms', rms)):
                     self.assertAlmostEqual(metrics[key], value, delta=1e-9)
 
+    def test_multiview_seed_uses_the_rendered_layer_index(self):
+        window = SurfaceAnalyzerPro()
+        x = np.array([0.0, 1.0, 0.0, 1.0] * 2)
+        y = np.array([0.0, 0.0, 1.0, 1.0] * 2)
+        z = np.array([1.0] * 4 + [1.08] * 4)
+        window.df_raw = pd.DataFrame({'Z': z, 'X': x, 'Y': y})
+        window.manual_mask = np.ones(len(z), dtype=bool)
+        window.active_idx = np.arange(len(z))
+        window.selection_mode = 'roi_smart'
+        window._smart_seed_view_indices = {
+            'XY': np.arange(len(z)), 'XZ': np.arange(len(z)), 'YZ': np.arange(len(z))}
+        captured = []
+
+        def capture(px, py, seed_index=None, seed_view='XY'):
+            captured.append((seed_index, seed_view))
+
+        with patch.object(window, 'add_smart_face_roi_from_seed', side_effect=capture):
+            for ax, view, point in (
+                    (window.canvas.ax_xz, 'XZ', (1.0, 1.08)),
+                    (window.canvas.ax_yz, 'YZ', (1.0, 1.08))):
+                ax.set_xlim(-0.1, 1.1); ax.set_ylim(0.98, 1.10)
+                window.canvas.draw()
+                sx, sy = ax.transData.transform(point)
+                window.on_canvas_click(SimpleNamespace(
+                    inaxes=ax, xdata=point[0], ydata=point[1],
+                    x=sx, y=sy, button=1))
+                self.assertEqual(captured[-1][1], view)
+                self.assertGreaterEqual(captured[-1][0], 4)
+        window.close()
+
+    def test_small_smart_roi_starts_in_background(self):
+        window = SurfaceAnalyzerPro()
+        yy, xx = np.mgrid[0:10, 0:12]
+        window.df_raw = pd.DataFrame({
+            'Z': np.ones(xx.size), 'X': xx.ravel() * 0.1, 'Y': yy.ravel() * 0.1})
+        window.manual_mask = np.ones(xx.size, dtype=bool)
+        window.active_idx = np.arange(xx.size)
+        with patch.object(window, '_run_background_task', return_value=True) as background:
+            window.add_smart_face_roi_from_seed(0.5, 0.5)
+        background.assert_called_once()
+        window.close()
+
 
 if __name__ == '__main__':
     unittest.main()

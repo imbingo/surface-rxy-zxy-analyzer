@@ -269,6 +269,8 @@ class ROIMixin:
                         'seed_x': float(raw.get('seed_x', raw.get('cx', 0.0))),
                         'seed_y': float(raw.get('seed_y', raw.get('cy', 0.0))),
                         'seed_z': float(raw.get('seed_z', 0.0)),
+                        'seed_index': int(raw.get('seed_index', -1) or -1),
+                        'seed_view': str(raw.get('seed_view', 'XY')),
                         'z_tolerance_mm': max(float(raw.get('z_tolerance_mm', 0.2)), 1e-9),
                         'smart_mode': str(raw.get('smart_mode', 'plane_residual')),
                         'connectivity': str(raw.get('connectivity', 'auto_xy')),
@@ -276,7 +278,7 @@ class ROIMixin:
                         'morph_dilate_iters': 0,
                         'morph_erode_iters': 0,
                         'point_count_at_create': int(raw.get('point_count_at_create', 0) or 0),
-                        'smart_algorithm_version': 2 if algorithm_version >= 2 else 1,
+                        'smart_algorithm_version': min(max(algorithm_version, 1), 3),
                         'sensitivity': str(raw.get('sensitivity', 'standard')),
                         'topology_label': str(raw.get('topology_label', '')),
                         'topology_method': str(raw.get('topology_method', '')),
@@ -531,12 +533,16 @@ class ROIMixin:
                 finite_idx = topology_entry['finite_idx']
                 grow_started = time.perf_counter()
                 growth_stats = {}
+                seed_index = int(roi.get('seed_index', -1) or -1)
+                seed_matches = np.flatnonzero(finite_idx == seed_index)
+                local_seed_index = int(seed_matches[0]) if len(seed_matches) else None
                 local_keep = grow_surface_roi(
                     x[finite_idx], y[finite_idx], z[finite_idx],
                     roi.get('seed_x', 0.0), roi.get('seed_y', 0.0),
                     roi.get('z_tolerance_mm', 0.02), topology,
                     mode=str(roi.get('smart_mode', 'surface_following')),
-                    sensitivity=sensitivity, stats=growth_stats)
+                    sensitivity=sensitivity, stats=growth_stats,
+                    seed_index=local_seed_index)
                 roi['topology_label'] = topology['topology']
                 roi['topology_method'] = topology['method']
                 roi['topology_fallback_reason'] = topology.get('fallback_reason', '')
@@ -1129,13 +1135,41 @@ class ROIMixin:
     def on_canvas_click(self, event):
         if self.selection_mode != 'roi_smart' or self.df_raw is None:
             return
-        if event.inaxes != self.canvas.ax_xy or event.xdata is None or event.ydata is None:
+        axes = {
+            self.canvas.ax_xy: 'XY',
+            self.canvas.ax_xz: 'XZ',
+            self.canvas.ax_yz: 'YZ',
+        }
+        view_type = axes.get(event.inaxes)
+        if view_type is None or event.xdata is None or event.ydata is None:
             return
         if getattr(event, 'button', 1) != 1:
             return
-        self.add_smart_face_roi_from_seed(float(event.xdata), float(event.ydata))
+        candidates = np.asarray(
+            (getattr(self, '_smart_seed_view_indices', {}) or {}).get(view_type, []),
+            dtype=int)
+        if len(candidates) == 0:
+            return
+        tx, ty, tz = self.get_final_transformed_data(self.df_raw)
+        plot_z, _, _ = self._get_plot_z(tx, ty, tz)
+        if view_type == 'XY':
+            points = np.column_stack([tx[candidates], ty[candidates]])
+        elif view_type == 'XZ':
+            points = np.column_stack([tx[candidates], plot_z[candidates]])
+        else:
+            points = np.column_stack([ty[candidates], plot_z[candidates]])
+        finite = np.isfinite(points).all(axis=1)
+        if not np.any(finite):
+            return
+        visible = candidates[finite]
+        screen = event.inaxes.transData.transform(points[finite])
+        click = np.array([float(event.x), float(event.y)])
+        seed_idx = int(visible[int(np.argmin(np.sum((screen - click) ** 2, axis=1)))])
+        self.add_smart_face_roi_from_seed(
+            float(tx[seed_idx]), float(ty[seed_idx]), seed_index=seed_idx,
+            seed_view=view_type)
 
-    def add_smart_face_roi_from_seed(self, px, py):
+    def add_smart_face_roi_from_seed(self, px, py, seed_index=None, seed_view='XY'):
         if self.df_raw is None:
             return
         tx, ty, tz = self.get_final_transformed_data(self.df_raw)
@@ -1145,8 +1179,11 @@ class ROIMixin:
         if len(seed_candidates) < 3 or len(finite_idx) < 3:
             self.statusBar().showMessage("有效点不足，无法智能抓面。", 6000)
             return
-        dist2 = (tx[seed_candidates] - px) ** 2 + (ty[seed_candidates] - py) ** 2
-        seed_idx = int(seed_candidates[int(np.argmin(dist2))])
+        if seed_index is None or int(seed_index) not in set(seed_candidates.tolist()):
+            dist2 = (tx[seed_candidates] - px) ** 2 + (ty[seed_candidates] - py) ** 2
+            seed_idx = int(seed_candidates[int(np.argmin(dist2))])
+        else:
+            seed_idx = int(seed_index)
         connectivity = 'matrix8' if self._matrix_rc_for_current_data() is not None else 'auto_xy'
         roi = {
             'type': 'smart_face',
@@ -1154,7 +1191,9 @@ class ROIMixin:
             'seed_y': float(ty[seed_idx]),
             'seed_z': float(tz[seed_idx]),
             'z_tolerance_mm': float(self.spin_smart_tol.value()),
-            'smart_algorithm_version': 2,
+            'smart_algorithm_version': 3,
+            'seed_index': seed_idx,
+            'seed_view': str(seed_view),
             'smart_mode': str(self.cb_smart_mode.currentData()) if hasattr(self, 'cb_smart_mode') else 'surface_following',
             'sensitivity': (str(self.cb_smart_sensitivity.currentData())
                             if hasattr(self, 'cb_smart_sensitivity') else 'standard'),
@@ -1167,7 +1206,7 @@ class ROIMixin:
         topology_key = self._smart_topology_cache_key(
             tx, ty, tz, matrix_rc, roi['sensitivity'])
         topology_entry = self._lookup_smart_topology(topology_key)
-        if len(finite_idx) >= 25000 and hasattr(self, '_run_background_task'):
+        if hasattr(self, '_run_background_task'):
             snapshot_version = int(getattr(self, '_df_version', 0))
             snapshot_pipeline = tuple(self.transform_pipeline)
             finite_idx_snapshot = (topology_entry['finite_idx'].copy()
@@ -1180,6 +1219,8 @@ class ROIMixin:
                 finite_matrix = (np.asarray(matrix_rc[0])[finite_idx_snapshot].copy(),
                                  np.asarray(matrix_rc[1])[finite_idx_snapshot].copy())
             cached_topology = topology_entry['topology'] if topology_entry is not None else None
+            seed_matches = np.flatnonzero(finite_idx_snapshot == seed_idx)
+            local_seed_index = int(seed_matches[0]) if len(seed_matches) else None
 
             def work(progress, cancel_event):
                 topology_started = time.perf_counter()
@@ -1209,7 +1250,8 @@ class ROIMixin:
                     finite_x, finite_y, finite_z, roi['seed_x'], roi['seed_y'],
                     roi['z_tolerance_mm'], topology, mode=roi['smart_mode'],
                     sensitivity=roi['sensitivity'], progress=grow_progress,
-                    cancel_event=cancel_event, stats=growth_stats)
+                    cancel_event=cancel_event, stats=growth_stats,
+                    seed_index=local_seed_index)
                 if cancel_event.is_set():
                     raise TaskCancelled()
                 progress(100, '智能抓面完成')
