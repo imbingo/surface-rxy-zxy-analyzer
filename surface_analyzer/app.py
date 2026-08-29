@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.5.0."""
+"""Qt application shell for Surface Analyzer V4.5.1."""
 
 import sys
 import os
@@ -6,6 +6,7 @@ import re
 import mmap
 import json
 import tempfile
+import time
 from collections import deque
 from pathlib import Path
 from datetime import datetime
@@ -1641,6 +1642,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
     def update_analysis(self):
         if self.df_raw is None: return
+        total_started = time.perf_counter()
         try:
             tx, ty, tz = self.get_final_transformed_data(self.df_raw)
             self._update_pipeline_label()
@@ -1663,8 +1665,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 return
 
             if self._roi_is_active():
+                mask_started = time.perf_counter()
                 roi_mask_all = self._get_effective_roi_mask_cached(
                     tx, ty, tz, matrix_rc=matrix_rc)
+                mask_seconds = time.perf_counter() - mask_started
                 idx = idx[roi_mask_all[idx]]
                 self.last_roi_keep_count = int(len(idx))
                 if len(idx) < 3:
@@ -1682,6 +1686,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                     self.setup_selectors()
                     return
 
+            else:
+                mask_seconds = 0.0
+            analysis_started = time.perf_counter()
             xb, yb, zb = tx[idx], ty[idx], tz[idx]
 
             # 1. 滤波（主界面与批量共用同一分发 filter_keep_mask）
@@ -1751,9 +1758,28 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self._update_surface_display_metrics()
             if quality['estimated']:
                 self._show_status(f"{quality['label']}：{quality['warning']}", 12000)
+            analysis_seconds = time.perf_counter() - analysis_started
+            plot_started = time.perf_counter()
             self.draw_plots(tx, ty, tz, roi_mask_all=roi_mask_all)
+            plot_seconds = time.perf_counter() - plot_started
             self.setup_selectors()
             self._refresh_roi_ui(update=False, effective_roi_mask=roi_mask_all)
+            self.smart_roi_performance.update({
+                'mask_combine_seconds': float(mask_seconds),
+                'analysis_seconds': float(analysis_seconds),
+                'plot_seconds': float(plot_seconds),
+                'total_seconds': float(time.perf_counter() - total_started),
+            })
+            if hasattr(self, 'lbl_roi_info'):
+                perf = self.smart_roi_performance
+                self.lbl_roi_info.setToolTip(
+                    f"拓扑 {perf.get('topology_seconds', 0.0):.3f}s "
+                    f"({perf.get('topology_cache', '--')}) | 抓面 {perf.get('grow_seconds', 0.0):.3f}s | "
+                    f"Mask {perf.get('mask_combine_seconds', 0.0):.4f}s | "
+                    f"分析 {perf.get('analysis_seconds', 0.0):.3f}s | "
+                    f"绘图 {perf.get('plot_seconds', 0.0):.3f}s | 总计 {perf.get('total_seconds', 0.0):.3f}s\n"
+                    f"Fast {perf.get('fast_accept', 0):,} | Reject {perf.get('fast_reject', 0):,} | "
+                    f"Slow {perf.get('slow_path', 0):,} | 局部拟合 {perf.get('local_plane_fits', 0):,}")
         except Exception as e:
             self._show_status(f"分析出错: {e}", 10000)
 

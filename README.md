@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.5.0
+# Surface Rxy ZXY Analyzer V4.5.1
 
-面型及 Rxy 分析工具当前版本为 **V4.5.0**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
+面型及 Rxy 分析工具当前版本为 **V4.5.1**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.5.0.py`：V4.5.0 Python 启动入口。
-- `start_surface_analyzer_v4_5_0.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.5.1.py`：V4.5.1 Python 启动入口。
+- `start_surface_analyzer_v4_5_1.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,27 +14,37 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_5_0.bat
+start_surface_analyzer_v4_5_1.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_5_0.bat
+.\start_surface_analyzer_v4_5_1.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_5_0.bat --check
+.\start_surface_analyzer_v4_5_1.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.5.0.py
+python .\面型及Rxy分析工具V4.5.1.py
 python -m surface_analyzer
 ```
+
+## V4.5.1 重点
+
+- Smart ROI 完成后缓存最终掩码，同一数据的多个 ROI 复用拓扑；删点、撤销、滤波、残差显示、重绘和切页不再重复建图或抓面。
+- 连续曲面生长采用 Fast Accept / Fast Reject / 灰区精细拟合的粗到细策略，并传播复用局部平面；平滑面基准约提升 8.7~9.8 倍。
+- XY、XZ、YZ 均可按实际显示点选择真实 XYZ 种子，解决 XY 重叠多层面无法区分的问题。
+- 支持在 XY/XZ/YZ 预先框定候选范围，多个范围取交集；显示残差只用于选点，抓面始终使用真实变换后 Z。
+- 首次抓面无论点数多少均在后台执行，提供真实阶段进度和取消；内部记录拓扑、Grow、Fast/Slow、拟合、Mask、分析、绘图和总耗时。
+- Recipe 升级为 schema 6，新建 Smart ROI 使用算法 V3；V4.5.0 V2 与更早 legacy ROI 保留原算法重放，不静默改变历史点数。
+- 加入 V4.0.3 长期使用 Demo 的 Golden Sample，四种滤波模式下 Rx/Ry/TTV/PV/RMS 与 V4.0.3 逐项一致。
 
 ## V4.5.0 重点
 
