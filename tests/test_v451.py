@@ -153,6 +153,20 @@ class V451CacheTests(unittest.TestCase):
             QApplication.processEvents()
             self.assertEqual(calls, {'build': 1, 'grow': 1})
 
+            manual_roi = {
+                'type': 'rect', 'view': 'XY',
+                'cx': float((tx.min() + tx.max()) / 2.0),
+                'cy': float((ty.min() + ty.max()) / 2.0),
+                'width': float(np.ptp(tx) + 0.1), 'height': float(np.ptp(ty) + 0.1),
+            }
+            window._add_roi_shape(manual_roi)
+            self.assertEqual(calls, {'build': 1, 'grow': 1})
+            manual_id = window.roi_shapes[-1]['id']
+            window.cb_roi_select.setCurrentIndex(window.cb_roi_select.findData(manual_id))
+            window.delete_selected_roi()
+            window.cancel_temp_selection()
+            self.assertEqual(calls, {'build': 1, 'grow': 1})
+
             roi2 = self._roi(window, float(np.percentile(tx, 65)), float(np.percentile(ty, 55)))
             second_mask = window._smart_face_keep_mask_for_arrays(
                 tx, ty, tz, roi2, matrix_rc=matrix_rc)
@@ -261,7 +275,7 @@ class V451CacheTests(unittest.TestCase):
                                    ('pv', pv), ('rms', rms)):
                     self.assertAlmostEqual(metrics[key], value, delta=1e-9)
 
-    def test_multiview_seed_uses_the_rendered_layer_index(self):
+    def test_smart_seed_is_only_accepted_from_xy(self):
         window = SurfaceAnalyzerPro()
         x = np.array([0.0, 1.0, 0.0, 1.0] * 2)
         y = np.array([0.0, 0.0, 1.0, 1.0] * 2)
@@ -271,24 +285,26 @@ class V451CacheTests(unittest.TestCase):
         window.active_idx = np.arange(len(z))
         window.selection_mode = 'roi_smart'
         window._smart_seed_view_indices = {
-            'XY': np.arange(len(z)), 'XZ': np.arange(len(z)), 'YZ': np.arange(len(z))}
+            'XY': np.arange(len(z))}
         captured = []
 
         def capture(px, py, seed_index=None, seed_view='XY'):
             captured.append((seed_index, seed_view))
 
         with patch.object(window, 'add_smart_face_roi_from_seed', side_effect=capture):
-            for ax, view, point in (
-                    (window.canvas.ax_xz, 'XZ', (1.0, 1.08)),
-                    (window.canvas.ax_yz, 'YZ', (1.0, 1.08))):
-                ax.set_xlim(-0.1, 1.1); ax.set_ylim(0.98, 1.10)
-                window.canvas.draw()
-                sx, sy = ax.transData.transform(point)
-                window.on_canvas_click(SimpleNamespace(
-                    inaxes=ax, xdata=point[0], ydata=point[1],
-                    x=sx, y=sy, button=1))
-                self.assertEqual(captured[-1][1], view)
-                self.assertGreaterEqual(captured[-1][0], 4)
+            point = (1.0, 1.0)
+            window.canvas.ax_xy.set_xlim(-0.1, 1.1); window.canvas.ax_xy.set_ylim(-0.1, 1.1)
+            window.canvas.draw()
+            sx, sy = window.canvas.ax_xy.transData.transform(point)
+            window.on_canvas_click(SimpleNamespace(
+                inaxes=window.canvas.ax_xy, xdata=point[0], ydata=point[1],
+                x=sx, y=sy, button=1))
+            self.assertEqual(captured[-1][1], 'XY')
+            before = len(captured)
+            window.on_canvas_click(SimpleNamespace(
+                inaxes=window.canvas.ax_xz, xdata=1.0, ydata=1.08,
+                x=0.0, y=0.0, button=1))
+            self.assertEqual(len(captured), before)
         window.close()
 
     def test_small_smart_roi_starts_in_background(self):
@@ -303,21 +319,25 @@ class V451CacheTests(unittest.TestCase):
         background.assert_called_once()
         window.close()
 
-    def test_smart_candidate_gates_intersect_across_views(self):
+    def test_legacy_candidate_gate_fields_are_ignored_by_new_cache_signature(self):
         window = SurfaceAnalyzerPro()
-        x = np.array([0.0, 1.0, 2.0, 1.0])
-        y = np.array([0.0, 1.0, 1.0, 2.0])
-        z = np.array([1.00, 1.01, 1.02, 1.03])
-        roi = {
+        base = {
+            'type': 'smart_face', 'smart_algorithm_version': 3,
+            'seed_x': 1.0, 'seed_y': 1.0, 'seed_z': 1.01,
+            'z_tolerance_mm': 0.02, 'smart_mode': 'surface_following',
+            'sensitivity': 'standard', 'connectivity': 'auto_xy',
+        }
+        legacy = dict(base)
+        legacy.update({
             'optional_xy_gate': {
                 'bounds': {'x_min': 0.5, 'x_max': 1.5, 'y_min': 0.5, 'y_max': 2.5},
                 'display_mode': 'raw_z_mm'},
             'optional_xz_gate': {
                 'bounds': {'x_min': 0.5, 'x_max': 1.5, 'y_min': 1.005, 'y_max': 1.025},
                 'display_mode': 'raw_z_mm'},
-        }
-        keep = window._smart_candidate_gate_mask(x, y, z, roi)
-        self.assertTrue(np.array_equal(keep, np.array([False, True, False, False])))
+        })
+        self.assertEqual(window._smart_roi_parameter_signature(base),
+                         window._smart_roi_parameter_signature(legacy))
         window.close()
 
 

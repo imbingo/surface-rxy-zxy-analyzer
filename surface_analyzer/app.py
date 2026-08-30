@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.5.1."""
+"""Qt application shell for Surface Analyzer V4.5.2."""
 
 import sys
 import os
@@ -116,10 +116,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             'point_table', 'height_matrix', 'zygo_xyz') else 'point_table'
         self.use_system_frame = str(self.settings.value("use_system_frame", "false")).lower() in ("1", "true", "yes")
         self.recent_files = [str(x) for x in self.settings.value("recent_files", [], type=list)]
-        self.roi_enabled = False           # V3.8.4+: XY ROI 保留区域开关
-        self.roi_shapes = []               # list[dict]，当前物料坐标系 X/Y(mm)
+        self.roi_enabled = False           # 人工/Smart ROI 保留区域开关
+        self.roi_shapes = []               # list[dict]，人工ROI记录XY/XZ/YZ二维几何
         self.roi_next_id = 1
-        self.selection_mode = 'delete'     # delete / roi_rect / roi_circle / roi_smart / roi_smart_gate
+        self.selection_mode = 'delete'     # delete / roi_rect / roi_circle / roi_smart
         self._pending_smart_gates = {}
         self.last_roi_keep_count = None
         self.import_info = {               # 导入状态：用于UI与导出元数据
@@ -941,7 +941,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         ll.addWidget(flt_group)
 
         # ---------- 5. ROI 区域 ----------
-        ll.addWidget(self._step_header(5, "ROI 区域", hint="XY保留区域"))
+        ll.addWidget(self._step_header(5, "ROI 区域", hint="XY/XZ/YZ组合区域"))
         roi_group = QGroupBox()
         roi_group.setFlat(True)
         rg = QGridLayout(roi_group)
@@ -950,7 +950,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         rg.setVerticalSpacing(7)
 
         self.chk_roi_enable = QCheckBox("启用 ROI 分析")
-        self.chk_roi_enable.setToolTip("开启后，仅分析启用 ROI 内的点；多个 ROI 按并集合并。ROI 位于当前物料坐标 X/Y(mm)。")
+        self.chk_roi_enable.setToolTip(
+            "同一视图内人工ROI取并集，不同视图取交集；Smart ROI与人工ROI取交集。")
         self.chk_roi_enable.stateChanged.connect(self._on_roi_changed)
         rg.addWidget(self.chk_roi_enable, 0, 0, 1, 2)
         rg.setColumnStretch(1, 1)
@@ -1062,22 +1063,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         adv.addWidget(self.lbl_smart_sensitivity, 6, 0); adv.addWidget(self.cb_smart_sensitivity, 6, 1)
         adv.addWidget(self.lbl_smart_tol, 7, 0); adv.addWidget(self.spin_smart_tol, 7, 1)
         adv.addWidget(self.lbl_smart_tol_hint, 8, 0, 1, 2)
-        smart_gate_row = QHBoxLayout()
-        self.btn_smart_gate = QPushButton("框定候选范围")
-        self.btn_smart_gate.setCheckable(True)
-        self.btn_smart_gate.setObjectName("secondaryBtn")
-        self.btn_smart_gate.setToolTip("可在XY/XZ/YZ视图拖框；多个视图范围取交集，再点击种子抓面。")
-        self.btn_smart_gate.toggled.connect(self.toggle_smart_gate_mode)
-        self.btn_clear_smart_gates = QPushButton("清除范围")
-        self.btn_clear_smart_gates.setObjectName("secondaryBtn")
-        self.btn_clear_smart_gates.clicked.connect(self.clear_pending_smart_gates)
-        smart_gate_row.addWidget(self.btn_smart_gate)
-        smart_gate_row.addWidget(self.btn_clear_smart_gates)
-        adv.addLayout(smart_gate_row, 9, 0, 1, 2)
         self.btn_roi_add_input = QPushButton("添加输入ROI")
         self.btn_roi_add_input.setObjectName("accentSoftBtn")
         self.btn_roi_add_input.clicked.connect(self.add_roi_from_inputs)
-        adv.addWidget(self.btn_roi_add_input, 10, 0, 1, 2)
+        adv.addWidget(self.btn_roi_add_input, 9, 0, 1, 2)
         rg.addWidget(self.roi_advanced_widget, 7, 0, 1, 2)
         ll.addWidget(roi_group)
         self._sync_roi_input_state()
@@ -1785,7 +1774,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
     def draw_plots(self, tx, ty, tz, roi_mask_all=None):
         roi_active = self._roi_is_active()
-        xy_plot_idx = self.active_idx
+        xy_plot_idx = (np.flatnonzero(self.manual_mask) if self.manual_mask is not None
+                       else self.active_idx)
         detail_plot_idx = self.active_idx
         roi_plot_idx = None
         if roi_active and self.manual_mask is not None:
@@ -1794,9 +1784,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 roi_mask_all = self._get_effective_roi_mask_cached(
                     tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data())
             roi_plot_idx = all_idx[roi_mask_all[all_idx]]
-            xy_plot_idx = all_idx
-            detail_plot_idx = (all_idx if self.selection_mode == 'roi_smart'
-                               else self.active_idx)
+            detail_plot_idx = self.active_idx
         display_limit = self._display_limit()
 
         def sample_for_display(source_idx):
@@ -1807,10 +1795,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
         xy_plot_idx, xy_sampled = sample_for_display(xy_plot_idx)
         detail_plot_idx, detail_sampled = sample_for_display(detail_plot_idx)
+        self._last_xy_plot_indices = np.asarray(xy_plot_idx, dtype=int).copy()
+        self._last_detail_plot_indices = np.asarray(detail_plot_idx, dtype=int).copy()
         self._smart_seed_view_indices = {
             'XY': np.asarray(xy_plot_idx, dtype=int).copy(),
-            'XZ': np.asarray(detail_plot_idx, dtype=int).copy(),
-            'YZ': np.asarray(detail_plot_idx, dtype=int).copy(),
         }
         if xy_sampled or detail_sampled:
             self.statusBar().showMessage(
@@ -1818,6 +1806,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         if roi_plot_idx is not None and len(roi_plot_idx) > display_limit:
             pick = np.linspace(0, len(roi_plot_idx) - 1, display_limit, dtype=int)
             roi_plot_idx = roi_plot_idx[pick]
+        self._last_roi_plot_indices = (None if roi_plot_idx is None else
+                                       np.asarray(roi_plot_idx, dtype=int).copy())
 
         self.last_displayed_points = len(detail_plot_idx) if roi_active else len(xy_plot_idx)
         self._update_import_status_label()
@@ -1865,14 +1855,13 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         if len(xy_x) > 0:
             self.canvas.ax_xy.scatter(xy_x, xy_y, c=xy_z, **sc_params, zorder=2)
         set_xy_equal_aspect(self.canvas.ax_xy)
-        self._draw_roi_overlays(self.canvas.ax_xy)
-        self._draw_smart_gate_overlays(self.canvas.ax_xy, 'XY')
+        self._draw_roi_overlays(self.canvas.ax_xy, view='XY')
         if len(detail_x) > 0:
             self.canvas.ax3d.scatter(detail_x, detail_y, detail_z, c=detail_z, **sc_params)
             self.canvas.ax_xz.scatter(detail_x, detail_z, c=detail_z, **sc_params)
             self.canvas.ax_yz.scatter(detail_y, detail_z, c=detail_z, **sc_params)
-        self._draw_smart_gate_overlays(self.canvas.ax_xz, 'XZ')
-        self._draw_smart_gate_overlays(self.canvas.ax_yz, 'YZ')
+        self._draw_roi_overlays(self.canvas.ax_xz, view='XZ')
+        self._draw_roi_overlays(self.canvas.ax_yz, view='YZ')
 
         if roi_x is not None and len(roi_x) > 0:
             roi_params = {
