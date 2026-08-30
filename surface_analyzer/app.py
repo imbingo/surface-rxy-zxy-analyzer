@@ -1593,10 +1593,28 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
     def _on_surface_display_changed(self):
         mode = str(self.cb_surface_display.currentData() or 'raw')
+        if mode != 'raw':
+            try:
+                order = int(mode.rsplit('_', 1)[1])
+            except (ValueError, IndexError):
+                order = 1
+            if self.high_order_models.get(order) is None:
+                self.cb_surface_display.blockSignals(True)
+                self.cb_surface_display.setCurrentIndex(
+                    max(0, self.cb_surface_display.findData('raw')))
+                self.cb_surface_display.blockSignals(False)
+                self.display_surface_mode = 'raw'
+                self.display_detrended = False
+                self.lbl_surface_residual_metrics.setText(f"{order}阶残差不可用，保持原始高度显示")
+                self._show_status(f"{order}阶残差模型不可用，未切换显示模式。", 6000)
+                self.update_plots_only(preserve_view=False)
+                return
         self.display_surface_mode = mode
         self.display_detrended = mode != 'raw'
         self._update_surface_display_metrics()
-        self.update_plots_only()
+        # raw(mm) 与 residual(µm) 的纵轴单位和数量级不同，必须按新数据
+        # 重新 autoscale；保留旧 ylim 会把绝大多数残差点裁出视野。
+        self.update_plots_only(preserve_view=False)
 
     def _update_surface_display_metrics(self):
         mode = getattr(self, 'display_surface_mode', 'raw')
@@ -1831,6 +1849,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._update_import_status_label()
 
         plot_z_all, z_axis_label, z_short_label = self._get_plot_z(tx, ty, tz)
+        actual_display_mode = (getattr(self, 'display_surface_mode', 'raw')
+                               if z_short_label != 'Z' else 'raw')
         xy_x, xy_y, xy_z = tx[xy_plot_idx], ty[xy_plot_idx], plot_z_all[xy_plot_idx]
         detail_x = detail_y = detail_z = np.array([])
         if detail_plot_idx is not None and len(detail_plot_idx) > 0:
@@ -1859,7 +1879,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             pane.set_facecolor('#fbfcfd'); pane.set_edgecolor('#e6eaee'); pane.set_alpha(1.0)
         a3.tick_params(colors='#9aa4ae', labelsize=7)
 
-        self.canvas.set_titles(getattr(self, 'display_surface_mode', 'raw'))
+        self.canvas.set_titles(actual_display_mode)
 
         if len(xy_x) == 0 and len(detail_x) == 0:
             set_xy_equal_aspect(self.canvas.ax_xy)
@@ -1896,7 +1916,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             fit_idx = self.active_idx if len(self.active_idx) >= 3 else detail_plot_idx
             fxp, fyp = tx[fit_idx], ty[fit_idx]
             xx, yy = np.meshgrid(np.linspace(fxp.min(), fxp.max(), 10), np.linspace(fyp.min(), fyp.max(), 10))
-            if getattr(self, 'display_surface_mode', 'raw') != 'raw':
+            if actual_display_mode != 'raw':
                 zz = np.zeros_like(xx)
             else:
                 zz = c[0] * xx + c[1] * yy + c[2]

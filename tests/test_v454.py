@@ -189,6 +189,57 @@ class V454BatchAndViewportTests(unittest.TestCase):
         self.assertLess(float(np.median(wafer) - np.median(plate)), 1010.0)
         window.close()
 
+    def test_residual_display_uses_micrometre_data_without_changing_masks(self):
+        window = SurfaceAnalyzerPro()
+        yy, xx = np.mgrid[-4:5, -4:5]
+        x = xx.ravel().astype(float); y = yy.ravel().astype(float)
+        z = (0.25 + 1e-5 * x + 2e-5 * y
+             + 2e-6 * np.sin(x) * np.cos(y))
+        window.df_raw = pd.DataFrame({'X': x, 'Y': y, 'Z': z})
+        n = len(z)
+        window.manual_mask = np.ones(n, dtype=bool)
+        window.temp_selected_mask = np.zeros(n, dtype=bool)
+        window.update_analysis()
+        active_before = window.active_idx.copy()
+        manual_before = window.manual_mask.copy()
+        roi_before = window._get_effective_roi_mask_cached(x, y, z).copy()
+        filter_count_before = window.n_filtered
+
+        index = window.cb_surface_display.findData('residual_1')
+        window.cb_surface_display.setCurrentIndex(index)
+        plot_z, label, short_label = window._get_plot_z(x, y, z)
+        active_plot = plot_z[window.active_idx]
+        model = window.high_order_models[1]
+
+        self.assertEqual(label, '1阶去除后残差 (µm)')
+        self.assertEqual(short_label, '1阶残差')
+        self.assertAlmostEqual(float(np.mean(active_plot)), 0.0, places=10)
+        self.assertAlmostEqual(float(np.ptp(active_plot)),
+                               float(model['residual_pv_um']), places=9)
+        self.assertLess(float(np.max(np.abs(active_plot))), 0.01)
+        np.testing.assert_array_equal(window.active_idx, active_before)
+        np.testing.assert_array_equal(window.manual_mask, manual_before)
+        np.testing.assert_array_equal(
+            window._get_effective_roi_mask_cached(x, y, z), roi_before)
+        self.assertEqual(window.n_filtered, filter_count_before)
+        self.assertLess(window.canvas.ax_xz.get_ylim()[0], float(np.min(active_plot)))
+        self.assertGreater(window.canvas.ax_xz.get_ylim()[1], float(np.max(active_plot)))
+        window.close()
+
+    def test_unavailable_residual_mode_stays_raw_in_state_data_and_titles(self):
+        window = SurfaceAnalyzerPro()
+        window.high_order_models = {}
+        index = window.cb_surface_display.findData('residual_2')
+        window.cb_surface_display.setCurrentIndex(index)
+        self.assertEqual(window.display_surface_mode, 'raw')
+        self.assertEqual(window.cb_surface_display.currentData(), 'raw')
+        z = np.array([0.249, 0.250, 0.251])
+        plot_z, label, short_label = window._get_plot_z(z, z, z)
+        np.testing.assert_array_equal(plot_z, z)
+        self.assertEqual((label, short_label), ('Z (mm)', 'Z'))
+        self.assertEqual(window.canvas.title_xz.text(), 'X-Z 投影')
+        window.close()
+
 
 if __name__ == '__main__':
     unittest.main()
