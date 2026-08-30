@@ -283,6 +283,7 @@ class ReportingMixin:
             lambda progress, cancel: self._run_batch(
                 files, outdir, p, progress, cancel),
             self._finish_batch_process,
+            deliver_result_when_cancelled=True,
         )
 
     def _finish_batch_process(self, payload):
@@ -292,18 +293,24 @@ class ReportingMixin:
         self._update_import_status_label()
         ok = [r for r in results if r['status'] == 'ok']
         fail = [r for r in results if r['status'] == 'fail']
-        msg = (f"批量处理完成：成功 {len(ok)} / 失败 {len(fail)}\n"
+        cancelled = [r for r in results if r['status'] == 'cancelled']
+        was_cancelled = bool(payload.get('cancelled'))
+        title = "批量处理已取消" if was_cancelled else "批量处理完成"
+        msg = (f"{title}：成功 {len(ok)} / 失败 {len(fail)} / 未处理 {len(cancelled)}\n"
                f"输出目录：{outdir}\n"
                f"报告图：result_<原文件名>.png\n"
-               f"汇总表：{Path(summary_path).name if summary_path else '未生成'}")
+               f"{'Partial汇总' if was_cancelled else '汇总表'}："
+               f"{Path(summary_path).name if summary_path else '未生成'}")
         if fail:
             preview = "\n".join(f"  ✗ {r['file']}: {r['error']}" for r in fail[:8])
             if len(fail) > 8:
                 preview += f"\n  …其余 {len(fail) - 8} 个失败未列出"
             msg += "\n\n失败清单：\n" + preview
         self._show_status(
-            f"批量完成：成功 {len(ok)} / 失败 {len(fail)}，输出至 {outdir}", 10000)
-        (QMessageBox.warning if fail else QMessageBox.information)(self, "批量处理结果", msg)
+            f"{title}：成功 {len(ok)} / 失败 {len(fail)} / 未处理 {len(cancelled)}，输出至 {outdir}",
+            10000)
+        (QMessageBox.warning if fail or was_cancelled else QMessageBox.information)(
+            self, "批量处理结果", msg)
 
     @staticmethod
     def _unique_batch_summary_path(output_dir, partial=False):
@@ -316,14 +323,14 @@ class ReportingMixin:
             suffix += 1
         return candidate
 
-    def _batch_roi_shapes_for_dataset(self, shapes, x, y, z):
+    def _batch_roi_shapes_for_dataset(self, shapes, x, y, z, matrix_rc=None):
         """Clone recipe ROI state and bind runtime-only values to this dataset."""
         prepared = copy.deepcopy(shapes or [])
         finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
         finite_idx = np.flatnonzero(finite)
-        fitted_models = {}
+        smart_masks = []
         for roi in prepared:
-            if roi.get('type') == 'smart_face':
+            if roi.get('type') == 'smart_face' and roi.get('enabled', True):
                 if len(finite_idx):
                     seed_x = float(roi.get('seed_x', 0.0))
                     seed_y = float(roi.get('seed_y', 0.0))
@@ -331,25 +338,51 @@ class ReportingMixin:
                         (x[finite_idx] - seed_x) ** 2 +
                         (y[finite_idx] - seed_y) ** 2))
                     roi['seed_index'] = int(finite_idx[local])
+                    smart_mask = self._smart_face_keep_mask_for_arrays(
+                        x, y, z, roi, matrix_rc=matrix_rc)
+                    roi['point_count_at_create'] = int(smart_mask.sum())
+                    smart_masks.append(smart_mask)
                 else:
                     roi.pop('seed_index', None)
-                continue
+        scope = finite.copy()
+        if smart_masks:
+            scope &= np.logical_or.reduce(smart_masks)
+
+        # XY is the geometric base range. XZ/YZ are then replayed by first
+        # appearance; ROIs in the same view share one pre-view fit scope and OR.
+        xy_rois = [r for r in prepared if r.get('enabled', True)
+                   and r.get('type') != 'smart_face'
+                   and str(r.get('view', 'XY')).upper() == 'XY']
+        if xy_rois:
+            xy_masks = [self._manual_roi_mask_for_arrays(x, y, z, roi) for roi in xy_rois]
+            scope &= np.logical_or.reduce(xy_masks)
+
+        view_order = []
+        for roi in prepared:
             view = str(roi.get('view', 'XY')).upper()
-            if view not in ('XZ', 'YZ'):
-                continue
-            display_mode = str(roi.get('display_mode', 'raw_z_mm'))
-            if display_mode in ('detrended_um', 'residual_1_um'):
-                order = 1
-            else:
-                match = re.fullmatch(r'residual_([23])_um', display_mode)
-                order = int(match.group(1)) if match else None
-            if order is None or len(finite_idx) < 3:
-                continue
-            if order not in fitted_models:
-                fitted_models[order] = fit_polynomial_surface(
-                    x[finite_idx], y[finite_idx], z[finite_idx], order)
-            roi['display_polynomial_model'] = copy.deepcopy(fitted_models[order])
-            roi['display_plane_coeffs'] = None
+            if (roi.get('enabled', True) and roi.get('type') != 'smart_face'
+                    and view in ('XZ', 'YZ') and view not in view_order):
+                view_order.append(view)
+        for view in view_order:
+            view_rois = [r for r in prepared if r.get('enabled', True)
+                         and r.get('type') != 'smart_face'
+                         and str(r.get('view', 'XY')).upper() == view]
+            fit_idx = np.flatnonzero(scope)
+            for roi in view_rois:
+                display_mode = str(roi.get('display_mode', 'raw_z_mm'))
+                if display_mode in ('detrended_um', 'residual_1_um'):
+                    order = 1
+                else:
+                    match = re.fullmatch(r'residual_([23])_um', display_mode)
+                    order = int(match.group(1)) if match else None
+                if order is not None and len(fit_idx) >= 3:
+                    roi['display_polynomial_model'] = fit_polynomial_surface(
+                        x[fit_idx], y[fit_idx], z[fit_idx], order)
+                    roi['display_plane_coeffs'] = None
+            view_masks = [self._manual_roi_mask_for_arrays(x, y, z, roi)
+                          for roi in view_rois]
+            if view_masks:
+                scope &= np.logical_or.reduce(view_masks)
         return prepared
 
     def _run_batch(self, files, outdir, params, progress=None, cancel_event=None):
@@ -421,7 +454,7 @@ class ReportingMixin:
                         matrix_rc = (d['_matrix_row'].to_numpy(dtype=int), d['_matrix_col'].to_numpy(dtype=int))
                     n_total = len(z)
                     file_roi_shapes = self._batch_roi_shapes_for_dataset(
-                        params.get('roi_shapes', []), x, y, z)
+                        params.get('roi_shapes', []), x, y, z, matrix_rc=matrix_rc)
                     if self._roi_is_active(params.get('roi_enabled', False), file_roi_shapes):
                         roi_mask = self._roi_keep_mask_for_arrays(
                             x, y, z, file_roi_shapes,
@@ -438,10 +471,8 @@ class ReportingMixin:
                         k=params['k'], threshold_mm=params['threshold_mm'],
                         sigma_k=params['sigma_k'], sigma_iters=params['sigma_iters'])
                     if params['mode'] != 0 and keep.sum() < 3:
-                        keep = np.ones(len(roi_idx), dtype=bool)
-                        n_filtered = 0
-                    else:
-                        n_filtered = int(len(roi_idx) - keep.sum())
+                        raise ValueError("滤波后有效点少于 3 个")
+                    n_filtered = int(len(roi_idx) - keep.sum())
                     active_idx = roi_idx[keep]
                     fx, fy, fz = x[active_idx], y[active_idx], z[active_idx]
                     metrics = self.compute_plane_metrics(fx, fy, fz)
@@ -451,7 +482,8 @@ class ReportingMixin:
                         name, x, y, z, active_idx, metrics, n_filtered,
                         params['pipeline_text'], params['filter_text'],
                         import_info_snap, params['display_surface_mode'], roi_info=roi_info,
-                        overview_idx=np.arange(n_total), roi_mask_all=roi_mask)
+                        overview_idx=np.arange(n_total),
+                        roi_mask_all=(roi_mask if roi_info.get('enabled') else None))
                     out_png = self._unique_batch_report_path(out, path, reserved_outputs)
                     fig.savefig(str(out_png), dpi=150)
                     plt.close(fig)
@@ -471,7 +503,7 @@ class ReportingMixin:
                         '平均Z_mm': round(metrics['mean_z'], 6),
                         'PV_um': round(metrics['pv'], 3), 'TTV_um': round(metrics['ttv'], 3),
                         'Rx_urad': round(metrics['rx'], 2), 'Ry_urad': round(metrics['ry'], 2),
-                        '平面方程': f"Z={metrics['a']:.4f}X+{metrics['b']:.4f}Y+{metrics['c']:.4f}",
+                        '平面方程': f"Z={metrics['a']:.6e}X+{metrics['b']:.6e}Y+{metrics['c']:.6f}",
                     })
                 except Exception as e:
                     results.append({'status': 'fail', 'file': name,
@@ -541,7 +573,11 @@ class ReportingMixin:
             display_surface_mode = 'residual_1' if display_surface_mode else 'raw'
         display_surface_mode = str(display_surface_mode or 'raw')
         if roi_info is None:
-            roi_info = {'enabled': False, 'summary': '关闭', 'shape_lines': [], 'shapes': [], 'roi_enabled': False}
+            overlay_enabled = roi_mask_all is not None
+            roi_info = {'enabled': overlay_enabled,
+                        'summary': '开启' if overlay_enabled else '关闭',
+                        'shape_lines': [], 'shapes': [],
+                        'roi_enabled': overlay_enabled}
         # 绘图抽样（与主界面口径一致）；指标仍按全部参与拟合点
         plot_idx = np.asarray(active_idx, dtype=int)
         limit = self._display_limit()
@@ -576,7 +612,8 @@ class ReportingMixin:
         ax3d.set_title(ttl3d); ax3d.set_xlabel("X (mm)"); ax3d.set_ylabel("Y (mm)"); ax3d.set_zlabel(zlab)
         m_xy = ax_xy.scatter(ox, oy, c=oz, cmap='turbo', s=14, alpha=0.85,
                              edgecolors='none')
-        if roi_mask_all is not None and len(roi_mask_all) == len(tx):
+        if (roi_info.get('enabled') and roi_mask_all is not None
+                and len(roi_mask_all) == len(tx)):
             roi_overview = overview_idx[np.asarray(roi_mask_all, dtype=bool)[overview_idx]]
             if len(roi_overview) > limit:
                 pick = np.linspace(0, len(roi_overview) - 1, limit, dtype=int)

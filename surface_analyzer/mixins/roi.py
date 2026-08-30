@@ -683,6 +683,22 @@ class ROIMixin:
             keep &= np.logical_or.reduce(smart_masks)
         return keep
 
+    def _manual_roi_mask_for_arrays(self, x, y, z, roi):
+        """Evaluate one manual ROI using its current display-space model."""
+        view = str(roi.get('view', 'XY')).upper()
+        if view not in ('XY', 'XZ', 'YZ'):
+            view = 'XY'
+        second_axis = y if view == 'XY' else self._gate_plot_z(x, y, z, roi)
+        first_axis = x if view in ('XY', 'XZ') else y
+        cx = float(roi.get('cx', 0.0)); cy = float(roi.get('cy', 0.0))
+        if roi.get('type') == 'circle':
+            radius = float(roi.get('radius', 0.0))
+            return ((first_axis - cx) ** 2 + (second_axis - cy) ** 2) <= radius ** 2
+        half_width = float(roi.get('width', 0.0)) / 2.0
+        half_height = float(roi.get('height', 0.0)) / 2.0
+        return ((first_axis >= cx - half_width) & (first_axis <= cx + half_width)
+                & (second_axis >= cy - half_height) & (second_axis <= cy + half_height))
+
     def _sync_roi_input_state(self):
         if not hasattr(self, 'cb_roi_shape'):
             return

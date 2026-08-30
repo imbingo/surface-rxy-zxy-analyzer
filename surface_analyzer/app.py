@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.5.3."""
+"""Qt application shell for Surface Analyzer V4.5.4."""
 
 import sys
 import os
@@ -489,13 +489,15 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             return
         self.statusBar().showMessage(str(message), int(timeout))
 
-    def _run_background_task(self, name, fn, on_success, on_error=None):
+    def _run_background_task(self, name, fn, on_success, on_error=None,
+                             deliver_result_when_cancelled=False):
         """Run a cooperative task while exposing progress and cancellation."""
         if self._task_thread is not None:
             QMessageBox.information(self, "任务进行中", "请等待当前任务完成或先取消。")
             return False
         thread = QThread(self)
-        worker = FunctionWorker(fn)
+        worker = FunctionWorker(
+            fn, deliver_result_when_cancelled=deliver_result_when_cancelled)
         worker.moveToThread(thread)
         self._task_thread = thread
         self._task_worker = worker
@@ -1778,7 +1780,17 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         except Exception as e:
             self._show_status(f"分析出错: {e}", 10000)
 
-    def draw_plots(self, tx, ty, tz, roi_mask_all=None):
+    def draw_plots(self, tx, ty, tz, roi_mask_all=None, preserve_view=False):
+        view_state = None
+        if preserve_view:
+            view_state = {
+                'XY': (self.canvas.ax_xy.get_xlim(), self.canvas.ax_xy.get_ylim()),
+                'XZ': (self.canvas.ax_xz.get_xlim(), self.canvas.ax_xz.get_ylim()),
+                'YZ': (self.canvas.ax_yz.get_xlim(), self.canvas.ax_yz.get_ylim()),
+                '3D': (self.canvas.ax3d.get_xlim3d(), self.canvas.ax3d.get_ylim3d(),
+                       self.canvas.ax3d.get_zlim3d(), self.canvas.ax3d.elev,
+                       self.canvas.ax3d.azim),
+            }
         roi_active = self._roi_is_active()
         xy_plot_idx = (np.flatnonzero(self.manual_mask) if self.manual_mask is not None
                        else self.active_idx)
@@ -1854,6 +1866,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self._draw_roi_overlays(self.canvas.ax_xy)
             self.canvas.ax_xy.relim()
             self.canvas.ax_xy.autoscale_view()
+            if view_state is not None:
+                self._restore_plot_view_state(view_state)
             self.canvas.draw()
             return
 
@@ -1903,9 +1917,20 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 sx, sy = (txs, tys) if ax == self.canvas.ax_xy else (txs, tzs) if ax == self.canvas.ax_xz else (tys, tzs)
                 ax.scatter(sx, sy, c='red', s=50, marker='x', linewidth=2)
 
+        if view_state is not None:
+            self._restore_plot_view_state(view_state)
         self.canvas.draw()
 
-    def update_plots_only(self):
+    def _restore_plot_view_state(self, state):
+        self.canvas.ax_xy.set_xlim(state['XY'][0]); self.canvas.ax_xy.set_ylim(state['XY'][1])
+        self.canvas.ax_xz.set_xlim(state['XZ'][0]); self.canvas.ax_xz.set_ylim(state['XZ'][1])
+        self.canvas.ax_yz.set_xlim(state['YZ'][0]); self.canvas.ax_yz.set_ylim(state['YZ'][1])
+        xlim, ylim, zlim, elev, azim = state['3D']
+        self.canvas.ax3d.set_xlim3d(xlim); self.canvas.ax3d.set_ylim3d(ylim)
+        self.canvas.ax3d.set_zlim3d(zlim)
+        self.canvas.ax3d.view_init(elev=elev, azim=azim)
+
+    def update_plots_only(self, preserve_view=True):
         if self.df_raw is None or self.active_idx is None:
             return
         tx, ty, tz = self.get_final_transformed_data(self.df_raw)
@@ -1913,4 +1938,5 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         if self._roi_is_active():
             roi_mask_all = self._get_effective_roi_mask_cached(
                 tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data())
-        self.draw_plots(tx, ty, tz, roi_mask_all=roi_mask_all)
+        self.draw_plots(
+            tx, ty, tz, roi_mask_all=roi_mask_all, preserve_view=preserve_view)

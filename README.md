@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.5.3
+# Surface Rxy ZXY Analyzer V4.5.4
 
-面型及 Rxy 分析工具当前版本为 **V4.5.3**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
+面型及 Rxy 分析工具当前版本为 **V4.5.4**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.5.3.py`：V4.5.3 Python 启动入口。
-- `start_surface_analyzer_v4_5_3.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.5.4.py`：V4.5.4 Python 启动入口。
+- `start_surface_analyzer_v4_5_4.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,27 +14,34 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_5_3.bat
+start_surface_analyzer_v4_5_4.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_5_3.bat
+.\start_surface_analyzer_v4_5_4.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_5_3.bat --check
+.\start_surface_analyzer_v4_5_4.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.5.3.py
+python .\面型及Rxy分析工具V4.5.4.py
 python -m surface_analyzer
 ```
+
+## V4.5.4 重点
+
+- Batch 滤波后少于 3 点时直接记为失败，不再静默回退未滤波结果。
+- XZ/YZ 残差 ROI 按 Smart/基础 ROI 已限定的当前文件数据重新拟合，再应用投影范围。
+- Batch 取消结果、Partial 汇总、Smart ROI 点数、无 ROI 报告和方程显示精度已修正。
+- 临时框选、显示选中和取消选中后保留四视图缩放范围；量测算法保持不变。
 
 ## V4.5.3 重点
 

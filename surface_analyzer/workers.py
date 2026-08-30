@@ -23,16 +23,17 @@ class FunctionWorker(QObject):
     cancelled = pyqtSignal()
     finished = pyqtSignal()
 
-    def __init__(self, fn):
+    def __init__(self, fn, deliver_result_when_cancelled=False):
         super().__init__()
         self._fn = fn
+        self._deliver_result_when_cancelled = bool(deliver_result_when_cancelled)
         self.cancel_event = threading.Event()
 
     @pyqtSlot()
     def run(self):
         try:
             result = self._fn(self.progress.emit, self.cancel_event)
-            if self.cancel_event.is_set():
+            if self.cancel_event.is_set() and not self._deliver_result_when_cancelled:
                 self.cancelled.emit()
             else:
                 self.succeeded.emit(result)

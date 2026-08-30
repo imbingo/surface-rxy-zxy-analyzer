@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "4.5.3"
+  #define AppVersion "4.5.4"
 #endif
 
 #define AppName "面型及Rxy分析工具"
