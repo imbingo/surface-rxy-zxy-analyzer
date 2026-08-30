@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 
-APP_VERSION = "V4.5.2"
+APP_VERSION = "V4.5.3"
 SOURCE_BASE_VERSION = "V3.9.3"
 
 

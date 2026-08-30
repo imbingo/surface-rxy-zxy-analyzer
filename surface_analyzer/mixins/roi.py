@@ -687,14 +687,11 @@ class ROIMixin:
         if not hasattr(self, 'cb_roi_shape'):
             return
         shape_idx = self.cb_roi_shape.currentIndex()
-        is_circle = shape_idx == 1
-        is_smart = shape_idx == 2
+        is_smart = shape_idx == 1
         if hasattr(self, 'roi_advanced_widget'):
             self.roi_advanced_widget.setVisible(self.chk_roi_advanced.isChecked())
         for w in (self.lbl_roi_w, self.spin_roi_w, self.lbl_roi_h, self.spin_roi_h):
-            w.setEnabled((not is_circle) and (not is_smart))
-        for w in (self.lbl_roi_r, self.spin_roi_r):
-            w.setEnabled(is_circle and not is_smart)
+            w.setEnabled(not is_smart)
         for w in (self.lbl_smart_mode, self.cb_smart_mode,
                   self.lbl_smart_sensitivity, self.cb_smart_sensitivity, self.lbl_smart_tol,
                   self.spin_smart_tol, self.lbl_smart_tol_hint):
@@ -706,12 +703,12 @@ class ROIMixin:
             self.btn_roi_mouse.setText("退出智能抓面" if is_smart else "退出框选 ROI")
         else:
             self.btn_roi_mouse.setText("开始智能抓面" if is_smart else "开始框选 ROI")
-        if self.selection_mode in ('roi_rect', 'roi_circle', 'roi_smart'):
-            self.selection_mode = 'roi_smart' if is_smart else 'roi_circle' if is_circle else 'roi_rect'
+        if self.selection_mode in ('roi_rect', 'roi_smart'):
+            self.selection_mode = 'roi_smart' if is_smart else 'roi_rect'
             self.statusBar().showMessage(
                 "智能抓面模式：在 XY 图点击种子点；默认跟随连续Bow/Warpage，不跨孔洞且不自动补洞。"
                 if is_smart else
-                f"ROI 连续框选模式: {'圆形' if is_circle else '矩形'}。可在 XY/XZ/YZ 图中继续拖拽添加区域。", 5000)
+                "ROI 连续框选模式: 矩形。可在 XY/XZ/YZ 图中继续拖拽添加区域。", 5000)
 
     def _on_roi_changed(self):
         if hasattr(self, 'chk_roi_enable'):
@@ -798,26 +795,22 @@ class ROIMixin:
         self.statusBar().showMessage(f"已添加 {self._roi_shape_label(roi)}", 5000)
 
     def add_roi_from_inputs(self):
-        if self.cb_roi_shape.currentIndex() == 2:
+        if self.cb_roi_shape.currentIndex() == 1:
             self.statusBar().showMessage("智能抓面需要在 XY 图点击种子点生成 ROI。", 5000)
             return
         cx = float(self.spin_roi_cx.value())
         cy = float(self.spin_roi_cy.value())
-        if self.cb_roi_shape.currentIndex() == 1:
-            self._add_roi_shape({'type': 'circle', 'view': 'XY', 'cx': cx, 'cy': cy,
-                                 'radius': float(self.spin_roi_r.value())})
-        else:
-            self._add_roi_shape({
-                'type': 'rect', 'view': 'XY', 'cx': cx, 'cy': cy,
-                'width': float(self.spin_roi_w.value()), 'height': float(self.spin_roi_h.value())
-            })
+        self._add_roi_shape({
+            'type': 'rect', 'view': 'XY', 'cx': cx, 'cy': cy,
+            'width': float(self.spin_roi_w.value()), 'height': float(self.spin_roi_h.value())
+        })
 
     def start_mouse_roi(self, checked=None):
         checked = self.btn_roi_mouse.isChecked() if checked is None else bool(checked)
         if not checked:
             self.set_delete_selection_mode(show_message=True)
             return
-        self.selection_mode = 'roi_smart' if self.cb_roi_shape.currentIndex() == 2 else 'roi_circle' if self.cb_roi_shape.currentIndex() == 1 else 'roi_rect'
+        self.selection_mode = 'roi_smart' if self.cb_roi_shape.currentIndex() == 1 else 'roi_rect'
         self.btn_roi_mouse.setText("退出智能抓面" if self.selection_mode == 'roi_smart' else "退出框选 ROI")
         if self.temp_selected_mask is not None:
             self.temp_selected_mask.fill(False)
@@ -852,7 +845,7 @@ class ROIMixin:
         if hasattr(self, 'btn_roi_mouse'):
             self.btn_roi_mouse.blockSignals(True)
             self.btn_roi_mouse.setChecked(False)
-            self.btn_roi_mouse.setText("开始智能抓面" if self.cb_roi_shape.currentIndex() == 2 else "开始框选 ROI")
+            self.btn_roi_mouse.setText("开始智能抓面" if self.cb_roi_shape.currentIndex() == 1 else "开始框选 ROI")
             self.btn_roi_mouse.blockSignals(False)
         if show_message:
             self.statusBar().showMessage("已退出 ROI 框选，恢复为删除点框选模式。", 4000)
@@ -1291,6 +1284,42 @@ class ROIMixin:
             float(tx[seed_idx]), float(ty[seed_idx]), seed_index=seed_idx,
             seed_view=view_type)
 
+    def on_canvas_scroll(self, event):
+        """Zoom only the current view; this must not touch analysis state."""
+        ax = getattr(event, 'inaxes', None)
+        if ax not in (self.canvas.ax_xy, self.canvas.ax_xz,
+                      self.canvas.ax_yz, self.canvas.ax3d):
+            return
+        button = getattr(event, 'button', None)
+        step = float(getattr(event, 'step', 0.0) or 0.0)
+        if button == 'up' or step > 0:
+            scale = 0.85
+        elif button == 'down' or step < 0:
+            scale = 1.0 / 0.85
+        else:
+            return
+
+        def scaled_limits(limits, center):
+            low, high = map(float, limits)
+            return (center + (low - center) * scale,
+                    center + (high - center) * scale)
+
+        if ax is self.canvas.ax3d:
+            for getter, setter in ((ax.get_xlim3d, ax.set_xlim3d),
+                                   (ax.get_ylim3d, ax.set_ylim3d),
+                                   (ax.get_zlim3d, ax.set_zlim3d)):
+                limits = getter()
+                center = (float(limits[0]) + float(limits[1])) / 2.0
+                setter(scaled_limits(limits, center))
+        else:
+            if event.xdata is None or event.ydata is None:
+                return
+            if not np.isfinite(event.xdata) or not np.isfinite(event.ydata):
+                return
+            ax.set_xlim(scaled_limits(ax.get_xlim(), float(event.xdata)))
+            ax.set_ylim(scaled_limits(ax.get_ylim(), float(event.ydata)))
+        event.canvas.draw_idle()
+
     def add_smart_face_roi_from_seed(self, px, py, seed_index=None, seed_view='XY'):
         if self.df_raw is None:
             return
@@ -1446,13 +1475,13 @@ class ROIMixin:
             8000)
 
     @staticmethod
-    def _manual_roi_from_operation(operation, shape_type='rect'):
+    def _manual_roi_from_operation(operation):
         bounds = dict((operation or {}).get('bounds', {}) or {})
         x1, x2 = float(bounds['x_min']), float(bounds['x_max'])
         y1, y2 = float(bounds['y_min']), float(bounds['y_max'])
         width, height = abs(x2 - x1), abs(y2 - y1)
         roi = {
-            'type': 'circle' if shape_type == 'circle' else 'rect',
+            'type': 'rect',
             'view': str((operation or {}).get('view', 'XY')).upper(),
             'cx': (x1 + x2) / 2.0,
             'cy': (y1 + y2) / 2.0,
@@ -1460,11 +1489,8 @@ class ROIMixin:
             'display_plane_coeffs': (operation or {}).get('display_plane_coeffs'),
             'display_polynomial_model': (operation or {}).get('display_polynomial_model'),
         }
-        if roi['type'] == 'circle':
-            roi['radius'] = max(width, height) / 2.0
-        else:
-            roi['width'] = width
-            roi['height'] = height
+        roi['width'] = width
+        roi['height'] = height
         return roi
 
     def cancel_temp_selection(self):
@@ -1477,14 +1503,12 @@ class ROIMixin:
         if (self.temp_selected_mask is None or not np.any(self.temp_selected_mask)
                 or not self.pending_delete_operation):
             return
-        shape_type = 'circle' if self.cb_roi_shape.currentIndex() == 1 else 'rect'
         try:
-            roi = self._manual_roi_from_operation(self.pending_delete_operation, shape_type)
+            roi = self._manual_roi_from_operation(self.pending_delete_operation)
         except (KeyError, TypeError, ValueError):
             self.statusBar().showMessage("当前框选范围无效，未创建 ROI。", 5000)
             return
-        size = float(roi.get('radius', 0.0)) if shape_type == 'circle' else min(
-            float(roi.get('width', 0.0)), float(roi.get('height', 0.0)))
+        size = min(float(roi.get('width', 0.0)), float(roi.get('height', 0.0)))
         if size <= 0:
             return
         self.temp_selected_mask.fill(False)
@@ -1494,12 +1518,12 @@ class ROIMixin:
     def _show_selection_context_menu(self):
         menu = QMenu(self)
         delete_action = menu.addAction("删除选中")
-        roi_action = menu.addAction("设为 ROI 区域")
+        rect_action = menu.addAction("设为矩形 ROI")
         cancel_action = menu.addAction("取消选中")
         chosen = menu.exec(QCursor.pos())
         if chosen is delete_action:
             self.apply_manual_deletion()
-        elif chosen is roi_action:
+        elif chosen is rect_action:
             self.set_temp_selection_as_roi()
         elif chosen is cancel_action:
             self.cancel_temp_selection()
@@ -1512,12 +1536,10 @@ class ROIMixin:
         if self.selection_mode == 'roi_smart':
             return
 
-        if self.selection_mode in ('roi_rect', 'roi_circle'):
+        if self.selection_mode == 'roi_rect':
             operation = self._build_manual_delete_operation(view_type, x1, y1, x2, y2)
-            roi = self._manual_roi_from_operation(
-                operation, 'circle' if self.selection_mode == 'roi_circle' else 'rect')
-            if ((roi['type'] == 'circle' and roi['radius'] <= 0)
-                    or (roi['type'] == 'rect' and (roi['width'] <= 0 or roi['height'] <= 0))):
+            roi = self._manual_roi_from_operation(operation)
+            if roi['width'] <= 0 or roi['height'] <= 0:
                 return
             self._add_roi_shape(roi, keep_roi_mode=True)
             return
@@ -1537,6 +1559,18 @@ class ROIMixin:
         self.temp_selected_mask[selection_idx[in_box]] = True
         self.pending_delete_operation = self._build_manual_delete_operation(view_type, x1, y1, x2, y2)
         self.pending_delete_operation['selected_count'] = int(in_box.sum())
+        selected_count = int(self.temp_selected_mask.sum())
+        roi_inside_count = selected_count
+        if self._roi_is_active():
+            cached = getattr(self, '_effective_roi_mask_cache', None)
+            if cached is not None and len(cached) == len(self.temp_selected_mask):
+                roi_inside_count = int(np.sum(self.temp_selected_mask & cached))
+            else:
+                active_mask = np.zeros(len(self.temp_selected_mask), dtype=bool)
+                active_mask[np.asarray(self.active_idx, dtype=int)] = True
+                roi_inside_count = int(np.sum(self.temp_selected_mask & active_mask))
+        self.statusBar().showMessage(
+            f"已选择 {selected_count:,} 点，其中当前 ROI 内 {roi_inside_count:,} 点", 8000)
         self.update_plots_only()
 
     def setup_selectors(self):

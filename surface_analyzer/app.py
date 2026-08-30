@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.5.2."""
+"""Qt application shell for Surface Analyzer V4.5.3."""
 
 import sys
 import os
@@ -119,7 +119,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.roi_enabled = False           # 人工/Smart ROI 保留区域开关
         self.roi_shapes = []               # list[dict]，人工ROI记录XY/XZ/YZ二维几何
         self.roi_next_id = 1
-        self.selection_mode = 'delete'     # delete / roi_rect / roi_circle / roi_smart
+        self.selection_mode = 'delete'     # delete / roi_rect / roi_smart
         self._pending_smart_gates = {}
         self.last_roi_keep_count = None
         self.import_info = {               # 导入状态：用于UI与导出元数据
@@ -425,8 +425,17 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         right_layout.addWidget(self._build_results_strip())
 
         self.canvas = MultiViewCanvas(self)
-        self._xy_click_cid = self.canvas.ax_xy.figure.canvas.mpl_connect(
-            'button_press_event', self.on_canvas_click)
+        # MultiViewCanvas uses one FigureCanvas per view. Bind each 2D canvas once;
+        # the 3D view intentionally has no selection/context-menu handler.
+        self._plot_click_cids = [
+            ax.figure.canvas.mpl_connect('button_press_event', self.on_canvas_click)
+            for ax in (self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz)
+        ]
+        self._plot_scroll_cids = [
+            ax.figure.canvas.mpl_connect('scroll_event', self.on_canvas_scroll)
+            for ax in (self.canvas.ax_xy, self.canvas.ax_xz,
+                       self.canvas.ax_yz, self.canvas.ax3d)
+        ]
         right_layout.addWidget(self.canvas, 1)
 
         self.right_stack = QStackedWidget()
@@ -957,7 +966,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         rg.setColumnStretch(1, 1)
 
         self.cb_roi_shape = NoWheelComboBox()
-        self.cb_roi_shape.addItems(["矩形 ROI", "圆形 ROI", "智能抓面"])
+        self.cb_roi_shape.addItems(["矩形 ROI", "智能抓面"])
         self.cb_roi_shape.currentIndexChanged.connect(self._sync_roi_input_state)
         rg.addWidget(QLabel("形状:"), 1, 0)
         rg.addWidget(self.cb_roi_shape, 1, 1)
@@ -991,7 +1000,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         rg.addWidget(self.lbl_roi_info, 5, 0, 1, 2)
 
         self.chk_roi_advanced = QCheckBox("高级 / 精确输入")
-        self.chk_roi_advanced.setToolTip("展开后可通过中心坐标、宽高或半径精确创建 ROI。")
+        self.chk_roi_advanced.setToolTip("展开后可通过中心坐标和宽高精确创建矩形 ROI。")
         self.chk_roi_advanced.stateChanged.connect(self._sync_roi_input_state)
         rg.addWidget(self.chk_roi_advanced, 6, 0, 1, 2)
 
@@ -1006,7 +1015,6 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
         self.spin_roi_cx = NoWheelDoubleSpinBox(); self.spin_roi_cy = NoWheelDoubleSpinBox()
         self.spin_roi_w = NoWheelDoubleSpinBox(); self.spin_roi_h = NoWheelDoubleSpinBox()
-        self.spin_roi_r = NoWheelDoubleSpinBox()
         self.cb_smart_mode = NoWheelComboBox()
         self.cb_smart_sensitivity = NoWheelComboBox()
         self.spin_smart_tol = NoWheelDoubleSpinBox()
@@ -1014,7 +1022,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.spin_smart_erode = NoWheelSpinBox()
         for sp in (self.spin_roi_cx, self.spin_roi_cy):
             sp.setDecimals(4); sp.setRange(-1e9, 1e9); sp.setSingleStep(0.1)
-        for sp in (self.spin_roi_w, self.spin_roi_h, self.spin_roi_r):
+        for sp in (self.spin_roi_w, self.spin_roi_h):
             sp.setDecimals(4); sp.setRange(0.0001, 1e9); sp.setSingleStep(0.1); sp.setValue(1.0)
         self.spin_smart_tol.setDecimals(4)
         self.spin_smart_tol.setRange(0.0001, 1000.0)
@@ -1043,7 +1051,6 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         adv.addWidget(self.lbl_roi_cy, 1, 0); adv.addWidget(self.spin_roi_cy, 1, 1)
         self.lbl_roi_w = QLabel("宽度:")
         self.lbl_roi_h = QLabel("高度:")
-        self.lbl_roi_r = QLabel("半径:")
         self.lbl_smart_mode = QLabel("抓面模式:")
         self.lbl_smart_sensitivity = QLabel("灵敏度:")
         self.lbl_smart_tol = QLabel("抓面容差:")
@@ -1053,16 +1060,15 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.lbl_smart_tol_hint.setObjectName("mutedNote")
         self.lbl_smart_dilate.setVisible(False)
         self.lbl_smart_erode.setVisible(False)
-        for lab in (self.lbl_roi_cx, self.lbl_roi_cy, self.lbl_roi_w, self.lbl_roi_h, self.lbl_roi_r,
+        for lab in (self.lbl_roi_cx, self.lbl_roi_cy, self.lbl_roi_w, self.lbl_roi_h,
                     self.lbl_smart_mode, self.lbl_smart_sensitivity, self.lbl_smart_tol):
             lab.setFixedWidth(58)
         adv.addWidget(self.lbl_roi_w, 2, 0); adv.addWidget(self.spin_roi_w, 2, 1)
         adv.addWidget(self.lbl_roi_h, 3, 0); adv.addWidget(self.spin_roi_h, 3, 1)
-        adv.addWidget(self.lbl_roi_r, 4, 0); adv.addWidget(self.spin_roi_r, 4, 1)
-        adv.addWidget(self.lbl_smart_mode, 5, 0); adv.addWidget(self.cb_smart_mode, 5, 1)
-        adv.addWidget(self.lbl_smart_sensitivity, 6, 0); adv.addWidget(self.cb_smart_sensitivity, 6, 1)
-        adv.addWidget(self.lbl_smart_tol, 7, 0); adv.addWidget(self.spin_smart_tol, 7, 1)
-        adv.addWidget(self.lbl_smart_tol_hint, 8, 0, 1, 2)
+        adv.addWidget(self.lbl_smart_mode, 4, 0); adv.addWidget(self.cb_smart_mode, 4, 1)
+        adv.addWidget(self.lbl_smart_sensitivity, 5, 0); adv.addWidget(self.cb_smart_sensitivity, 5, 1)
+        adv.addWidget(self.lbl_smart_tol, 6, 0); adv.addWidget(self.spin_smart_tol, 6, 1)
+        adv.addWidget(self.lbl_smart_tol_hint, 7, 0, 1, 2)
         self.btn_roi_add_input = QPushButton("添加输入ROI")
         self.btn_roi_add_input.setObjectName("accentSoftBtn")
         self.btn_roi_add_input.clicked.connect(self.add_roi_from_inputs)

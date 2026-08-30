@@ -6,6 +6,7 @@ import re
 import mmap
 import json
 import tempfile
+import copy
 from collections import deque
 from pathlib import Path
 from datetime import datetime
@@ -124,7 +125,10 @@ class ReportingMixin:
                 self.current_source_name, tx, ty, tz, self.active_idx, metrics,
                 self.n_filtered, pipeline_text, filter_text, self.import_info,
                 getattr(self, 'display_surface_mode', 'raw'),
-                roi_info=self._roi_report_info(tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data()))
+                roi_info=self._roi_report_info(tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data()),
+                overview_idx=np.flatnonzero(self.manual_mask),
+                roi_mask_all=(getattr(self, '_effective_roi_mask_cache', None)
+                              if self._roi_is_active() else np.ones(len(tz), dtype=bool)))
             fig.savefig(path, dpi=150)
             self.statusBar().showMessage(f"已导出报告图: {path}", 6000)
             QMessageBox.information(self, "导出成功", f"测量报告图已导出：\n{path}")
@@ -276,22 +280,22 @@ class ReportingMixin:
 
         self._run_background_task(
             "批量处理",
-            lambda progress, cancel: {
-                'results': self._run_batch(files, outdir, p, progress, cancel),
-                'outdir': outdir,
-            },
+            lambda progress, cancel: self._run_batch(
+                files, outdir, p, progress, cancel),
             self._finish_batch_process,
         )
 
     def _finish_batch_process(self, payload):
-        results, outdir = payload['results'], payload['outdir']
+        results = payload['results']
+        outdir = payload['outdir']
+        summary_path = payload.get('summary_path')
         self._update_import_status_label()
         ok = [r for r in results if r['status'] == 'ok']
-        fail = [r for r in results if r['status'] != 'ok']
+        fail = [r for r in results if r['status'] == 'fail']
         msg = (f"批量处理完成：成功 {len(ok)} / 失败 {len(fail)}\n"
                f"输出目录：{outdir}\n"
                f"报告图：result_<原文件名>.png\n"
-               f"汇总表：result_batch_summary.csv" + ("（本次无成功项，未生成）" if not ok else ""))
+               f"汇总表：{Path(summary_path).name if summary_path else '未生成'}")
         if fail:
             preview = "\n".join(f"  ✗ {r['file']}: {r['error']}" for r in fail[:8])
             if len(fail) > 8:
@@ -301,6 +305,53 @@ class ReportingMixin:
             f"批量完成：成功 {len(ok)} / 失败 {len(fail)}，输出至 {outdir}", 10000)
         (QMessageBox.warning if fail else QMessageBox.information)(self, "批量处理结果", msg)
 
+    @staticmethod
+    def _unique_batch_summary_path(output_dir, partial=False):
+        output_dir = Path(output_dir)
+        stem = 'result_batch_summary_PARTIAL' if partial else 'result_batch_summary'
+        candidate = output_dir / f'{stem}.csv'
+        suffix = 2
+        while candidate.exists():
+            candidate = output_dir / f'{stem}_{suffix}.csv'
+            suffix += 1
+        return candidate
+
+    def _batch_roi_shapes_for_dataset(self, shapes, x, y, z):
+        """Clone recipe ROI state and bind runtime-only values to this dataset."""
+        prepared = copy.deepcopy(shapes or [])
+        finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+        finite_idx = np.flatnonzero(finite)
+        fitted_models = {}
+        for roi in prepared:
+            if roi.get('type') == 'smart_face':
+                if len(finite_idx):
+                    seed_x = float(roi.get('seed_x', 0.0))
+                    seed_y = float(roi.get('seed_y', 0.0))
+                    local = int(np.argmin(
+                        (x[finite_idx] - seed_x) ** 2 +
+                        (y[finite_idx] - seed_y) ** 2))
+                    roi['seed_index'] = int(finite_idx[local])
+                else:
+                    roi.pop('seed_index', None)
+                continue
+            view = str(roi.get('view', 'XY')).upper()
+            if view not in ('XZ', 'YZ'):
+                continue
+            display_mode = str(roi.get('display_mode', 'raw_z_mm'))
+            if display_mode in ('detrended_um', 'residual_1_um'):
+                order = 1
+            else:
+                match = re.fullmatch(r'residual_([23])_um', display_mode)
+                order = int(match.group(1)) if match else None
+            if order is None or len(finite_idx) < 3:
+                continue
+            if order not in fitted_models:
+                fitted_models[order] = fit_polynomial_surface(
+                    x[finite_idx], y[finite_idx], z[finite_idx], order)
+            roi['display_polynomial_model'] = copy.deepcopy(fitted_models[order])
+            roi['display_plane_coeffs'] = None
+        return prepared
+
     def _run_batch(self, files, outdir, params, progress=None, cancel_event=None):
         """逐文件执行 读入→映射→变换→滤波→拟合→出报告图，并写汇总CSV；返回结果列表。
         批量期间会临时改动 import_info，结束后恢复，避免污染主界面当前视图状态。"""
@@ -309,13 +360,38 @@ class ReportingMixin:
         results, summary_rows = [], []
         out = Path(outdir)
         reserved_outputs = set()
+        cancelled = False
+        saved_smart_topology_cache = getattr(self, '_smart_topology_cache', None)
+        saved_smart_roi_mask_cache = getattr(self, '_smart_roi_mask_cache', None)
+        saved_effective_key = getattr(self, '_effective_roi_mask_cache_key', None)
+        saved_effective_mask = getattr(self, '_effective_roi_mask_cache', None)
+        self._smart_topology_cache = {}
+        self._smart_roi_mask_cache = {}
+        self._effective_roi_mask_cache_key = None
+        self._effective_roi_mask_cache = None
 
         try:
             total_files = max(1, len(files))
             for file_index, path in enumerate(files):
                 if cancel_event is not None and cancel_event.is_set():
-                    from ..workers import TaskCancelled
-                    raise TaskCancelled()
+                    cancelled = True
+                    for pending in files[file_index:]:
+                        pending_name = Path(pending).name
+                        results.append({'status': 'cancelled', 'file': pending_name,
+                                        'source': str(Path(pending).resolve()),
+                                        'error': '未处理'})
+                        summary_rows.append({
+                            '状态': 'cancelled / 未处理', '文件': pending_name,
+                            '源文件完整路径': str(Path(pending).resolve()),
+                            '报告完整路径': '', 'warnings': '用户取消，未处理',
+                        })
+                    break
+                # Runtime cache is valid only inside this file. Arrays in another
+                # file may reuse the same pointer/shape and must never hit it.
+                self._smart_topology_cache.clear()
+                self._smart_roi_mask_cache.clear()
+                self._effective_roi_mask_cache_key = None
+                self._effective_roi_mask_cache = None
                 name = Path(path).name
                 if progress is not None:
                     progress(int(file_index * 100 / total_files), f"正在处理 {file_index + 1}/{total_files}: {name}")
@@ -344,13 +420,17 @@ class ReportingMixin:
                     if '_matrix_row' in d.columns and '_matrix_col' in d.columns:
                         matrix_rc = (d['_matrix_row'].to_numpy(dtype=int), d['_matrix_col'].to_numpy(dtype=int))
                     n_total = len(z)
-                    if self._roi_is_active(params.get('roi_enabled', False), params.get('roi_shapes', [])):
+                    file_roi_shapes = self._batch_roi_shapes_for_dataset(
+                        params.get('roi_shapes', []), x, y, z)
+                    if self._roi_is_active(params.get('roi_enabled', False), file_roi_shapes):
                         roi_mask = self._roi_keep_mask_for_arrays(
-                            x, y, z, params.get('roi_shapes', []), params.get('roi_enabled', False), matrix_rc)
+                            x, y, z, file_roi_shapes,
+                            params.get('roi_enabled', False), matrix_rc)
                         roi_idx = np.where(roi_mask)[0]
                         if len(roi_idx) < 3:
                             raise ValueError("ROI 内有效数据点少于 3 个")
                     else:
+                        roi_mask = np.ones(n_total, dtype=bool)
                         roi_idx = np.arange(n_total)
                     bx, by, bz = x[roi_idx], y[roi_idx], z[roi_idx]
                     keep = self.filter_keep_mask(
@@ -366,11 +446,12 @@ class ReportingMixin:
                     fx, fy, fz = x[active_idx], y[active_idx], z[active_idx]
                     metrics = self.compute_plane_metrics(fx, fy, fz)
                     roi_info = self._roi_report_info(
-                        x, y, z, params.get('roi_enabled', False), params.get('roi_shapes', []), matrix_rc)
+                        x, y, z, params.get('roi_enabled', False), file_roi_shapes, matrix_rc)
                     fig = self._render_report_figure(
                         name, x, y, z, active_idx, metrics, n_filtered,
                         params['pipeline_text'], params['filter_text'],
-                        import_info_snap, params['display_surface_mode'], roi_info=roi_info)
+                        import_info_snap, params['display_surface_mode'], roi_info=roi_info,
+                        overview_idx=np.arange(n_total), roi_mask_all=roi_mask)
                     out_png = self._unique_batch_report_path(out, path, reserved_outputs)
                     fig.savefig(str(out_png), dpi=150)
                     plt.close(fig)
@@ -378,7 +459,7 @@ class ReportingMixin:
                                     'out': str(out_png.resolve())})
                     quality = self._metric_quality_from_import(import_info_snap)
                     summary_rows.append({
-                        '文件': name, '源文件完整路径': str(Path(path).resolve()),
+                        '状态': 'ok', '文件': name, '源文件完整路径': str(Path(path).resolve()),
                         '报告完整路径': str(out_png.resolve()),
                         '总点数': n_total, '参与拟合': int(len(active_idx)),
                         '结果质量': quality['label'],
@@ -395,17 +476,30 @@ class ReportingMixin:
                 except Exception as e:
                     results.append({'status': 'fail', 'file': name,
                                     'source': str(Path(path).resolve()), 'error': str(e)})
+                    summary_rows.append({
+                        '状态': 'fail', '文件': name,
+                        '源文件完整路径': str(Path(path).resolve()),
+                        '报告完整路径': '', 'warnings': str(e),
+                    })
             if summary_rows:
-                pd.DataFrame(summary_rows).to_csv(
-                    out / 'result_batch_summary.csv', index=False, encoding='utf-8-sig')
-            if progress is not None:
+                summary_path = self._unique_batch_summary_path(out, partial=cancelled)
+                pd.DataFrame(summary_rows).to_csv(summary_path, index=False, encoding='utf-8-sig')
+            else:
+                summary_path = None
+            if progress is not None and not cancelled:
                 progress(100, "批量处理完成")
         finally:
             self.import_info = saved_info
             self.last_import_note = saved_note
+            self._smart_topology_cache = saved_smart_topology_cache
+            self._smart_roi_mask_cache = saved_smart_roi_mask_cache
+            self._effective_roi_mask_cache_key = saved_effective_key
+            self._effective_roi_mask_cache = saved_effective_mask
             if progress is None:
                 self._update_import_status_label()
-        return results
+        return {'results': results, 'outdir': str(out),
+                'summary_path': str(summary_path) if summary_path else '',
+                'cancelled': cancelled}
 
     @staticmethod
     def _unique_batch_report_path(output_dir, source_path, reserved_outputs=None):
@@ -423,7 +517,8 @@ class ReportingMixin:
 
     def _render_report_figure(self, source_name, tx, ty, tz, active_idx, metrics,
                               n_filtered, pipeline_text, filter_text,
-                              import_info, display_surface_mode='raw', roi_info=None):
+                              import_info, display_surface_mode='raw', roi_info=None,
+                              overview_idx=None, roi_mask_all=None):
         """生成包含主页面全部信息(指标文本 + 四视图)的报告图，返回 Figure(Agg后端)。"""
         # YaHei 同时含中文与 µ(U+00B5)，避免报告图里 µm/µrad 出现缺字方块；其余字体兜底
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
@@ -448,12 +543,17 @@ class ReportingMixin:
         if roi_info is None:
             roi_info = {'enabled': False, 'summary': '关闭', 'shape_lines': [], 'shapes': [], 'roi_enabled': False}
         # 绘图抽样（与主界面口径一致）；指标仍按全部参与拟合点
-        plot_idx = active_idx
+        plot_idx = np.asarray(active_idx, dtype=int)
         limit = self._display_limit()
         if len(plot_idx) > limit:
             pick = np.linspace(0, len(plot_idx) - 1, limit, dtype=int)
             plot_idx = plot_idx[pick]
-        dx, dy = tx[plot_idx], ty[plot_idx]
+        detail_idx = plot_idx
+        overview_idx = np.asarray(
+            active_idx if overview_idx is None else overview_idx, dtype=int)
+        if len(overview_idx) > limit:
+            pick = np.linspace(0, len(overview_idx) - 1, limit, dtype=int)
+            overview_idx = overview_idx[pick]
         if display_surface_mode != 'raw':
             try:
                 order = int(display_surface_mode.rsplit('_', 1)[1])
@@ -467,12 +567,24 @@ class ReportingMixin:
         else:
             plot_z_all = tz
             zlab, ttl3d, txt, tyt = "Z (mm)", "3D 原始高度", "X-Z投影", "Y-Z投影"
-        dz = plot_z_all[plot_idx]
+        dx, dy = tx[detail_idx], ty[detail_idx]
+        dz = plot_z_all[detail_idx]
+        ox, oy, oz = tx[overview_idx], ty[overview_idx], plot_z_all[overview_idx]
 
         sc = {'c': dz, 'cmap': 'turbo', 's': 14, 'alpha': 0.85, 'edgecolors': 'none'}
         ax3d.scatter(dx, dy, dz, **sc)
         ax3d.set_title(ttl3d); ax3d.set_xlabel("X (mm)"); ax3d.set_ylabel("Y (mm)"); ax3d.set_zlabel(zlab)
-        m_xy = ax_xy.scatter(dx, dy, **sc); ax_xy.set_title("XY 俯视分布"); ax_xy.set_xlabel("X (mm)"); ax_xy.set_ylabel("Y (mm)")
+        m_xy = ax_xy.scatter(ox, oy, c=oz, cmap='turbo', s=14, alpha=0.85,
+                             edgecolors='none')
+        if roi_mask_all is not None and len(roi_mask_all) == len(tx):
+            roi_overview = overview_idx[np.asarray(roi_mask_all, dtype=bool)[overview_idx]]
+            if len(roi_overview) > limit:
+                pick = np.linspace(0, len(roi_overview) - 1, limit, dtype=int)
+                roi_overview = roi_overview[pick]
+            if len(roi_overview):
+                ax_xy.scatter(tx[roi_overview], ty[roi_overview], c='#80868b',
+                              s=16, alpha=0.72, edgecolors='none')
+        ax_xy.set_title("XY 俯视分布"); ax_xy.set_xlabel("X (mm)"); ax_xy.set_ylabel("Y (mm)")
         set_xy_equal_aspect(ax_xy)
         self._draw_roi_overlays(ax_xy, roi_info.get('shapes'), roi_info.get('roi_enabled'), report=True)
         ax_xz.scatter(dx, dz, **sc); ax_xz.set_title(txt); ax_xz.set_xlabel("X (mm)"); ax_xz.set_ylabel(zlab)

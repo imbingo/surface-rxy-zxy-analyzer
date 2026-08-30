@@ -83,21 +83,12 @@ class V452RoiInteractionTests(unittest.TestCase):
         self.assertTrue(np.array_equal(window._last_detail_plot_indices, np.array([0, 3])))
         window.close()
 
-    def test_circle_roi_uses_the_selected_view_axes(self):
+    def test_circle_roi_is_not_available_in_current_ui(self):
         window = SurfaceAnalyzerPro()
-        x = np.array([0.0, 1.0, 2.0, 1.0])
-        y = np.array([0.0, 1.0, 2.0, 3.0])
-        z = np.array([0.0, 1.0, 2.0, 1.0])
-        xz = {'type': 'circle', 'view': 'XZ', 'cx': 1.0, 'cy': 1.0,
-              'radius': 0.2, 'enabled': True}
-        yz = {'type': 'circle', 'view': 'YZ', 'cx': 1.0, 'cy': 1.0,
-              'radius': 0.2, 'enabled': True}
-        self.assertTrue(np.array_equal(
-            window._roi_keep_mask_for_arrays(x, y, z, [xz], True),
-            np.array([False, True, False, True])))
-        self.assertTrue(np.array_equal(
-            window._roi_keep_mask_for_arrays(x, y, z, [yz], True),
-            np.array([False, True, False, False])))
+        self.assertEqual(
+            [window.cb_roi_shape.itemText(i) for i in range(window.cb_roi_shape.count())],
+            ['矩形 ROI', '智能抓面'])
+        self.assertFalse(hasattr(window, 'spin_roi_r'))
         window.close()
 
     def test_selection_actions_delete_roi_and_cancel(self):
@@ -122,7 +113,7 @@ class V452RoiInteractionTests(unittest.TestCase):
         window.cb_roi_shape.setCurrentIndex(1)
         window.on_select(start, end, 'XZ')
         window.set_temp_selection_as_roi()
-        self.assertEqual(window.roi_shapes[-1]['type'], 'circle')
+        self.assertEqual(window.roi_shapes[-1]['type'], 'rect')
         self.assertEqual(window.roi_shapes[-1]['view'], 'XZ')
         self.assertEqual(int(window.temp_selected_mask.sum()), 0)
 
