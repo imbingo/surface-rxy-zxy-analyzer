@@ -240,6 +240,21 @@ class V454BatchAndViewportTests(unittest.TestCase):
         self.assertEqual(window.canvas.title_xz.text(), 'X-Z 投影')
         window.close()
 
+    def test_export_report_shows_selected_high_order_residual_metrics(self):
+        window = SurfaceAnalyzerPro()
+        yy, xx = np.mgrid[-3:4, -3:4]
+        x = xx.ravel().astype(float); y = yy.ravel().astype(float)
+        z = 0.25 + 1e-5 * x + 2e-5 * y + 3e-6 * x ** 2 + 1e-6 * x * y
+        active = np.arange(len(z))
+        metrics = window.compute_plane_metrics(x, y, z)
+        fig = window._render_report_figure(
+            'high_order.csv', x, y, z, active, metrics, 0,
+            '原始状态', '关闭', {}, display_surface_mode='residual_2')
+        report_text = '\n'.join(text.get_text() for ax in fig.axes for text in ax.texts)
+        self.assertIn('2阶残差 PV', report_text)
+        self.assertIn('RMS', report_text)
+        window.close()
+
 
 if __name__ == '__main__':
     unittest.main()

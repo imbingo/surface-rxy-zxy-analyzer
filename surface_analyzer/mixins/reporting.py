@@ -181,6 +181,18 @@ class ReportingMixin:
                 f"# 源文件大小: {self.import_info.get('file_size_mb', 0.0):.1f} MB | 读入行数: {self.import_info.get('import_rows', 0)} | 有效点数: {self.import_info.get('valid_rows', len(self.df_raw) if self.df_raw is not None else 0)}",
                 f"# 显示上限: {self._display_limit()} 点 | 最近一次绘图显示: {self.last_displayed_points} 点",
             ]
+            display_mode = str(getattr(self, 'display_surface_mode', 'raw'))
+            if display_mode != 'raw':
+                try:
+                    display_order = int(display_mode.rsplit('_', 1)[1])
+                except (ValueError, IndexError):
+                    display_order = 1
+                display_model = getattr(self, 'high_order_models', {}).get(display_order)
+                if display_model is not None:
+                    meta.append(
+                        f"# 当前显示残差: {display_order}阶 PV = "
+                        f"{display_model['residual_pv_um']:.3f} µm | RMS = "
+                        f"{display_model['residual_rms_um']:.3f} µm")
             meta.extend(f"# {line}" for line in self._import_trace_text(self.import_info))
             if quality['warning']:
                 meta.append(f"# 警告: {quality['warning']}")
@@ -590,6 +602,8 @@ class ReportingMixin:
         if len(overview_idx) > limit:
             pick = np.linspace(0, len(overview_idx) - 1, limit, dtype=int)
             overview_idx = overview_idx[pick]
+        display_model = None
+        display_order = None
         if display_surface_mode != 'raw':
             try:
                 order = int(display_surface_mode.rsplit('_', 1)[1])
@@ -597,6 +611,8 @@ class ReportingMixin:
                 order = 1
             fit_idx = np.asarray(active_idx, dtype=int)
             model = fit_polynomial_surface(tx[fit_idx], ty[fit_idx], tz[fit_idx], order)
+            display_model = model
+            display_order = order
             plot_z_all = (tz - evaluate_polynomial_surface(model, tx, ty)) * 1000.0
             zlab = f"{order}阶去除后残差 (µm)"
             ttl3d, txt, tyt = f"3D {order}阶去除后残差", f"X-{order}阶残差投影", f"Y-{order}阶残差投影"
@@ -679,6 +695,12 @@ class ReportingMixin:
                      fontsize=10.0, linespacing=1.55, color='#34495e', transform=ax_meta.transAxes)
 
         # 中部：关键结果卡片（大字号 + 高亮底色，手机上一眼可读）
+        display_residual_text = ''
+        if display_model is not None:
+            display_residual_text = (
+                f"\n{display_order}阶残差 PV   {relation} "
+                f"{display_model['residual_pv_um']:.3f} µm"
+                f" | RMS {display_model['residual_rms_um']:.3f} µm")
         results_text = (
             "【分析结果】\n\n"
             f"平面方程   Z {relation} {metrics['a']:.4f}·X + {metrics['b']:.4f}·Y + {metrics['c']:.4f}\n\n"
@@ -687,6 +709,7 @@ class ReportingMixin:
             f"TTV(Z 极差)   {relation} {metrics['ttv']:.3f} µm\n"
             f"物料 Rx       {relation} {metrics['rx']:.2f} µrad\n"
             f"物料 Ry       {relation} {metrics['ry']:.2f} µrad"
+            f"{display_residual_text}"
         )
         result_face = '#fff4e5' if quality['estimated'] else '#eaf2fb'
         result_edge = '#d97706' if quality['estimated'] else '#3498db'
