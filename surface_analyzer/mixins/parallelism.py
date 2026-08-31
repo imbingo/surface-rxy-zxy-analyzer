@@ -6,6 +6,7 @@ import re
 import mmap
 import json
 import tempfile
+import copy
 from collections import deque
 from pathlib import Path
 from datetime import datetime
@@ -45,6 +46,7 @@ class ParallelismMixin:
             return None
         metrics = self.compute_plane_metrics(fx, fy, fz)
         quality = self._current_metric_quality()
+        import_snapshot = copy.deepcopy(getattr(self, 'import_info', {}) or {})
         return {
             'x': fx.copy(),
             'y': fy.copy(),
@@ -57,6 +59,19 @@ class ParallelismMixin:
             'import_strategy': self.import_info.get('strategy', '--'),
             'sampled': bool(self.import_info.get('sampled', False)),
             'metric_quality': dict(quality),
+            'import_info': import_snapshot,
+        }
+
+    @staticmethod
+    def _parallel_trace(rec):
+        quality = rec.get('metric_quality', {}) or {}
+        return {
+            'pipeline': str(rec.get('pipeline') or '原始状态'),
+            'filter': str(rec.get('filter') or '关闭'),
+            'import_strategy': str(rec.get('import_strategy') or '--'),
+            'sampled': '是' if bool(rec.get('sampled', False)) else '否',
+            'quality': str(quality.get('label') or '全量计算'),
+            'n': int(rec.get('n', 0) or 0),
         }
 
     def set_parallel_surface(self, slot):
@@ -131,6 +146,8 @@ class ParallelismMixin:
             QMessageBox.warning(self, "数据不完整", "请先分别设置基准面和测量面。")
             return
         base, measure = self.parallel_base, self.parallel_measure
+        if str(base.get('pipeline')) != str(measure.get('pipeline')):
+            self._show_status("提示：基准面与测量面处理链不同；将按各自快照继续计算。", 8000)
         self._run_background_task(
             "平行度计算",
             lambda progress, cancel: self._parallel_task(base, measure, progress, cancel),
@@ -217,6 +234,16 @@ class ParallelismMixin:
         ]
         if self.parallel_result.get('estimated'):
             rows.insert(1, "结果质量: 抽样估计，不可直接用于产线放行")
+        base_trace = self._parallel_trace(self.parallel_base)
+        measure_trace = self._parallel_trace(self.parallel_measure)
+        rows.extend([
+            f"基准处理: {base_trace['pipeline']}",
+            f"测量处理: {measure_trace['pipeline']}",
+            f"基准滤波: {base_trace['filter']}",
+            f"测量滤波: {measure_trace['filter']}",
+            f"基准导入: {base_trace['import_strategy']} | 抽样 {base_trace['sampled']} | {base_trace['quality']}",
+            f"测量导入: {measure_trace['import_strategy']} | 抽样 {measure_trace['sampled']} | {measure_trace['quality']}",
+        ])
         for label, rec in (("基准面", self.parallel_base), ("测量面", self.parallel_measure)):
             mm = rec['metrics']
             rows.append(
@@ -255,10 +282,24 @@ class ParallelismMixin:
                 {'metric': 'Mean_Z_mm', 'base': b['mean_z'], 'measure': m['mean_z'], 'delta': ''},
             ]
             with open(path, 'w', encoding='utf-8-sig', newline='') as f:
+                base_trace = self._parallel_trace(self.parallel_base)
+                measure_trace = self._parallel_trace(self.parallel_measure)
                 f.write(f"# ===== 平行度分析 {self.APP_VERSION} 导出 =====\n")
                 f.write(f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
                 f.write(f"# 基准面: {self.parallel_base['name']} | 点数: {self.parallel_base['n']}\n")
                 f.write(f"# 测量面: {self.parallel_measure['name']} | 点数: {self.parallel_measure['n']}\n")
+                f.write(f"# 基准面处理: {base_trace['pipeline']}\n")
+                f.write(f"# 测量面处理: {measure_trace['pipeline']}\n")
+                f.write(f"# 基准面滤波: {base_trace['filter']}\n")
+                f.write(f"# 测量面滤波: {measure_trace['filter']}\n")
+                f.write(f"# 基准面导入策略: {base_trace['import_strategy']}\n")
+                f.write(f"# 测量面导入策略: {measure_trace['import_strategy']}\n")
+                f.write(f"# 基准面抽样状态: {base_trace['sampled']}\n")
+                f.write(f"# 测量面抽样状态: {measure_trace['sampled']}\n")
+                f.write(f"# 基准面参与拟合点数: {base_trace['n']}\n")
+                f.write(f"# 测量面参与拟合点数: {measure_trace['n']}\n")
+                f.write(f"# 基准面质量: {base_trace['quality']}\n")
+                f.write(f"# 测量面质量: {measure_trace['quality']}\n")
                 f.write(f"# 结果质量: {'抽样估计，不可直接用于产线放行' if self.parallel_result.get('estimated') else '全量计算'}\n")
                 f.write("# 口径: 不做对应点相减；分别拟合平面后计算 测量面 - 基准面 的 Rx/Ry 差值。\n")
                 f.write("# 台阶高度差: 在两面质心中点处分别代入拟合平面求Z后相减。\n")
@@ -371,18 +412,24 @@ class ParallelismMixin:
         ax_meta.text(0.02, 0.98, "报告信息", va='top', ha='left',
                      fontsize=12.2, fontweight='bold', color='#1f2937',
                      transform=ax_meta.transAxes)
+        base_trace = self._parallel_trace(b_rec)
+        measure_trace = self._parallel_trace(m_rec)
         meta_lines = [
             f"时间  {datetime.now():%Y-%m-%d %H:%M:%S}",
             f"基准  {self._short_report_text(b_rec['name'], 42)}",
             f"测量  {self._short_report_text(m_rec['name'], 42)}",
             f"点数  基准 {b_rec['n']:,} / 测量 {m_rec['n']:,}",
-            f"导入  基准 {b_rec.get('import_strategy', '--')} / 测量 {m_rec.get('import_strategy', '--')}",
-            f"抽样  基准 {b_rec.get('sampled', False)} / 测量 {m_rec.get('sampled', False)}",
-            f"质量  基准 {b_rec.get('metric_quality', {}).get('label', '全量计算')} / 测量 {m_rec.get('metric_quality', {}).get('label', '全量计算')}",
-            f"处理  {self._short_report_text(b_rec.get('pipeline'), 38)}",
+            f"基准处理  {self._short_report_text(base_trace['pipeline'], 34)}",
+            f"测量处理  {self._short_report_text(measure_trace['pipeline'], 34)}",
+            f"基准滤波  {self._short_report_text(base_trace['filter'], 34)}",
+            f"测量滤波  {self._short_report_text(measure_trace['filter'], 34)}",
+            f"基准导入  {self._short_report_text(base_trace['import_strategy'], 34)}",
+            f"测量导入  {self._short_report_text(measure_trace['import_strategy'], 34)}",
+            f"基准抽样/质量  {base_trace['sampled']} / {base_trace['quality']}",
+            f"测量抽样/质量  {measure_trace['sampled']} / {measure_trace['quality']}",
         ]
         ax_meta.text(0.02, 0.80, "\n".join(meta_lines), va='top', ha='left',
-                     fontsize=9.7, linespacing=1.45, color='#475569',
+                     fontsize=8.7, linespacing=1.32, color='#475569',
                      transform=ax_meta.transAxes,
                      bbox=dict(boxstyle='round,pad=0.45', facecolor='#f8fafc',
                                edgecolor='#dbe3ec', linewidth=1.0))

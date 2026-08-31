@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.5.4
+# Surface Rxy ZXY Analyzer V4.5.5
 
-面型及 Rxy 分析工具当前版本为 **V4.5.4**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
+面型及 Rxy 分析工具当前版本为 **V4.5.5**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.5.4.py`：V4.5.4 Python 启动入口。
-- `start_surface_analyzer_v4_5_4.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.5.5.py`：V4.5.5 Python 启动入口。
+- `start_surface_analyzer_v4_5_5.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,27 +14,35 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_5_4.bat
+start_surface_analyzer_v4_5_5.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_5_4.bat
+.\start_surface_analyzer_v4_5_5.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_5_4.bat --check
+.\start_surface_analyzer_v4_5_5.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.5.4.py
+python .\面型及Rxy分析工具V4.5.5.py
 python -m surface_analyzer
 ```
+
+## V4.5.5 重点
+
+- 通用 Z Matrix 固定栅格解析保留前导、中间和尾部缺测单元的真实列位置，支持有/无表头元数据的 Tab、CSV 和分号矩阵。
+- 增强 Keyence VR `ImageDataCsv` 元数据识别；无固定分隔符且列宽有歧义时明确要求用户指定列数。
+- Z Matrix 可按文件大小或原始有效点数触发分析前采样；Excel 矩阵先在二维数组层采样再生成 XYZ，并保留原始行列拓扑。
+- Z Matrix 导入接入统一后台进度与取消，状态区分矩阵尺寸、原始有效点、分析点和显示点。
+- 平行度 PNG、CSV 和复制文本分别记录基准面与测量面的处理链、滤波、导入、抽样、质量和拟合点数；量测数学定义未修改。
 
 ## V4.5.4 重点
 

@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.5.4."""
+"""Qt application shell for Surface Analyzer V4.5.5."""
 
 import sys
 import os
@@ -110,6 +110,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.height_matrix_pitch_y_um = 47.242
         self.height_matrix_z_unit = "µm"
         self.height_matrix_start_row = 0   # 0=自动识别；>0 为文件中的 1 基数据起始行
+        self.height_matrix_cols = 0        # 0=自动/表头；>0 为人工指定矩阵列数
         self.settings = QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer")
         saved_layout = str(self.settings.value("input_layout_mode", "point_table"))
         self.input_layout_mode = saved_layout if saved_layout in (
@@ -153,6 +154,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.auto_sample_large_text = True
         self.large_text_threshold_mb = self.LARGE_TEXT_FILE_BYTES // (1024 * 1024)
         self.large_text_import_limit = self.LARGE_TEXT_IMPORT_LIMIT
+        self.matrix_analysis_threshold = int(
+            self.BIGFILE_MODE_PRESETS['standard']['matrix_analysis_threshold'])
         self.display_point_limit = self.DISPLAY_POINT_LIMIT
         # Recipe 可在未载入数据前导入；载入文件并完成列填充后自动应用
         self.pending_recipe = None
@@ -490,7 +493,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.statusBar().showMessage(str(message), int(timeout))
 
     def _run_background_task(self, name, fn, on_success, on_error=None,
-                             deliver_result_when_cancelled=False):
+                             deliver_result_when_cancelled=False, on_cancel=None):
         """Run a cooperative task while exposing progress and cancellation."""
         if self._task_thread is not None:
             QMessageBox.information(self, "任务进行中", "请等待当前任务完成或先取消。")
@@ -511,7 +514,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         worker.progress.connect(self._on_task_progress)
         worker.succeeded.connect(on_success)
         worker.failed.connect(on_error or (lambda message: QMessageBox.critical(self, f"{name}失败", message)))
-        worker.cancelled.connect(lambda: self._show_status(f"{name}已取消", 5000))
+        worker.cancelled.connect(on_cancel or (lambda: self._show_status(f"{name}已取消", 5000)))
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)

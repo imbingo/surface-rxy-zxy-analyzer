@@ -65,6 +65,7 @@ class RecipeMixin:
                 'stride_n': int(self.large_text_stride_n),
                 'threshold_mb': int(self.large_text_threshold_mb),
                 'import_limit': int(self.large_text_import_limit),
+                'matrix_analysis_threshold': int(getattr(self, 'matrix_analysis_threshold', 400000)),
                 'display_limit': int(self.display_point_limit),
                 'sampling_pitch_x_um': float(self.height_matrix_pitch_x_um),
                 'sampling_pitch_y_um': float(self.height_matrix_pitch_y_um),
@@ -73,6 +74,7 @@ class RecipeMixin:
                 'matrix_pitch_y_um': float(self.height_matrix_pitch_y_um),
                 'matrix_z_unit': str(self.height_matrix_z_unit),
                 'matrix_start_row': int(self.height_matrix_start_row),
+                'matrix_cols': int(getattr(self, 'height_matrix_cols', 0)),
             },
             'gap': {'tolerance_mm': float(self.spin_tol.value()) if hasattr(self, 'spin_tol') else 0.05},
         }
@@ -166,6 +168,9 @@ class RecipeMixin:
             lf.get('threshold_mb'), self.large_text_threshold_mb, 1, 4096)
         self.large_text_import_limit = bounded_int(
             lf.get('import_limit'), self.large_text_import_limit, 10000, 5000000)
+        self.matrix_analysis_threshold = bounded_int(
+            lf.get('matrix_analysis_threshold'),
+            getattr(self, 'matrix_analysis_threshold', 400000), 10000, 10000000)
         self.display_point_limit = bounded_int(
             lf.get('display_limit'), self.display_point_limit, 5000, 1000000)
         self.height_matrix_pitch_x_um = bounded_float(
@@ -177,6 +182,8 @@ class RecipeMixin:
         self.height_matrix_z_unit = self._normalize_unit_label(lf.get('matrix_z_unit', self.height_matrix_z_unit), self.height_matrix_z_unit)
         self.height_matrix_start_row = bounded_int(
             lf.get('matrix_start_row'), self.height_matrix_start_row, 0, 50000)
+        self.height_matrix_cols = bounded_int(
+            lf.get('matrix_cols'), getattr(self, 'height_matrix_cols', 0), 0, 100000)
         self.large_file_mode = self._matching_bigfile_mode()
         self.import_info['display_limit'] = self.display_point_limit
         self.import_info['sample_method'] = self._sample_method_label()
