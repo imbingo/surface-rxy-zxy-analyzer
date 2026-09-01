@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.5.6
+# Surface Rxy ZXY Analyzer V4.5.7
 
-面型及 Rxy 分析工具当前版本为 **V4.5.6**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
+面型及 Rxy 分析工具当前版本为 **V4.5.7**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.5.6.py`：V4.5.6 Python 启动入口。
-- `start_surface_analyzer_v4_5_6.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.5.7.py`：V4.5.7 Python 启动入口。
+- `start_surface_analyzer_v4_5_7.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -32,9 +32,16 @@ start_surface_analyzer_v4_5_5.bat
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.5.6.py
+python .\面型及Rxy分析工具V4.5.7.py
 python -m surface_analyzer
 ```
+
+## V4.5.7 重点
+
+- Z Matrix 支持手动指定“矩阵数据起始行”：手动填行号后直接按该行开始读取纯数值矩阵，不再被表头声明行数/列数硬性校验拦截，也不再自动猜测坐标表头。
+- 导入策略弹窗中的“高级解析覆盖”默认收起，通过小箭头展开，避免内容过长遮挡操作按钮。
+- Zygo 智能抓面拓扑失败不再直接卡死：矩阵栅格不健康时会依次尝试受缺口约束回退和不受约束拓扑回退，并在界面上提示“缺口约束失效 / 可能跨越缺口”。
+- 修复真实 VR 表头中含空格说明行导致矩阵布局扫描中断的问题；纯数值矩阵解析速度大幅提升。
 
 ## V4.5.6 重点
 

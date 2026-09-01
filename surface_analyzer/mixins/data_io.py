@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QLabel, QSplitter, QGroupBox, QGridLayout, QMessageBox,
     QScrollArea, QComboBox, QTabWidget, QDoubleSpinBox, QSpinBox, QCheckBox,
     QDialog, QDialogButtonBox, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
-    QStackedWidget, QSizeGrip,
+    QStackedWidget, QSizeGrip, QToolButton,
 )
 from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSettings, QThread
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
@@ -35,7 +35,13 @@ from scipy.spatial import cKDTree
 from ..workers import TaskCancelled, sha256_file_dialog
 
 from ..widgets import NoWheelSpinBox, NoWheelDoubleSpinBox, NoWheelComboBox
+from ..config import MISSING_TEXT_TOKENS as _CONFIG_MISSING_TEXT_TOKENS
 
+
+_NORMALIZED_MISSING_TOKENS = frozenset(
+    ' '.join(str(item).strip().casefold().split())
+    for item in _CONFIG_MISSING_TEXT_TOKENS
+)
 
 
 class DataIOMixin:
@@ -327,8 +333,16 @@ class DataIOMixin:
         正常界面只保留右侧工具条按钮，避免占用左侧主控区。"""
         dlg = QDialog(self)
         dlg.setWindowTitle("文件导入 / 显示策略")
-        dlg.setMinimumWidth(520)
-        layout = QVBoxLayout(dlg)
+        dlg.setMinimumWidth(580)
+        dlg.resize(620, 720)
+        dialog_layout = QVBoxLayout(dlg)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        scroll.setWidget(content)
+        dialog_layout.addWidget(scroll, 1)
 
         layout_group = QGroupBox("文件数据布局")
         layout_grid = QGridLayout(layout_group)
@@ -469,8 +483,19 @@ class DataIOMixin:
         spin_matrix_cols.setToolTip("0=由表头或固定分隔符推断；格式存在歧义时可填写真实矩阵列数。")
         grid.addWidget(spin_matrix_cols, 13, 1)
 
-        advanced_group = QGroupBox("高级解析覆盖（Auto优先使用可靠表头）")
-        advanced = QGridLayout(advanced_group)
+        advanced_group = QGroupBox("高级解析覆盖")
+        advanced_outer = QVBoxLayout(advanced_group)
+        advanced_toggle = QToolButton()
+        advanced_toggle.setText("展开高级解析覆盖（Auto优先使用可靠表头）")
+        advanced_toggle.setCheckable(True)
+        advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        advanced_outer.addWidget(advanced_toggle)
+        advanced_body = QWidget()
+        advanced_body.setObjectName("advancedParsingBody")
+        advanced_body.setVisible(False)
+        advanced = QGridLayout(advanced_body)
+        advanced_outer.addWidget(advanced_body)
         advanced.addWidget(QLabel("数据起始行:"), 0, 0)
         spin_start_row = NoWheelSpinBox(); spin_start_row.setRange(0, 10_000_000)
         spin_start_row.setSpecialValueText("自动")
@@ -536,6 +561,13 @@ class DataIOMixin:
         spin_matrix_rows.setValue(int(getattr(self, 'height_matrix_rows', 0)))
         advanced.addWidget(spin_matrix_rows, 11, 1)
         layout.addWidget(advanced_group)
+
+        def toggle_advanced(checked):
+            advanced_body.setVisible(checked)
+            advanced_toggle.setArrowType(
+                Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+
+        advanced_toggle.toggled.connect(toggle_advanced)
 
         applying_preset = {'active': False}
 
@@ -616,7 +648,7 @@ class DataIOMixin:
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
-        layout.addWidget(buttons)
+        dialog_layout.addWidget(buttons)
 
         if dlg.exec() == QDialog.DialogCode.Accepted:
             old_display_limit = self.display_point_limit
@@ -698,6 +730,9 @@ class DataIOMixin:
             return legacy if legacy > 0 else common
         return common
 
+    def _height_matrix_manual_start(self):
+        return int(getattr(self, 'height_matrix_start_row', 0) or 0) > 0
+
     @staticmethod
     def _split_text_line(line, sep):
         line = re.sub(r'(?i)\bno\s+data\b', 'NoData', str(line))
@@ -745,10 +780,8 @@ class DataIOMixin:
 
     @classmethod
     def _is_missing_token(cls, value):
-        token = re.sub(r'\s+', ' ', str(value).strip()).casefold()
-        known = {re.sub(r'\s+', ' ', str(item).strip()).casefold()
-                 for item in cls.MISSING_TEXT_TOKENS}
-        return not token or token in known
+        token = ' '.join(str(value).strip().casefold().split())
+        return not token or token in _NORMALIZED_MISSING_TOKENS
 
     @classmethod
     def _is_float_token(cls, value):
@@ -773,11 +806,38 @@ class DataIOMixin:
 
     @classmethod
     def _looks_like_matrix_row(cls, tokens, expected_cols=None):
-        if len(tokens) < 2 or not all(cls._is_float_or_missing_token(t) for t in tokens):
+        if not tokens or len(tokens) < 2:
             return False
         width = int(expected_cols or len(tokens))
         minimum_numeric = 2 if width <= 10 else min(16, max(3, width // 20))
-        return sum(cls._is_float_token(token) for token in tokens) >= minimum_numeric
+        numeric_count = 0
+        for token in tokens:
+            if cls._is_float_token(token):
+                numeric_count += 1
+            elif not cls._is_missing_token(token):
+                return False
+        return numeric_count >= minimum_numeric
+
+    @classmethod
+    def _matrix_row_to_float(cls, tokens, ncols):
+        """Convert one matrix row in a single pass, returning None for bad rows."""
+        if len(tokens) < int(ncols):
+            return None
+        values = np.empty(int(ncols), dtype=float)
+        numeric_count = 0
+        for index in range(int(ncols)):
+            token = tokens[index]
+            if cls._is_missing_token(token):
+                values[index] = np.nan
+                continue
+            try:
+                values[index] = float(token)
+            except (TypeError, ValueError):
+                return None
+            numeric_count += 1
+        width = int(ncols)
+        minimum_numeric = 2 if width <= 10 else min(16, max(3, width // 20))
+        return values if numeric_count >= minimum_numeric else None
 
     @classmethod
     def _looks_like_point_record_row(cls, tokens):
@@ -1042,6 +1102,9 @@ class DataIOMixin:
                         tokens = cls._normalize_matrix_tokens(tokens, int(expected_cols))
                 else:
                     tokens = cls._trim_trailing_empty_tokens(cls._split_text_line(stripped, sep))
+                if tokens is None:
+                    finish_run(line_no)
+                    continue
                 if layout_mode == 'height_matrix':
                     is_numeric = cls._looks_like_matrix_row(tokens, expected_cols)
                 else:
@@ -1437,6 +1500,30 @@ class DataIOMixin:
         prepared = dict(layout)
         raw_ncols = int(prepared['ncols'])
         original_start = int(prepared['data_line_no'])
+        manual_start_row = bool((layout.get('matrix_metadata') or {}).get('manual_start_row'))
+        if manual_start_row:
+            expected_cols = int((layout.get('matrix_metadata') or {}).get('expected_cols') or 0)
+            first_tokens = []
+            with open(path, 'r', encoding=enc, errors='ignore') as fh:
+                for line_no, line in enumerate(fh):
+                    if line_no < original_start:
+                        continue
+                    first_tokens = self._trim_trailing_empty_tokens(
+                        self._split_matrix_line(line, prepared['sep']))
+                    break
+            ncols = expected_cols if expected_cols > 0 else len(first_tokens)
+            ncols = max(2, ncols)
+            prepared.update({
+                'raw_ncols': ncols,
+                'ncols': ncols,
+                'matrix_value_start': 0,
+                'matrix_coordinate_header': False,
+                'matrix_trailing_terminator': True,
+                'detected_data_line_no': original_start,
+                'data_line_no': original_start,
+                'header_rows_skipped': original_start,
+            })
+            return prepared
         sample_rows = []
         with open(path, 'r', encoding=enc, errors='ignore') as fh:
             for line_no, line in enumerate(fh):
@@ -1772,9 +1859,9 @@ class DataIOMixin:
         if len(values_tokens) < int(ncols):
             return None
         values_tokens = values_tokens[:int(ncols)]
-        if not self._looks_like_matrix_row(values_tokens, ncols):
+        values = self._matrix_row_to_float(values_tokens, ncols)
+        if values is None:
             return None
-        values = np.asarray([self._token_to_float(token) for token in values_tokens], dtype=float)
         return self._mask_matrix_missing_values(values, invalid_values)
 
     def _prescan_height_matrix(self, path, enc, layout, invalid_values=(),
@@ -3548,18 +3635,28 @@ class DataIOMixin:
                 try:
                     self._check_cancel(cancel_event)
                     manual_start = self._configured_start_line(layout_mode)
+                    manual_start_set = self._height_matrix_manual_start()
                     matrix_metadata = None
                     if layout_mode == 'height_matrix':
                         matrix_metadata = self._scan_height_matrix_metadata(
                             path, enc, progress=progress, cancel_event=cancel_event)
                         manual_cols = int(getattr(self, 'height_matrix_cols', 0) or 0)
+                        manual_rows = int(getattr(self, 'height_matrix_rows', 0) or 0)
+                        if manual_start_set:
+                            matrix_metadata['expected_cols'] = (
+                                manual_cols if manual_cols > 0 else None)
+                            matrix_metadata['expected_rows'] = (
+                                manual_rows if manual_rows > 0 else None)
+                            matrix_metadata['detected_fields'] = [
+                                field for field in matrix_metadata.get('detected_fields', [])
+                                if field not in ('水平', '垂直', '手动列数', '手动行数')]
                         if manual_cols > 0:
                             matrix_metadata['expected_cols'] = manual_cols
                             matrix_metadata['detected_fields'].append('手动列数')
-                        manual_rows = int(getattr(self, 'height_matrix_rows', 0) or 0)
                         if manual_rows > 0:
                             matrix_metadata['expected_rows'] = manual_rows
                             matrix_metadata['detected_fields'].append('手动行数')
+                        matrix_metadata['manual_start_row'] = manual_start_set
                     layout = self._detect_text_layout(
                         path, enc, start_line_no=manual_start, layout_mode=layout_mode,
                         matrix_metadata=matrix_metadata, progress=progress,
@@ -3580,10 +3677,13 @@ class DataIOMixin:
                 ncols = layout['ncols']
                 col_names = layout['header_tokens'] if layout['header_tokens'] else [f'Col{i+1}' for i in range(ncols)]
                 if layout_mode == 'height_matrix':
-                    if not self._looks_like_height_matrix_layout(path, enc, layout):
-                        raise ValueError(
-                            "当前导入策略选择了Z矩阵，但文件中未找到稳定的二维数值矩阵区。\n"
-                            "请检查数据起始行，或在文件导入策略中切换为XYZ点表。")
+                    if manual_start_set:
+                        layout = self._prepare_height_matrix_layout(path, enc, layout)
+                    else:
+                        if not self._looks_like_height_matrix_layout(path, enc, layout):
+                            raise ValueError(
+                                "当前导入策略选择了Z矩阵，但文件中未找到稳定的二维数值矩阵区。\n"
+                                "请检查数据起始行，或在文件导入策略中切换为XYZ点表。")
                     df = self._read_height_matrix_table(
                         path, enc, layout, file_size, progress, cancel_event)
                     self.import_info['display_limit'] = self._display_limit()

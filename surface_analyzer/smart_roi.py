@@ -236,32 +236,65 @@ def build_adaptive_topology(x, y, matrix_rc=None, sensitivity='standard', delaun
             f"edges={health['edge_count']}, isolated={health['isolated_ratio']:.1%}, "
             f"median_degree={health['median_degree']:.1f}, "
             f"largest={health['largest_component_ratio']:.1%}")
-        try:
-            if len(xy) <= int(delaunay_limit):
-                fallback_edges, spacing = _delaunay_edges(xy, config['edge_factor'])
-                method = 'delaunay'
-                label = '受像素缺口约束的Delaunay'
-            else:
-                fallback_edges, spacing, neighbor_count = _adaptive_knn_edges(
-                    xy, config['edge_factor'])
-                method = 'adaptive_knn'
-                label = f'受像素缺口约束的自适应kNN(k={neighbor_count})'
-            fallback_edges = _constrain_edges_to_raster(
-                fallback_edges, np.asarray(rows), np.asarray(cols))
-            adjacency = _edge_pairs_to_adjacency(len(xy), fallback_edges)
-            constrained_health = _topology_health(adjacency)
-            if not _health_is_usable(constrained_health):
-                raise ValueError('受约束回退后拓扑仍不连通')
-            return {
-                'adjacency': adjacency,
-                'method': method,
-                'topology': label,
-                'local_spacing_mm': float(spacing),
-                'fallback_reason': fallback_reason,
-                'health': constrained_health,
-            }
-        except Exception as exc:
-            raise ValueError(f'{fallback_reason}；{exc}') from exc
+        def _delaunay_candidate():
+            edges, spacing = _delaunay_edges(xy, config['edge_factor'])
+            return edges, spacing, 'delaunay', 'Delaunay自适应邻接'
+
+        def _knn_candidate():
+            edges, spacing, neighbor_count = _adaptive_knn_edges(
+                xy, config['edge_factor'])
+            return edges, spacing, 'adaptive_knn', f'自适应kNN(k={neighbor_count})'
+
+        fallback_candidates = []
+        if len(xy) <= int(delaunay_limit):
+            fallback_candidates.append(_delaunay_candidate)
+        fallback_candidates.append(_knn_candidate)
+
+        constrained_errors = []
+        for candidate in fallback_candidates:
+            try:
+                fallback_edges, spacing, method, label = candidate()
+                fallback_edges = _constrain_edges_to_raster(
+                    fallback_edges, np.asarray(rows), np.asarray(cols))
+                adjacency = _edge_pairs_to_adjacency(len(xy), fallback_edges)
+                constrained_health = _topology_health(adjacency)
+                if _health_is_usable(constrained_health):
+                    return {
+                        'adjacency': adjacency,
+                        'method': method,
+                        'topology': f'受像素缺口约束的{label}',
+                        'local_spacing_mm': float(spacing),
+                        'fallback_reason': fallback_reason,
+                        'health': constrained_health,
+                    }
+            except Exception as exc:
+                constrained_errors.append(str(exc))
+
+        unconstrained_errors = []
+        for candidate in fallback_candidates:
+            try:
+                fallback_edges, spacing, method, label = candidate()
+                adjacency = _edge_pairs_to_adjacency(len(xy), fallback_edges)
+                health = _topology_health(adjacency)
+                if _health_is_usable(health):
+                    fallback_reason = (
+                        f'{fallback_reason}；受像素缺口约束回退不健康，'
+                        '已使用未受约束拓扑（可能跨越缺口）')
+                    return {
+                        'adjacency': adjacency,
+                        'method': method,
+                        'topology': f'{label}（缺口约束失效）',
+                        'local_spacing_mm': float(spacing),
+                        'fallback_reason': fallback_reason,
+                        'health': health,
+                    }
+            except Exception as exc:
+                unconstrained_errors.append(str(exc))
+
+        detail = '；'.join(constrained_errors or ['受约束回退后拓扑仍不连通'])
+        if unconstrained_errors:
+            detail += f'；未受约束回退: {"; ".join(unconstrained_errors)}'
+        raise ValueError(f'{fallback_reason}；{detail}') from None
     if len(xy) <= int(delaunay_limit):
         try:
             edges, spacing = _delaunay_edges(xy, config['edge_factor'])

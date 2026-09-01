@@ -13,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from surface_analyzer.app import SurfaceAnalyzerPro
+from surface_analyzer.smart_roi import build_adaptive_topology
 from surface_analyzer.workers import TaskCancelled
 
 
@@ -295,6 +296,100 @@ class V455MatrixAndTraceabilityTests(unittest.TestCase):
             measure["metrics"]["a"] * ref_x + measure["metrics"]["b"] * ref_y + measure["metrics"]["c"]
             - base["metrics"]["a"] * ref_x - base["metrics"]["b"] * ref_y - base["metrics"]["c"])
         self.assertAlmostEqual(result["step_height"], expected_step, places=12)
+
+    def test_vr_bare_height_marker_with_space_does_not_break_layout(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "vr_realistic.csv"
+        cols = 12
+        rows = 12
+        lines = [
+            "FileType,ImageDataCsv",
+            "Instrument,VR-6000",
+            "Measurement Mode,Surface",
+            "XY Calibration,47.242 um",
+            "X Size,12",
+            "Y Size,12",
+            "Z Unit,um",
+            "",
+            "Height Map(um)",
+            "," + ",".join(str(i) for i in range(cols)) + ",",
+        ]
+        for row in range(rows):
+            lines.append(
+                str(row) + "," +
+                ",".join(str(float(100 + row * 10 + col)) for col in range(cols)) + ",")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        frame = self.window._read_table(path)
+        self.assertTrue(self.window.import_info["height_matrix"])
+        self.assertEqual(self.window.import_info["matrix_rows"], rows)
+        self.assertEqual(self.window.import_info["matrix_cols"], cols)
+        self.assertEqual(len(frame), rows * cols)
+
+    def test_pure_numeric_matrix_full_import_after_parse_optimization(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "pure_matrix.csv"
+        rows = 150
+        cols = 150
+        lines = []
+        for row in range(rows):
+            lines.append(",".join(str(float(row * 1000 + col)) for col in range(cols)))
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.window.large_text_threshold_mb = 1000.0
+        self.window.matrix_analysis_threshold = 1_000_000
+
+        frame = self.window._read_table(path)
+        self.assertEqual(self.window.import_info["matrix_rows"], rows)
+        self.assertEqual(self.window.import_info["matrix_cols"], cols)
+        self.assertEqual(len(frame), rows * cols)
+
+    def test_height_matrix_manual_start_row_overrides_declared_dims(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "vr_manual.csv"
+        cols = 12
+        rows = 12
+        lines = [
+            "FileType,ImageDataCsv",
+            "Instrument,VR-6000",
+            "水平,12",
+            "垂直,13",
+            "XY 校准,47.242 um",
+            "Z Unit,um",
+            "",
+            "Height Map(um)",
+            "," + ",".join(str(i) for i in range(cols)) + ",",
+        ]
+        for row in range(rows):
+            lines.append(
+                ",".join(str(float(100 + row * 10 + col)) for col in range(cols)) + ",")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.window.height_matrix_start_row = 10
+        self.window.height_matrix_cols = cols
+
+        frame = self.window._read_table(path)
+        self.assertEqual(self.window.import_info["matrix_rows"], rows)
+        self.assertEqual(self.window.import_info["matrix_cols"], cols)
+        self.assertEqual(self.window.import_info["matrix_data_start_row"], 10)
+        self.assertEqual(len(frame), rows * cols)
+
+    def test_sparse_matrix_topology_falls_back_instead_of_hard_failing(self):
+        row_values = []
+        col_values = []
+        for row in range(10):
+            for col in range(10):
+                if np.random.RandomState(row * 100 + col).random() >= 0.9:
+                    row_values.append(row)
+                    col_values.append(col)
+        x = np.asarray(col_values, dtype=float)
+        y = np.asarray(row_values, dtype=float)
+
+        topology = build_adaptive_topology(
+            x, y, matrix_rc=(np.asarray(row_values), np.asarray(col_values)))
+        self.assertIn("缺口约束失效", topology["topology"])
+        self.assertIn("未受约束拓扑", topology["fallback_reason"])
 
 
 if __name__ == "__main__":

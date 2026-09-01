@@ -12,7 +12,9 @@ import pandas as pd
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication, QMessageBox, QDialog, QGroupBox, QLabel
+from PyQt6.QtWidgets import (
+    QApplication, QMessageBox, QDialog, QGroupBox, QLabel, QToolButton, QWidget,
+)
 
 from surface_analyzer import AnalysisOptions, analyze_file, analyze_xyz, compare_plane_results
 from surface_analyzer import APP_VERSION
@@ -104,7 +106,7 @@ class V4ApiTests(unittest.TestCase):
         window.height_matrix_start_row = 123
         window.input_layout_mode = "height_matrix"
         recipe = window._current_recipe_dict()
-        self.assertEqual(APP_VERSION, "V4.5.6")
+        self.assertEqual(APP_VERSION, "V4.5.7")
         self.assertEqual(recipe["large_file"]["matrix_start_row"], 123)
         self.assertEqual(recipe["large_file"]["sampling_pitch_x_um"],
                          recipe["large_file"]["matrix_pitch_x_um"])
@@ -283,6 +285,29 @@ class V4ApiTests(unittest.TestCase):
         self.assertEqual(observed["point_pitch"], (False, False))
         self.assertEqual(observed["pixel_pitch"], (True, True))
         self.assertFalse(observed["pixel_matrix_unit"])
+        window.close()
+
+    def test_advanced_import_settings_are_collapsed_by_default(self):
+        window = SurfaceAnalyzerPro()
+        observed = {}
+
+        def inspect_dialog(dialog):
+            advanced = next(group for group in dialog.findChildren(QGroupBox)
+                            if group.title() == "高级解析覆盖")
+            body = advanced.findChild(QWidget, "advancedParsingBody")
+            toggle = advanced.findChild(QToolButton)
+            observed["hidden"] = body.isHidden()
+            observed["has_toggle"] = toggle is not None
+            if toggle is not None:
+                toggle.click()
+            observed["hidden_after_expand"] = body.isHidden()
+            return QDialog.DialogCode.Rejected
+
+        with patch.object(QDialog, "exec", inspect_dialog):
+            window.show_bigfile_settings_dialog()
+        self.assertTrue(observed["hidden"])
+        self.assertTrue(observed["has_toggle"])
+        self.assertFalse(observed["hidden_after_expand"])
         window.close()
 
     def test_v430_origin_tile_tracks_pipeline_state(self):
