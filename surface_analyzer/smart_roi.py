@@ -50,6 +50,49 @@ def _edge_lengths(xy, edges):
     return np.linalg.norm(xy[edges[:, 0]] - xy[edges[:, 1]], axis=1)
 
 
+def _topology_health(adjacency):
+    degrees = np.asarray([len(items) for items in adjacency], dtype=int)
+    point_count = int(len(degrees))
+    edge_count = int(degrees.sum() // 2)
+    isolated_ratio = float(np.mean(degrees == 0)) if point_count else 1.0
+    median_degree = float(np.median(degrees)) if point_count else 0.0
+    largest = 0
+    visited = np.zeros(point_count, dtype=bool)
+    for start in range(point_count):
+        if visited[start]:
+            continue
+        size = 0
+        queue = deque([start]); visited[start] = True
+        while queue:
+            current = queue.popleft(); size += 1
+            for neighbor in adjacency[current]:
+                neighbor = int(neighbor)
+                if not visited[neighbor]:
+                    visited[neighbor] = True; queue.append(neighbor)
+        largest = max(largest, size)
+    return {
+        'point_count': point_count,
+        'edge_count': edge_count,
+        'isolated_ratio': isolated_ratio,
+        'median_degree': median_degree,
+        'largest_component_ratio': float(largest / point_count) if point_count else 0.0,
+    }
+
+
+def _health_is_usable(health):
+    return bool(health['edge_count'] > 0 and health['isolated_ratio'] <= 0.25
+                and health['median_degree'] >= 1.0
+                and health['largest_component_ratio'] >= 0.50)
+
+
+def _constrain_edges_to_raster(edges, rows, cols):
+    if len(edges) == 0:
+        return edges
+    row_delta = np.abs(np.asarray(rows)[edges[:, 0]] - np.asarray(rows)[edges[:, 1]])
+    col_delta = np.abs(np.asarray(cols)[edges[:, 0]] - np.asarray(cols)[edges[:, 1]])
+    return edges[(row_delta <= 1) & (col_delta <= 1)]
+
+
 def _prune_edges_by_local_scale(xy, edges, edge_factor):
     if len(edges) == 0:
         return edges, 0.0
@@ -174,39 +217,90 @@ def build_adaptive_topology(x, y, matrix_rc=None, sensitivity='standard', delaun
     if matrix_rc is not None:
         rows, cols = matrix_rc
         edges = _matrix_edges(np.asarray(rows), np.asarray(cols))
-        lengths = _edge_lengths(xy, edges)
-        positive = lengths[np.isfinite(lengths) & (lengths > 0)]
-        spacing = float(np.median(positive)) if positive.size else 0.0
-        return {
-            'adjacency': _edge_pairs_to_adjacency(len(xy), edges),
-            'method': 'matrix8',
-            'topology': '矩阵8邻域',
-            'local_spacing_mm': spacing,
-            'fallback_reason': '',
-        }
+        adjacency = _edge_pairs_to_adjacency(len(xy), edges)
+        health = _topology_health(adjacency)
+        if _health_is_usable(health):
+            lengths = _edge_lengths(xy, edges)
+            positive = lengths[np.isfinite(lengths) & (lengths > 0)]
+            spacing = float(np.median(positive)) if positive.size else 0.0
+            return {
+                'adjacency': adjacency,
+                'method': 'matrix8',
+                'topology': '矩阵8邻域',
+                'local_spacing_mm': spacing,
+                'fallback_reason': '',
+                'health': health,
+            }
+        fallback_reason = (
+            '矩阵拓扑不健康: '
+            f"edges={health['edge_count']}, isolated={health['isolated_ratio']:.1%}, "
+            f"median_degree={health['median_degree']:.1f}, "
+            f"largest={health['largest_component_ratio']:.1%}")
+        try:
+            if len(xy) <= int(delaunay_limit):
+                fallback_edges, spacing = _delaunay_edges(xy, config['edge_factor'])
+                method = 'delaunay'
+                label = '受像素缺口约束的Delaunay'
+            else:
+                fallback_edges, spacing, neighbor_count = _adaptive_knn_edges(
+                    xy, config['edge_factor'])
+                method = 'adaptive_knn'
+                label = f'受像素缺口约束的自适应kNN(k={neighbor_count})'
+            fallback_edges = _constrain_edges_to_raster(
+                fallback_edges, np.asarray(rows), np.asarray(cols))
+            adjacency = _edge_pairs_to_adjacency(len(xy), fallback_edges)
+            constrained_health = _topology_health(adjacency)
+            if not _health_is_usable(constrained_health):
+                raise ValueError('受约束回退后拓扑仍不连通')
+            return {
+                'adjacency': adjacency,
+                'method': method,
+                'topology': label,
+                'local_spacing_mm': float(spacing),
+                'fallback_reason': fallback_reason,
+                'health': constrained_health,
+            }
+        except Exception as exc:
+            raise ValueError(f'{fallback_reason}；{exc}') from exc
     if len(xy) <= int(delaunay_limit):
         try:
             edges, spacing = _delaunay_edges(xy, config['edge_factor'])
             if len(edges) == 0:
                 raise ValueError('剪枝后无有效边')
+            adjacency = _edge_pairs_to_adjacency(len(xy), edges)
+            health = _topology_health(adjacency)
+            if not _health_is_usable(health):
+                raise ValueError(
+                    f"Delaunay拓扑不健康: edges={health['edge_count']}, "
+                    f"isolated={health['isolated_ratio']:.1%}, "
+                    f"largest={health['largest_component_ratio']:.1%}")
             return {
-                'adjacency': _edge_pairs_to_adjacency(len(xy), edges),
+                'adjacency': adjacency,
                 'method': 'delaunay',
                 'topology': 'Delaunay自适应邻接',
                 'local_spacing_mm': float(spacing),
                 'fallback_reason': '',
+                'health': health,
             }
         except Exception as exc:
             fallback_reason = str(exc)
     else:
         fallback_reason = f'点数 {len(xy):,} 超过 Delaunay 上限 {int(delaunay_limit):,}'
     edges, spacing, neighbor_count = _adaptive_knn_edges(xy, config['edge_factor'])
+    adjacency = _edge_pairs_to_adjacency(len(xy), edges)
+    health = _topology_health(adjacency)
+    if not _health_is_usable(health):
+        raise ValueError(
+            f"自适应kNN拓扑不健康: edges={health['edge_count']}, "
+            f"isolated={health['isolated_ratio']:.1%}, "
+            f"largest={health['largest_component_ratio']:.1%}")
     return {
-        'adjacency': _edge_pairs_to_adjacency(len(xy), edges),
+        'adjacency': adjacency,
         'method': 'adaptive_knn',
         'topology': f'自适应kNN(k={neighbor_count})',
         'local_spacing_mm': float(spacing),
         'fallback_reason': fallback_reason,
+        'health': health,
     }
 
 
@@ -343,6 +437,9 @@ def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
         seed = int(seed_index)
         if seed < 0 or seed >= len(x):
             raise ValueError('seed_index超出点云范围')
+    if len(adjacency[seed]) == 0:
+        raise ValueError('Smart ROI seed 在当前拓扑中没有邻接点')
+    metrics['seed_degree'] = int(len(adjacency[seed]))
     if not candidate[seed]:
         return np.zeros(len(x), dtype=bool)
     config = SENSITIVITY.get(str(sensitivity), SENSITIVITY['standard'])

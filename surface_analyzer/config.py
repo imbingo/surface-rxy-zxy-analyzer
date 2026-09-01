@@ -7,7 +7,10 @@ ACCENT = "#2f6db0"
 DISPLAY_POINT_LIMIT = 30_000
 LARGE_TEXT_FILE_BYTES = 64 * 1024 * 1024
 LARGE_TEXT_IMPORT_LIMIT = 100_000
-MISSING_TEXT_TOKENS = {"***", "--", "NA", "N/A", "NaN", "nan", "null", "NULL"}
+MISSING_TEXT_TOKENS = {
+    "***", "--", "NA", "N/A", "NaN", "nan", "NAN", "null", "NULL",
+    "NoData", "Nodata", "NO DATA", "No Data",
+}
 
 BIGFILE_MODE_PRESETS = {
     "fast": {

@@ -47,7 +47,21 @@ class RecipeMixin:
             'units': {'x_unit': self.cb_x_unit.currentText(), 'y_unit': self.cb_y_unit.currentText(), 'z_unit': self.cb_z_unit.currentText()},
             'transform_pipeline': list(self.transform_pipeline),
             'filter': {'mode_index': int(self.cb_filter.currentIndex()), 'mode_text': self.cb_filter.currentText(), 'neighbor_k': int(self.spin_k.value()), 'threshold_um': float(self.spin_thresh.value()), 'sigma_k': float(self.spin_sigma.value()), 'sigma_iters': int(self.spin_sigma_iter.value())},
-            'input': {'layout_mode': str(getattr(self, 'input_layout_mode', 'point_table'))},
+            'input': {
+                'layout_mode': str(getattr(self, 'input_layout_mode', 'point_table')),
+                'data_start_row': int(getattr(self, 'import_start_row', 0)),
+                'encoding': str(getattr(self, 'import_encoding', 'auto')),
+                'delimiter': str(getattr(self, 'import_delimiter', 'auto')),
+                'x_col_index': int(getattr(self, 'import_x_col', 0)),
+                'y_col_index': int(getattr(self, 'import_y_col', 0)),
+                'z_col_index': int(getattr(self, 'import_z_col', 0)),
+                'x_unit_override': str(getattr(self, 'import_x_unit', 'auto')),
+                'y_unit_override': str(getattr(self, 'import_y_unit', 'auto')),
+                'z_unit_override': str(getattr(self, 'import_z_unit', 'auto')),
+                'pixel_origin_x': float(getattr(self, 'pixel_origin_x', 0.0)),
+                'pixel_origin_y': float(getattr(self, 'pixel_origin_y', 0.0)),
+                'pitch_source': str(getattr(self, 'pitch_source', 'manual')),
+            },
             'display': {
                 'surface_mode': str(getattr(self, 'display_surface_mode', 'raw')),
                 'detrended': bool(self.display_detrended),
@@ -75,6 +89,7 @@ class RecipeMixin:
                 'matrix_z_unit': str(self.height_matrix_z_unit),
                 'matrix_start_row': int(self.height_matrix_start_row),
                 'matrix_cols': int(getattr(self, 'height_matrix_cols', 0)),
+                'matrix_rows': int(getattr(self, 'height_matrix_rows', 0)),
             },
             'gap': {'tolerance_mm': float(self.spin_tol.value()) if hasattr(self, 'spin_tol') else 0.05},
         }
@@ -124,10 +139,25 @@ class RecipeMixin:
         self.pending_recipe = recipe
         input_config = recipe.get('input', {}) or {}
         input_layout = str(input_config.get('layout_mode', getattr(self, 'input_layout_mode', 'point_table')))
-        if input_layout in ('point_table', 'height_matrix', 'zygo_xyz'):
+        if input_layout in ('point_table', 'pixel_xy', 'height_matrix', 'zygo_xyz'):
             self.input_layout_mode = input_layout
             QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer").setValue(
                 "input_layout_mode", self.input_layout_mode)
+        self.import_start_row = int(input_config.get('data_start_row', getattr(self, 'import_start_row', 0)) or 0)
+        self.import_encoding = str(input_config.get('encoding', getattr(self, 'import_encoding', 'auto')) or 'auto')
+        self.import_delimiter = str(input_config.get('delimiter', getattr(self, 'import_delimiter', 'auto')) or 'auto')
+        self.import_x_col = int(input_config.get('x_col_index', getattr(self, 'import_x_col', 0)) or 0)
+        self.import_y_col = int(input_config.get('y_col_index', getattr(self, 'import_y_col', 0)) or 0)
+        self.import_z_col = int(input_config.get('z_col_index', getattr(self, 'import_z_col', 0)) or 0)
+        self.import_x_unit = str(input_config.get('x_unit_override', getattr(self, 'import_x_unit', 'auto')) or 'auto')
+        self.import_y_unit = str(input_config.get('y_unit_override', getattr(self, 'import_y_unit', 'auto')) or 'auto')
+        self.import_z_unit = str(input_config.get('z_unit_override', getattr(self, 'import_z_unit', 'auto')) or 'auto')
+        self.pixel_origin_x = float(input_config.get('pixel_origin_x', getattr(self, 'pixel_origin_x', 0.0)) or 0.0)
+        self.pixel_origin_y = float(input_config.get('pixel_origin_y', getattr(self, 'pixel_origin_y', 0.0)) or 0.0)
+        # Recipes predating this field used the on-screen Pitch as an explicit manual value.
+        self.pitch_source = str(input_config.get('pitch_source', 'manual') or 'manual')
+        QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer").setValue(
+            "pitch_source", self.pitch_source)
         units = recipe.get('units', {}) or {}
         self._safe_set_combo_text(self.cb_x_unit, units.get('x_unit'))
         self._safe_set_combo_text(self.cb_y_unit, units.get('y_unit'))
@@ -184,6 +214,8 @@ class RecipeMixin:
             lf.get('matrix_start_row'), self.height_matrix_start_row, 0, 50000)
         self.height_matrix_cols = bounded_int(
             lf.get('matrix_cols'), getattr(self, 'height_matrix_cols', 0), 0, 100000)
+        self.height_matrix_rows = bounded_int(
+            lf.get('matrix_rows'), getattr(self, 'height_matrix_rows', 0), 0, 100000)
         self.large_file_mode = self._matching_bigfile_mode()
         self.import_info['display_limit'] = self.display_point_limit
         self.import_info['sample_method'] = self._sample_method_label()

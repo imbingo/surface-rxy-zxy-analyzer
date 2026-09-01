@@ -355,13 +355,22 @@ class ROIMixin:
         return float(np.median(nn) * 1.8)
 
     def _matrix_rc_for_current_data(self):
-        if self.df_raw is None or '_matrix_row' not in self.df_raw.columns or '_matrix_col' not in self.df_raw.columns:
+        if self.df_raw is None:
             return None
         info = getattr(self, 'import_info', {}) or {}
         if (info.get('source_format') == 'Precitec FSS Explorer SCAN PATH DATA'
                 and not info.get('precitec_topology_usable', False)):
             return None
+        if (info.get('sampled') and info.get('sample_method_key') == 'spatial_grid'
+                and '_topology_row' not in self.df_raw.columns):
+            return None
         try:
+            if ('_topology_row' in self.df_raw.columns and
+                    '_topology_col' in self.df_raw.columns):
+                return (self.df_raw['_topology_row'].to_numpy(dtype=int),
+                        self.df_raw['_topology_col'].to_numpy(dtype=int))
+            if '_matrix_row' not in self.df_raw.columns or '_matrix_col' not in self.df_raw.columns:
+                return None
             return (self.df_raw['_matrix_row'].to_numpy(dtype=int),
                     self.df_raw['_matrix_col'].to_numpy(dtype=int))
         except Exception:
@@ -577,6 +586,9 @@ class ROIMixin:
                 roi['topology_method'] = topology['method']
                 roi['topology_fallback_reason'] = topology.get('fallback_reason', '')
                 roi['local_spacing_mm'] = float(topology.get('local_spacing_mm', 0.0))
+                roi['topology_health'] = dict(topology.get('health', {}))
+                if 'seed_degree' in growth_stats:
+                    roi['topology_health']['seed_degree'] = int(growth_stats['seed_degree'])
                 result = np.zeros(len(x), dtype=bool)
                 result[finite_idx[local_keep]] = True
                 performance = {
@@ -596,12 +608,8 @@ class ROIMixin:
                 roi['topology_label'] = '拓扑失败'
                 roi['topology_method'] = 'failed'
                 roi['topology_fallback_reason'] = str(exc)
-                result = np.zeros(len(x), dtype=bool)
-                seed = int(finite_idx[np.argmin(
-                    (x[finite_idx] - float(roi.get('seed_x', 0.0))) ** 2 +
-                    (y[finite_idx] - float(roi.get('seed_y', 0.0))) ** 2)])
-                result[seed] = True
-                return result
+                self._show_status(f"Smart ROI拓扑失败: {exc}", 12000)
+                return np.zeros(len(x), dtype=bool)
         if str(roi.get('smart_mode', 'plane_residual')) == 'plane_residual':
             return self._smart_face_keep_mask_plane_residual(x, y, z, roi, update_radius=update_radius)
         if roi.get('connectivity') == 'matrix8' and matrix_rc is not None:
@@ -1443,6 +1451,10 @@ class ROIMixin:
                 roi['topology_method'] = topology['method']
                 roi['topology_fallback_reason'] = topology.get('fallback_reason', '')
                 roi['local_spacing_mm'] = float(topology.get('local_spacing_mm', 0.0))
+                roi['topology_health'] = dict(topology.get('health', {}))
+                if 'seed_degree' in result.get('growth_stats', {}):
+                    roi['topology_health']['seed_degree'] = int(
+                        result['growth_stats']['seed_degree'])
                 keep = np.zeros(len(tx), dtype=bool)
                 keep[result['finite_idx'][np.asarray(result['local_keep'], dtype=bool)]] = True
                 performance = {

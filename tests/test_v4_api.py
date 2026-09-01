@@ -82,6 +82,7 @@ class V4ApiTests(unittest.TestCase):
 
             window = SurfaceAnalyzerPro()
             window.input_layout_mode = "height_matrix"
+            window.pitch_source = "auto"
             frame = window._read_table(path)
             self.assertTrue(window.import_info["height_matrix"])
             self.assertEqual(window.import_info["matrix_rows"], 10)
@@ -248,7 +249,7 @@ class V4ApiTests(unittest.TestCase):
             self.assertEqual(window.import_info["source_valid_rows"], 30)
             window.close()
 
-    def test_v440_import_dialog_has_three_layouts_and_correct_pitch_state(self):
+    def test_v440_import_dialog_keeps_legacy_and_adds_pixel_layout(self):
         window = SurfaceAnalyzerPro()
         observed = {}
 
@@ -267,19 +268,21 @@ class V4ApiTests(unittest.TestCase):
             observed["labels"] = labels
             layout_combo.setCurrentIndex(layout_combo.findData("point_table"))
             observed["point_pitch"] = (pitch_x.isEnabled(), pitch_y.isEnabled())
-            layout_combo.setCurrentIndex(layout_combo.findData("zygo_xyz"))
-            observed["zygo_pitch"] = (pitch_x.isEnabled(), pitch_y.isEnabled())
-            observed["zygo_matrix_unit"] = matrix_unit.isEnabled()
+            layout_combo.setCurrentIndex(layout_combo.findData("pixel_xy"))
+            observed["pixel_pitch"] = (pitch_x.isEnabled(), pitch_y.isEnabled())
+            observed["pixel_matrix_unit"] = matrix_unit.isEnabled()
             return QDialog.DialogCode.Rejected
 
         with patch.object(QDialog, "exec", inspect_dialog):
             window.show_bigfile_settings_dialog()
-        self.assertEqual(observed["layouts"], ["point_table", "height_matrix", "zygo_xyz"])
+        self.assertEqual(
+            observed["layouts"],
+            ["point_table", "pixel_xy", "height_matrix", "zygo_xyz"])
         self.assertIn("X 采样间距 (µm/点):", observed["labels"])
         self.assertIn("Y 采样间距 (µm/点):", observed["labels"])
         self.assertEqual(observed["point_pitch"], (False, False))
-        self.assertEqual(observed["zygo_pitch"], (True, True))
-        self.assertFalse(observed["zygo_matrix_unit"])
+        self.assertEqual(observed["pixel_pitch"], (True, True))
+        self.assertFalse(observed["pixel_matrix_unit"])
         window.close()
 
     def test_v430_origin_tile_tracks_pipeline_state(self):

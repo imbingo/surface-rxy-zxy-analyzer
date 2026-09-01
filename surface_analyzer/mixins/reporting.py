@@ -71,7 +71,7 @@ class ReportingMixin:
         pitch_y = info.get('sampling_pitch_y_um')
         pitch_source = str(info.get('sampling_pitch_source') or '--')
         coordinate_parts = []
-        if info.get('input_layout_mode') in ('height_matrix', 'zygo_xyz'):
+        if info.get('input_layout_mode') in ('pixel_xy', 'height_matrix', 'zygo_xyz'):
             coordinate_parts.append(
                 f"有效采样间距 X/Y={float(pitch_x):g}/{float(pitch_y):g} µm/点（{pitch_source}）")
         camera = info.get('detected_camera_res_um')

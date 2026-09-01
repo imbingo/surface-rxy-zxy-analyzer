@@ -45,15 +45,17 @@ class DataIOMixin:
     @staticmethod
     def _input_layout_label(layout_mode):
         return {
-            'point_table': 'XYZ点表',
-            'height_matrix': 'Z矩阵',
-            'zygo_xyz': 'Zygo XYZ',
-        }.get(str(layout_mode), 'XYZ点表')
+            'point_table': 'XYZ物理坐标',
+            'pixel_xy': 'Pixel XY / 像素XY',
+            'height_matrix': 'Z Matrix / 高度矩阵',
+            'zygo_xyz': 'Zygo XYZ（兼容）',
+        }.get(str(layout_mode), 'XYZ物理坐标')
 
     @staticmethod
     def _input_layout_short_label(layout_mode):
         return {
             'point_table': 'XYZ',
+            'pixel_xy': 'Pixel XY',
             'height_matrix': 'Z矩阵',
             'zygo_xyz': 'Zygo',
         }.get(str(layout_mode), 'XYZ')
@@ -193,6 +195,12 @@ class DataIOMixin:
             'source_sha256': '',
             'strategy': '--',
             'input_layout_mode': getattr(self, 'input_layout_mode', 'point_table'),
+            'input_semantics': {
+                'point_table': 'xyz_physical',
+                'pixel_xy': 'pixel_xy',
+                'height_matrix': 'height_matrix',
+                'zygo_xyz': 'pixel_xy',
+            }.get(getattr(self, 'input_layout_mode', 'point_table'), 'xyz_physical'),
             'sampled': False,
             'sample_method_key': 'full',
             'extrema_preserved': True,
@@ -228,6 +236,12 @@ class DataIOMixin:
             'matrix_z_unit': self.height_matrix_z_unit,
             'matrix_start_row': int(getattr(self, 'height_matrix_start_row', 0)),
             'matrix_requested_cols': int(getattr(self, 'height_matrix_cols', 0)),
+            'matrix_requested_rows': int(getattr(self, 'height_matrix_rows', 0)),
+            'input_encoding_override': str(getattr(self, 'import_encoding', 'auto')),
+            'input_delimiter_override': str(getattr(self, 'import_delimiter', 'auto')),
+            'input_data_start_row': int(getattr(self, 'import_start_row', 0)),
+            'topology_method': '',
+            'topology_fallback_reason': '',
             'notes': ''
         }
 
@@ -281,6 +295,10 @@ class DataIOMixin:
             text += f" | {notes}"
         if info.get('sampling_downgraded'):
             text += f" | 采样降级: {info.get('sampling_downgrade_reason', '列语义不确定')}"
+        if info.get('topology_method'):
+            text += f" | Topology: {info['topology_method']}"
+        if info.get('topology_fallback_reason'):
+            text += f" | Fallback: {info['topology_fallback_reason']}"
         if hasattr(self, 'lbl_import_status'):
             self.lbl_import_status.setText(text)
         if hasattr(self, 'btn_bigfile_settings'):
@@ -316,15 +334,17 @@ class DataIOMixin:
         layout_grid = QGridLayout(layout_group)
         layout_grid.addWidget(QLabel("导入类型:"), 0, 0)
         cb_input_layout = NoWheelComboBox()
-        cb_input_layout.addItem("XYZ 点表", "point_table")
-        cb_input_layout.addItem("Z 矩阵", "height_matrix")
-        cb_input_layout.addItem("Zygo XYZ", "zygo_xyz")
+        cb_input_layout.addItem("XYZ 物理坐标", "point_table")
+        cb_input_layout.addItem("Pixel XY / 像素XY", "pixel_xy")
+        cb_input_layout.addItem("Z Matrix / 高度矩阵", "height_matrix")
+        cb_input_layout.addItem("Zygo XYZ（兼容）", "zygo_xyz")
         layout_index = cb_input_layout.findData(getattr(self, 'input_layout_mode', 'point_table'))
         cb_input_layout.setCurrentIndex(layout_index if layout_index >= 0 else 0)
         cb_input_layout.setToolTip(
-            "XYZ点表：文件中存在可映射的X/Y/Z逻辑列，也支持Excel单列内用分号封装多字段。\n"
-            "Z矩阵：文件主体是二维高度数组，X/Y由采样间距和行列位置生成。\n"
-            "Zygo XYZ：Zygo XYZ Data File - Format 1；X/Y由手动采样间距生成。")
+            "XYZ物理坐标：X/Y为真实物理坐标。\n"
+            "Pixel XY：X/Y为像素序号，使用Pitch和Origin生成物理坐标。\n"
+            "Z Matrix：主体为二维高度数组。\n"
+            "Zygo XYZ：旧Recipe兼容入口，内部使用Pixel XY标准化管线。")
         layout_grid.addWidget(cb_input_layout, 0, 1)
         layout_note = QLabel("此选择会自动记忆，后续导入沿用；更换数据类型时再修改。")
         layout_note.setWordWrap(True)
@@ -449,6 +469,74 @@ class DataIOMixin:
         spin_matrix_cols.setToolTip("0=由表头或固定分隔符推断；格式存在歧义时可填写真实矩阵列数。")
         grid.addWidget(spin_matrix_cols, 13, 1)
 
+        advanced_group = QGroupBox("高级解析覆盖（Auto优先使用可靠表头）")
+        advanced = QGridLayout(advanced_group)
+        advanced.addWidget(QLabel("数据起始行:"), 0, 0)
+        spin_start_row = NoWheelSpinBox(); spin_start_row.setRange(0, 10_000_000)
+        spin_start_row.setSpecialValueText("自动")
+        spin_start_row.setValue(int(getattr(self, 'import_start_row', 0)))
+        advanced.addWidget(spin_start_row, 0, 1)
+        advanced.addWidget(QLabel("编码:"), 1, 0)
+        cb_encoding = NoWheelComboBox()
+        for label, value in (("Auto", "auto"), ("UTF-8-SIG", "utf-8-sig"),
+                             ("GBK", "gbk"), ("UTF-16", "utf-16"),
+                             ("Latin-1", "latin-1")):
+            cb_encoding.addItem(label, value)
+        cb_encoding.setCurrentIndex(max(0, cb_encoding.findData(
+            getattr(self, 'import_encoding', 'auto'))))
+        advanced.addWidget(cb_encoding, 1, 1)
+        advanced.addWidget(QLabel("分隔符:"), 2, 0)
+        cb_delimiter = NoWheelComboBox()
+        for label, value in (("Auto", "auto"), ("逗号", ","), ("Tab", "\t"),
+                             ("分号", ";"), ("中文分号", "；"),
+                             ("竖线", "|"), ("空白", "whitespace")):
+            cb_delimiter.addItem(label, value)
+        cb_delimiter.setCurrentIndex(max(0, cb_delimiter.findData(
+            getattr(self, 'import_delimiter', 'auto'))))
+        advanced.addWidget(cb_delimiter, 2, 1)
+
+        column_spins = []
+        for row, (label, attr) in enumerate((('X / Pixel X列号:', 'import_x_col'),
+                                             ('Y / Pixel Y列号:', 'import_y_col'),
+                                             ('Z列号:', 'import_z_col')), start=3):
+            advanced.addWidget(QLabel(label), row, 0)
+            spin = NoWheelSpinBox(); spin.setRange(0, 100_000)
+            spin.setSpecialValueText("自动")
+            spin.setValue(int(getattr(self, attr, 0)))
+            advanced.addWidget(spin, row, 1); column_spins.append(spin)
+
+        unit_combos = []
+        for row, (label, attr) in enumerate((('X单位:', 'import_x_unit'),
+                                             ('Y单位:', 'import_y_unit'),
+                                             ('Z单位:', 'import_z_unit')), start=6):
+            advanced.addWidget(QLabel(label), row, 0)
+            combo = NoWheelComboBox(); combo.addItems(['auto', 'mm', 'µm', 'nm'])
+            combo.setCurrentText(str(getattr(self, attr, 'auto')))
+            advanced.addWidget(combo, row, 1); unit_combos.append(combo)
+
+        advanced.addWidget(QLabel("Pixel Origin X/Y:"), 9, 0)
+        origin_row = QHBoxLayout()
+        spin_origin_x = NoWheelDoubleSpinBox(); spin_origin_x.setRange(-1e9, 1e9)
+        spin_origin_y = NoWheelDoubleSpinBox(); spin_origin_y.setRange(-1e9, 1e9)
+        spin_origin_x.setValue(float(getattr(self, 'pixel_origin_x', 0.0)))
+        spin_origin_y.setValue(float(getattr(self, 'pixel_origin_y', 0.0)))
+        origin_row.addWidget(spin_origin_x); origin_row.addWidget(spin_origin_y)
+        advanced.addLayout(origin_row, 9, 1)
+
+        advanced.addWidget(QLabel("Pitch来源:"), 10, 0)
+        cb_pitch_source = NoWheelComboBox()
+        cb_pitch_source.addItem("Auto（可靠文件值优先）", "auto")
+        cb_pitch_source.addItem("手动输入", "manual")
+        cb_pitch_source.setCurrentIndex(max(0, cb_pitch_source.findData(
+            getattr(self, 'pitch_source', 'manual'))))
+        advanced.addWidget(cb_pitch_source, 10, 1)
+        advanced.addWidget(QLabel("矩阵行数:"), 11, 0)
+        spin_matrix_rows = NoWheelSpinBox(); spin_matrix_rows.setRange(0, 100_000)
+        spin_matrix_rows.setSpecialValueText("自动")
+        spin_matrix_rows.setValue(int(getattr(self, 'height_matrix_rows', 0)))
+        advanced.addWidget(spin_matrix_rows, 11, 1)
+        layout.addWidget(advanced_group)
+
         applying_preset = {'active': False}
 
         def set_mode_index(mode_key):
@@ -492,12 +580,15 @@ class DataIOMixin:
 
         def update_layout_controls(*_args):
             mode = str(cb_input_layout.currentData())
-            uses_pitch = mode in ('height_matrix', 'zygo_xyz')
+            uses_pitch = mode in ('pixel_xy', 'height_matrix', 'zygo_xyz')
             spin_pitch_x.setEnabled(uses_pitch)
             spin_pitch_y.setEnabled(uses_pitch)
             cb_matrix_z_unit.setEnabled(mode == 'height_matrix')
             spin_matrix_start.setEnabled(mode == 'height_matrix')
             spin_matrix_cols.setEnabled(mode == 'height_matrix')
+            spin_matrix_rows.setEnabled(mode == 'height_matrix')
+            spin_origin_x.setEnabled(mode == 'pixel_xy')
+            spin_origin_y.setEnabled(mode == 'pixel_xy')
 
         cb_mode.currentIndexChanged.connect(apply_preset_from_combo)
         cb_input_layout.currentIndexChanged.connect(update_layout_controls)
@@ -544,6 +635,18 @@ class DataIOMixin:
             self.height_matrix_z_unit = str(cb_matrix_z_unit.currentText())
             self.height_matrix_start_row = int(spin_matrix_start.value())
             self.height_matrix_cols = int(spin_matrix_cols.value())
+            self.height_matrix_rows = int(spin_matrix_rows.value())
+            self.import_start_row = int(spin_start_row.value())
+            self.import_encoding = str(cb_encoding.currentData())
+            self.import_delimiter = str(cb_delimiter.currentData())
+            self.import_x_col, self.import_y_col, self.import_z_col = (
+                int(spin.value()) for spin in column_spins)
+            self.import_x_unit, self.import_y_unit, self.import_z_unit = (
+                str(combo.currentText()) for combo in unit_combos)
+            self.pixel_origin_x = float(spin_origin_x.value())
+            self.pixel_origin_y = float(spin_origin_y.value())
+            self.pitch_source = str(cb_pitch_source.currentData())
+            self.settings.setValue("pitch_source", self.pitch_source)
             self.large_file_mode = self._matching_bigfile_mode()
             self.import_info['display_limit'] = self.display_point_limit
             self.import_info['large_file_mode'] = self._bigfile_mode_label()
@@ -576,8 +679,28 @@ class DataIOMixin:
             return ';'
         return r'\s+'
 
+    def _encoding_candidates(self):
+        selected = str(getattr(self, 'import_encoding', 'auto') or 'auto')
+        if selected != 'auto':
+            return (selected,)
+        return ('utf-8-sig', 'gbk', 'utf-16', 'latin-1')
+
+    def _delimiter_override(self):
+        selected = str(getattr(self, 'import_delimiter', 'auto') or 'auto')
+        if selected == 'auto':
+            return None
+        return r'\s+' if selected == 'whitespace' else selected
+
+    def _configured_start_line(self, layout_mode):
+        common = max(0, int(getattr(self, 'import_start_row', 0) or 0) - 1)
+        if layout_mode == 'height_matrix':
+            legacy = max(0, int(getattr(self, 'height_matrix_start_row', 0) or 0) - 1)
+            return legacy if legacy > 0 else common
+        return common
+
     @staticmethod
     def _split_text_line(line, sep):
+        line = re.sub(r'(?i)\bno\s+data\b', 'NoData', str(line))
         if sep == r'\s+':
             return [t for t in re.split(r'\s+', line.strip()) if t]
         return [t.strip() for t in line.strip().split(sep)]
@@ -622,8 +745,10 @@ class DataIOMixin:
 
     @classmethod
     def _is_missing_token(cls, value):
-        token = str(value).strip()
-        return not token or token in cls.MISSING_TEXT_TOKENS
+        token = re.sub(r'\s+', ' ', str(value).strip()).casefold()
+        known = {re.sub(r'\s+', ' ', str(item).strip()).casefold()
+                 for item in cls.MISSING_TEXT_TOKENS}
+        return not token or token in known
 
     @classmethod
     def _is_float_token(cls, value):
@@ -660,6 +785,15 @@ class DataIOMixin:
         if len(tokens) < 3:
             return False
         return sum(cls._is_float_token(t) for t in tokens) >= 3
+
+    @classmethod
+    def _looks_like_pixel_record_row(cls, tokens):
+        """Pixel records remain part of the raster when Z is an explicit missing token."""
+        if len(tokens) < 3:
+            return False
+        numeric = sum(cls._is_float_token(token) for token in tokens)
+        missing = sum(cls._is_missing_token(token) for token in tokens)
+        return numeric >= 2 and numeric + missing >= 3
 
     @staticmethod
     def _normalize_header_label(value):
@@ -726,6 +860,30 @@ class DataIOMixin:
             'unit_hints': unit_hints,
             'unambiguous': unambiguous,
             'axis_candidates': axis_candidates,
+        }
+
+    @classmethod
+    def _pixel_header_semantics(cls, tokens):
+        candidates = {'x': [], 'y': [], 'z': []}
+        unit_hints = {}
+        for index, token in enumerate(tokens):
+            normalized = cls._normalize_header_label(token)
+            compact = re.sub(r'[^a-z0-9\u4e00-\u9fff]+', '', normalized)
+            if compact in {'pixelx', 'xpixel', 'xindex', 'column', 'col', '像素x', 'x像素'}:
+                candidates['x'].append(index)
+            elif compact in {'pixely', 'ypixel', 'yindex', 'row', '像素y', 'y像素'}:
+                candidates['y'].append(index)
+            elif cls._header_axis_kind(token) == 'z':
+                candidates['z'].append(index)
+                unit = cls._header_unit_hint(token)
+                if unit:
+                    unit_hints['z'] = unit
+        mapping = {axis: values[0] for axis, values in candidates.items() if len(values) == 1}
+        return {
+            'mapping': mapping,
+            'unit_hints': unit_hints,
+            'unambiguous': len(mapping) == 3 and len(set(mapping.values())) == 3,
+            'axis_candidates': candidates,
         }
 
     @classmethod
@@ -796,7 +954,7 @@ class DataIOMixin:
     @classmethod
     def _detect_text_layout(cls, path, enc, max_scan_lines=50000, start_line_no=0,
                             layout_mode='point_table', matrix_metadata=None,
-                            progress=None, cancel_event=None):
+                            progress=None, cancel_event=None, forced_sep=None):
         """扫描文本开头，识别第一行有效数值数据、分隔符、列数和可选表头。
         不再命中第一组数值行就立即返回，而是比较多个候选区，避免把设备参数表误认成数据。"""
         candidates = []
@@ -858,7 +1016,7 @@ class DataIOMixin:
                     finish_run(line_no)
                     continue
                 if is_comment:
-                    candidate_sep = cls._detect_sep_from_line(candidate_text)
+                    candidate_sep = forced_sep or cls._detect_sep_from_line(candidate_text)
                     candidate_tokens = cls._trim_trailing_empty_tokens(
                         cls._split_text_line(candidate_text, candidate_sep))
                     candidate = cls._header_candidate_info(candidate_tokens, candidate_sep)
@@ -867,7 +1025,7 @@ class DataIOMixin:
                         header_candidate = candidate
                     finish_run(line_no)
                     continue
-                sep = cls._detect_sep_from_line(line.rstrip('\r\n'))
+                sep = forced_sep or cls._detect_sep_from_line(line.rstrip('\r\n'))
                 if layout_mode == 'height_matrix' and sep == r'\s+':
                     whitespace_tokens = cls._split_text_line(stripped, sep)
                     if expected_cols is not None and len(whitespace_tokens) == int(expected_cols):
@@ -888,6 +1046,8 @@ class DataIOMixin:
                     is_numeric = cls._looks_like_matrix_row(tokens, expected_cols)
                 else:
                     is_numeric = cls._looks_like_point_record_row(tokens)
+                    if layout_mode == 'pixel_xy' and not is_numeric:
+                        is_numeric = cls._looks_like_pixel_record_row(tokens)
                 if is_numeric:
                     same_run = (
                         run is not None and run['sep'] == sep and run['ncols'] == len(tokens)
@@ -945,16 +1105,18 @@ class DataIOMixin:
         return selected
 
     @classmethod
-    def _packed_excel_candidate(cls, raw):
+    def _packed_excel_candidate(cls, raw, start_row=0, forced_delimiter=None):
         """Find a semicolon-like logical table stored inside one physical Excel column."""
         best = None
-        delimiters = (';', '；', '\t', '|', ',')
+        delimiters = ((forced_delimiter,) if forced_delimiter is not None
+                      else (';', '；', '\t', '|', ','))
         for physical_col in raw.columns:
             values = raw[physical_col].tolist()
             for delimiter in delimiters:
                 run = None
                 candidates = []
-                for row_index, value in enumerate(values):
+                for row_index in range(max(0, int(start_row)), len(values)):
+                    value = values[row_index]
                     text = '' if pd.isna(value) else str(value).strip()
                     tokens = cls._trim_trailing_empty_tokens(cls._split_text_line(text, delimiter))
                     valid = cls._looks_like_point_record_row(tokens)
@@ -981,7 +1143,12 @@ class DataIOMixin:
         return best
 
     def _read_packed_single_column_excel(self, path, raw):
-        candidate = self._packed_excel_candidate(raw)
+        delimiter = self._delimiter_override()
+        if delimiter == r'\s+':
+            delimiter = '\t'
+        candidate = self._packed_excel_candidate(
+            raw, start_row=self._configured_start_line(self.input_layout_mode),
+            forced_delimiter=delimiter)
         if candidate is None:
             raise ValueError(
                 "XYZ点表模式下，Excel只有一个物理列，但未找到连续的分隔式XYZ数据区。\n"
@@ -1119,8 +1286,14 @@ class DataIOMixin:
 
     def _read_excel_height_matrix(self, path, raw, progress=None, cancel_event=None):
         """Read an explicitly selected Excel Z matrix, allowing metadata rows above it."""
-        manual_start = max(0, int(getattr(self, 'height_matrix_start_row', 0)) - 1)
+        manual_start = self._configured_start_line('height_matrix')
         metadata = self._excel_height_matrix_metadata(raw)
+        manual_cols = int(getattr(self, 'height_matrix_cols', 0) or 0)
+        manual_rows = int(getattr(self, 'height_matrix_rows', 0) or 0)
+        if manual_cols > 0:
+            metadata['expected_cols'] = manual_cols
+        if manual_rows > 0:
+            metadata['expected_rows'] = manual_rows
         expected_cols = metadata.get('expected_cols')
         expected_rows = metadata.get('expected_rows')
         runs = []
@@ -1171,9 +1344,17 @@ class DataIOMixin:
         if expected_cols is not None and values.shape[1] != int(expected_cols):
             raise ValueError(
                 f"Excel Z Matrix 列数与表头冲突：声明 {int(expected_cols)}，实际 {values.shape[1]}。")
-        pitch_x = float(metadata['pitch_x_um'])
-        pitch_y = float(metadata['pitch_y_um'])
-        z_unit = str(metadata['z_unit'])
+        if str(getattr(self, 'pitch_source', 'manual')) == 'manual':
+            pitch_x = float(self.height_matrix_pitch_x_um)
+            pitch_y = float(self.height_matrix_pitch_y_um)
+            pitch_source = '用户手动'
+        else:
+            pitch_x = float(metadata['pitch_x_um'])
+            pitch_y = float(metadata['pitch_y_um'])
+            pitch_source = ('可靠文件metadata' if 'XY校准' in metadata.get('detected_fields', [])
+                            else '用户默认')
+        z_override = str(getattr(self, 'import_z_unit', 'auto'))
+        z_unit = z_override if z_override != 'auto' else str(metadata['z_unit'])
         valid_points = int(np.isfinite(values).sum())
         point_threshold = int(getattr(self, 'matrix_analysis_threshold', 400_000))
         sampled = bool(getattr(self, 'auto_sample_large_text', True)
@@ -1208,8 +1389,7 @@ class DataIOMixin:
             'matrix_pitch_y_um': pitch_y,
             'sampling_pitch_x_um': pitch_x,
             'sampling_pitch_y_um': pitch_y,
-            'sampling_pitch_source': ('表头: ' + '/'.join(metadata['detected_fields'])
-                                      if metadata['detected_fields'] else '用户输入'),
+            'sampling_pitch_source': pitch_source,
             'matrix_z_unit': z_unit,
             'z_source_field': '矩阵高度值',
             'z_source_unit': z_unit,
@@ -1217,6 +1397,10 @@ class DataIOMixin:
             'valid_rows': len(frame),
             'matrix_metadata': metadata,
             'matrix_analysis_threshold': point_threshold,
+            'topology_method': ('sampled_matrix8'
+                                if self.import_info.get('sample_method_key') == 'stride'
+                                else ('matrix8' if self.import_info.get('sample_method_key') == 'full'
+                                      else 'Delaunay/adaptive kNN')),
             'notes': (f"Excel矩阵 {values.shape[0]}×{values.shape[1]} | 有效 {valid_points:,} | "
                       f"分析 {len(frame):,} | 跳过前置说明 {selected['start']} 行"),
         })
@@ -1566,6 +1750,8 @@ class DataIOMixin:
             'Z': arr[rr, cc],
             '_matrix_row': rr.astype(int),
             '_matrix_col': cc.astype(int),
+            '_topology_row': rr.astype(int),
+            '_topology_col': cc.astype(int),
         })
 
     def _parse_height_matrix_line(self, line, sep, ncols, value_start=0,
@@ -1699,6 +1885,9 @@ class DataIOMixin:
             '_matrix_row': rr,
             '_matrix_col': cc,
         })
+        if method_key == 'stride':
+            frame['_topology_row'] = (rr // stride).astype(int)
+            frame['_topology_col'] = (cc // stride).astype(int)
         return frame, method_key, extrema_preserved
 
     def _sample_large_height_matrix_by_stride(self, path, enc, sep, ncols, data_line_no,
@@ -1774,6 +1963,8 @@ class DataIOMixin:
             raise ValueError("高度矩阵倍率降采样未得到有效点，请调小降采样倍率 N。")
 
         df = pd.DataFrame(rows, columns=['X', 'Y', 'Z', '_matrix_row', '_matrix_col'])
+        df['_topology_row'] = (df['_matrix_row'].to_numpy(dtype=int) // stride)
+        df['_topology_col'] = (df['_matrix_col'].to_numpy(dtype=int) // stride)
         self.last_import_note = (
             f"VR/基恩士高度矩阵已按倍率降采样导入。\n"
             f"数据起始行: {data_line_no + 1} | 跳过前置说明: {data_line_no} 行\n"
@@ -1979,12 +2170,19 @@ class DataIOMixin:
                 f"实际识别 {int(layout['ncols']):,} 列。")
         layout['expected_cols'] = int(expected_cols) if expected_cols is not None else None
         layout['expected_rows'] = metadata.get('expected_rows')
-        pitch_x = float(metadata['pitch_x_um'])
-        pitch_y = float(metadata['pitch_y_um'])
-        z_unit = str(metadata['z_unit'])
+        if str(getattr(self, 'pitch_source', 'manual')) == 'manual':
+            pitch_x = float(self.height_matrix_pitch_x_um)
+            pitch_y = float(self.height_matrix_pitch_y_um)
+            pitch_source = '用户手动'
+        else:
+            pitch_x = float(metadata['pitch_x_um'])
+            pitch_y = float(metadata['pitch_y_um'])
+            pitch_source = ('可靠文件metadata' if metadata.get('detected_fields')
+                            else '用户默认')
+        z_override = str(getattr(self, 'import_z_unit', 'auto'))
+        z_unit = z_override if z_override != 'auto' else str(metadata['z_unit'])
         invalid_values = tuple(metadata.get('invalid_values') or ())
-        meta_source = ("表头: " + '/'.join(metadata.get('detected_fields') or [])
-                       if metadata.get('detected_fields') else "用户输入/默认")
+        meta_source = pitch_source
         if progress is not None:
             progress(20, "已识别矩阵数据区，开始完整性预扫描")
         prescan = self._prescan_height_matrix(
@@ -2079,6 +2277,10 @@ class DataIOMixin:
             'matrix_metadata': metadata,
             'layout_candidate_count': int(layout.get('candidate_count', 1)),
             'matrix_analysis_threshold': point_threshold,
+            'topology_method': ('sampled_matrix8'
+                                if self.import_info.get('sample_method_key') == 'stride'
+                                else ('matrix8' if self.import_info.get('sample_method_key') == 'full'
+                                      else 'Delaunay/adaptive kNN')),
         })
         trigger = []
         if file_size >= self._large_text_threshold_bytes():
@@ -2102,12 +2304,175 @@ class DataIOMixin:
         """Return unambiguous semantic XYZ columns, never guess positional columns."""
         if ncols < 3:
             return None
+        manual = tuple(int(getattr(self, name, 0) or 0) - 1
+                       for name in ('import_x_col', 'import_y_col', 'import_z_col'))
+        if all(index >= 0 for index in manual):
+            if len(set(manual)) != 3 or max(manual) >= int(ncols):
+                raise ValueError("手动 X/Y/Z 列号必须互不重复且位于文件列范围内。")
+            return manual
         names = list(column_names or [])[:ncols]
         semantics = self._header_semantics(names)
         if not semantics['unambiguous']:
             return None
         mapping = semantics['mapping']
         return mapping['x'], mapping['y'], mapping['z']
+
+    def _infer_pixel_column_indices(self, column_names, ncols):
+        manual = tuple(int(getattr(self, name, 0) or 0) - 1
+                       for name in ('import_x_col', 'import_y_col', 'import_z_col'))
+        if all(index >= 0 for index in manual):
+            if len(set(manual)) != 3 or max(manual) >= int(ncols):
+                raise ValueError("手动 PixelX/PixelY/Z 列号必须互不重复且位于文件列范围内。")
+            return manual
+        semantics = self._pixel_header_semantics(list(column_names or [])[:ncols])
+        if semantics['unambiguous']:
+            mapping = semantics['mapping']
+            return mapping['x'], mapping['y'], mapping['z']
+        if int(ncols) == 3 and all(re.fullmatch(r'Col\d+', str(name))
+                                   for name in list(column_names or [])[:3]):
+            return 0, 1, 2
+        return None
+
+    def _read_full_delimited_text(self, path, enc, sep, ncols, column_names,
+                                  data_line_no, progress=None, cancel_event=None):
+        """Read one detected logical point table without requiring auxiliary fields to be numeric."""
+        rows = []
+        bad_rows = 0
+        consumed_bytes = 0
+        file_size = max(1, Path(path).stat().st_size)
+        consumed_bytes = 0
+        with open(path, 'r', encoding=enc, errors='ignore') as handle:
+            for line_no, line in enumerate(handle):
+                self._check_cancel(cancel_event)
+                consumed_bytes += len(line.encode(enc, errors='ignore'))
+                consumed_bytes += len(line.encode(enc, errors='ignore'))
+                if line_no < int(data_line_no):
+                    continue
+                text = line.strip().lstrip('\ufeff')
+                if not text or text.startswith('#'):
+                    continue
+                tokens = self._trim_trailing_empty_tokens(self._split_text_line(text, sep))
+                if len(tokens) > int(ncols):
+                    bad_rows += 1
+                    continue
+                if len(tokens) < int(ncols):
+                    tokens.extend([''] * (int(ncols) - len(tokens)))
+                valid_record = self._looks_like_point_record_row(tokens)
+                if (not valid_record and
+                        getattr(self, 'input_layout_mode', 'point_table') == 'pixel_xy'):
+                    valid_record = self._looks_like_pixel_record_row(tokens)
+                if not valid_record:
+                    bad_rows += 1
+                rows.append(tokens)
+                if progress is not None and len(rows) % 50000 == 0:
+                    progress(min(78, 35 + int(40 * consumed_bytes / file_size)),
+                             f"正在读取点表: {len(rows):,} 行")
+        if not rows:
+            raise ValueError("未读取到与已识别数据区匹配的点记录。")
+        self.import_info['bad_rows'] = int(bad_rows)
+        return pd.DataFrame(rows, columns=list(column_names))
+
+    def _sample_large_pixel_text(self, path, enc, sep, ncols, column_names,
+                                 data_line_no, progress=None, cancel_event=None):
+        indices = self._infer_pixel_column_indices(column_names, ncols)
+        if indices is None:
+            raise ValueError(
+                "Pixel XY大文件无法唯一确定 PixelX/PixelY/Z 列；请在高级解析覆盖中填写列号。")
+        x_idx, y_idx, z_idx = indices
+        valid_count = 0
+        missing_count = 0
+        min_x = min_y = max_x = max_y = None
+
+        def parse(line):
+            text = line.strip().lstrip('\ufeff')
+            if not text or text.startswith('#'):
+                return None
+            tokens = self._split_text_line(text, sep)
+            if len(tokens) < ncols:
+                tokens.extend([''] * (ncols - len(tokens)))
+            try:
+                px = float(tokens[x_idx]); py = float(tokens[y_idx])
+                z = self._token_to_float(tokens[z_idx])
+            except (ValueError, IndexError):
+                return None
+            if (not np.isfinite(px) or not np.isfinite(py)
+                    or abs(px - round(px)) > 1e-6 or abs(py - round(py)) > 1e-6):
+                return None
+            return tokens[:ncols], int(round(px)), int(round(py)), float(z)
+
+        file_size = max(1, Path(path).stat().st_size)
+        with open(path, 'r', encoding=enc, errors='ignore') as handle:
+            for line_no, line in enumerate(handle):
+                self._check_cancel(cancel_event)
+                if line_no < int(data_line_no):
+                    continue
+                parsed = parse(line)
+                if parsed is None:
+                    continue
+                _, px, py, z = parsed
+                min_x = px if min_x is None else min(min_x, px)
+                min_y = py if min_y is None else min(min_y, py)
+                max_x = px if max_x is None else max(max_x, px)
+                max_y = py if max_y is None else max(max_y, py)
+                if not np.isfinite(z):
+                    missing_count += 1
+                    continue
+                valid_count += 1
+                if progress is not None and valid_count % 100000 == 0:
+                    progress(min(42, 20 + int(20 * consumed_bytes / file_size)),
+                             f"正在预扫描 Pixel XY: {valid_count:,} 点")
+        if valid_count < 3:
+            raise ValueError("Pixel XY有效记录少于3条。")
+        stride = max(1, int(np.ceil(np.sqrt(
+            valid_count / max(1, self._large_text_import_limit())))))
+        rows = []
+        consumed_bytes = 0
+        with open(path, 'r', encoding=enc, errors='ignore') as handle:
+            for line_no, line in enumerate(handle):
+                self._check_cancel(cancel_event)
+                consumed_bytes += len(line.encode(enc, errors='ignore'))
+                if line_no < int(data_line_no):
+                    continue
+                parsed = parse(line)
+                if parsed is None:
+                    continue
+                tokens, px, py, z = parsed
+                if not np.isfinite(z):
+                    continue
+                if ((px - min_x) % stride or (py - min_y) % stride):
+                    continue
+                rows.append(tokens + [py, px, (py - min_y) // stride,
+                                      (px - min_x) // stride])
+                if len(rows) >= self._large_text_import_limit():
+                    break
+                if progress is not None and len(rows) % 50000 == 0:
+                    progress(min(78, 45 + int(30 * consumed_bytes / file_size)),
+                             f"正在规则采样 Pixel XY: {len(rows):,} 点")
+        if len(rows) < 3:
+            raise ValueError("Pixel XY规则采样后有效点少于3条，请提高导入上限。")
+        columns = list(column_names) + [
+            '_matrix_row', '_matrix_col', '_topology_row', '_topology_col']
+        frame = pd.DataFrame(rows, columns=columns)
+        self.import_info.update({
+            'strategy': 'Pixel XY规则stride采样导入',
+            'source_format': '通用文本Pixel XY点表',
+            'sampled': True,
+            'sample_method_key': 'stride',
+            'extrema_preserved': False,
+            'import_rows': len(frame),
+            'source_valid_rows': valid_count,
+            'original_valid_points': valid_count,
+            'missing_points': int(missing_count),
+            'matrix_rows': int(max_y - min_y + 1),
+            'matrix_cols': int(max_x - min_x + 1),
+            'source_matrix_positions': int((max_y - min_y + 1) * (max_x - min_x + 1)),
+            'analysis_points': len(frame),
+            'stride_n': stride,
+            'topology_method': 'sampled_matrix8',
+            'notes': f'Pixel XY规则stride N={stride} | 原始 {valid_count:,} | 分析 {len(frame):,}',
+        })
+        self.last_import_note = self.import_info['notes']
+        return frame
 
     def _max_safe_grid_side(self, max_rows):
         # 每格最多保留：代表点 + Z最小点 + Z最大点。
@@ -2118,24 +2483,30 @@ class DataIOMixin:
         target_cells = max(1, int(np.ceil(target_rows / 3.0)))
         return max(1, int(np.ceil(np.sqrt(target_cells))))
 
-    def _sample_large_text(self, path, enc, sep, ncols, column_names=None):
+    def _sample_large_text(self, path, enc, sep, ncols, column_names=None,
+                           progress=None, cancel_event=None):
         method = getattr(self, 'large_file_sample_method', 'spatial_grid')
         if method == 'stride':
             method = 'file_position'
         if method == 'file_position':
-            return self._sample_large_text_by_position(path, enc, sep, ncols, column_names)
+            return self._sample_large_text_by_position(
+                path, enc, sep, ncols, column_names, progress, cancel_event)
         if self._infer_xyz_column_indices(column_names, ncols) is None:
             reason = '表头无法唯一确定 X/Y/Z，已从空间网格采样降级为文件位置采样'
             self.import_info['sampling_downgraded'] = True
             self.import_info['sampling_downgrade_reason'] = reason
-            self._show_status(reason, 12000)
-            frame = self._sample_large_text_by_position(path, enc, sep, ncols, column_names)
+            if progress is None:
+                self._show_status(reason, 12000)
+            frame = self._sample_large_text_by_position(
+                path, enc, sep, ncols, column_names, progress, cancel_event)
             self.import_info['notes'] = f"{self.import_info.get('notes', '')} | {reason}".strip(' |')
             self.last_import_note += f"\n{reason}；未静默使用前三列。"
             return frame
-        return self._sample_large_text_by_spatial_grid(path, enc, sep, ncols, column_names)
+        return self._sample_large_text_by_spatial_grid(
+            path, enc, sep, ncols, column_names, progress, cancel_event)
 
-    def _sample_large_text_by_stride(self, path, enc, sep, ncols, column_names=None):
+    def _sample_large_text_by_stride(self, path, enc, sep, ncols, column_names=None,
+                                     progress=None, cancel_event=None):
         """倍率降采样：按有效数值行每 N 行取 1 行。速度快，但不保留局部 min/max。"""
         file_size = Path(path).stat().st_size
         stride = max(1, int(getattr(self, 'large_text_stride_n', 10)))
@@ -2144,25 +2515,30 @@ class DataIOMixin:
         valid_rows = 0
 
         with open(path, 'r', encoding=enc, errors='ignore') as fh:
-            for line in fh:
+            for line_no, line in enumerate(fh, start=1):
+                self._check_cancel(cancel_event)
                 stripped = line.strip().lstrip('\ufeff')
                 if not stripped or stripped.startswith('#'):
                     continue
                 tokens = self._split_text_line(stripped, sep)
-                if not self._looks_like_numeric_text_row(tokens):
+                if not self._looks_like_point_record_row(tokens):
                     continue
-                values = [self._token_to_float(t) for t in tokens[:ncols]]
+                values = list(tokens[:ncols])
                 if len(values) < ncols:
-                    values.extend([np.nan] * (ncols - len(values)))
+                    values.extend([''] * (ncols - len(values)))
                 valid_rows += 1
                 if (valid_rows - 1) % stride == 0:
                     rows.append(values)
                     if len(rows) >= max_rows:
                         break
                 if valid_rows % 100000 == 0:
-                    self._show_status(
-                        f"倍率降采样: 已扫描 {valid_rows:,} 行 | 已取 {len(rows):,} 行 | N={stride}", 1000)
-                    self._process_ui_events()
+                    if progress is not None:
+                        progress(min(78, 30 + valid_rows // 100000),
+                                 f"正在倍率采样: {valid_rows:,} 行")
+                    else:
+                        self._show_status(
+                            f"倍率降采样: 已扫描 {valid_rows:,} 行 | 已取 {len(rows):,} 行 | N={stride}", 1000)
+                        self._process_ui_events()
 
         if not rows:
             raise ValueError("倍率降采样未得到有效数值行，请检查文件格式或调小降采样倍率 N。")
@@ -2190,7 +2566,8 @@ class DataIOMixin:
         })
         return df
 
-    def _sample_large_text_by_position(self, path, enc, sep, ncols, column_names=None):
+    def _sample_large_text_by_position(self, path, enc, sep, ncols, column_names=None,
+                                       progress=None, cancel_event=None):
         """旧版超大文本预抽样：按文件字节位置均匀抽取数据行。"""
         file_size = Path(path).stat().st_size
         max_rows = self._large_text_import_limit()
@@ -2202,6 +2579,7 @@ class DataIOMixin:
             try:
                 offsets = np.linspace(0, max(0, file_size - 1), max_rows, dtype=np.int64)
                 for i, offset in enumerate(offsets):
+                    self._check_cancel(cancel_event)
                     offset = int(offset)
                     if offset <= 0:
                         start = 0
@@ -2223,16 +2601,20 @@ class DataIOMixin:
                     if not line or line.startswith('#'):
                         continue
                     tokens = self._split_text_line(line, sep)
-                    if not self._looks_like_numeric_text_row(tokens):
+                    if not self._looks_like_point_record_row(tokens):
                         continue
-                    values = [self._token_to_float(t) for t in tokens[:ncols]]
+                    values = list(tokens[:ncols])
                     if len(values) < ncols:
-                        values.extend([np.nan] * (ncols - len(values)))
+                        values.extend([''] * (ncols - len(values)))
                     rows.append(values)
                     if i % 5000 == 0:
-                        self._show_status(
-                            f"正在抽样导入超大TXT: {i + 1:,}/{max_rows:,} | 已取有效行 {len(rows):,}", 1000)
-                        self._process_ui_events()
+                        if progress is not None:
+                            progress(45 + int(30 * (i + 1) / max(1, max_rows)),
+                                     f"正在按文件位置采样: {i + 1:,}/{max_rows:,}")
+                        if progress is None:
+                            self._show_status(
+                                f"正在抽样导入超大TXT: {i + 1:,}/{max_rows:,} | 已取有效行 {len(rows):,}", 1000)
+                            self._process_ui_events()
             finally:
                 mm.close()
 
@@ -2265,7 +2647,8 @@ class DataIOMixin:
         })
         return df
 
-    def _sample_large_text_by_spatial_grid(self, path, enc, sep, ncols, column_names=None):
+    def _sample_large_text_by_spatial_grid(self, path, enc, sep, ncols, column_names=None,
+                                           progress=None, cancel_event=None):
         """V3.8.3: 空间网格均匀采样。
 
         按 X/Y 分格，每格最多保留三类点：首个代表点、Z最小点、Z最大点。
@@ -2288,19 +2671,22 @@ class DataIOMixin:
             if not stripped or stripped.startswith('#'):
                 return None
             tokens = self._split_text_line(stripped, sep)
-            if not self._looks_like_numeric_text_row(tokens):
+            if not self._looks_like_point_record_row(tokens):
                 return None
-            values = [self._token_to_float(t) for t in tokens[:ncols]]
-            if len(values) < ncols:
-                values.extend([np.nan] * (ncols - len(values)))
-            return values
+            raw_values = list(tokens[:ncols])
+            if len(raw_values) < ncols:
+                raw_values.extend([''] * (ncols - len(raw_values)))
+            numeric = [self._token_to_float(raw_values[index])
+                       for index in (x_idx, y_idx, z_idx)]
+            return raw_values, numeric
 
         with open(path, 'r', encoding=enc, errors='ignore') as fh:
             for line_no, line in enumerate(fh, start=1):
-                values = parse_numeric_line(line)
-                if values is None:
+                self._check_cancel(cancel_event)
+                parsed = parse_numeric_line(line)
+                if parsed is None:
                     continue
-                x, y, z = values[x_idx], values[y_idx], values[z_idx]
+                _, (x, y, z) = parsed
                 if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(z)):
                     continue
                 valid_rows += 1
@@ -2308,9 +2694,13 @@ class DataIOMixin:
                 y_min = min(y_min, y); y_max = max(y_max, y)
                 z_min = min(z_min, z); z_max = max(z_max, z)
                 if valid_rows % 100000 == 0:
-                    self._show_status(
-                        f"空间网格采样预扫描: 已识别 {valid_rows:,} 个有效 XYZ 点", 1000)
-                    self._process_ui_events()
+                    if progress is not None:
+                        progress(min(44, 25 + valid_rows // 100000),
+                                 f"正在预扫描空间范围: {valid_rows:,} 点")
+                    if progress is None:
+                        self._show_status(
+                            f"空间网格采样预扫描: 已识别 {valid_rows:,} 个有效 XYZ 点", 1000)
+                        self._process_ui_events()
 
         if valid_rows == 0:
             raise ValueError("空间网格采样未识别到有效 XYZ 点，请检查文件列顺序/缺测值或改用文件位置采样。")
@@ -2346,11 +2736,12 @@ class DataIOMixin:
         cells = {}
         scanned = 0
         with open(path, 'r', encoding=enc, errors='ignore') as fh:
-            for line in fh:
-                values = parse_numeric_line(line)
-                if values is None:
+            for line_no, line in enumerate(fh, start=1):
+                self._check_cancel(cancel_event)
+                parsed = parse_numeric_line(line)
+                if parsed is None:
                     continue
-                x, y, z = values[x_idx], values[y_idx], values[z_idx]
+                values, (x, y, z) = parsed
                 if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(z)):
                     continue
                 scanned += 1
@@ -2367,9 +2758,13 @@ class DataIOMixin:
                         state['max_z'] = z
                         state['max_row'] = values
                 if scanned % 100000 == 0:
-                    self._show_status(
-                        f"空间网格采样落格: {scanned:,}/{valid_rows:,} | 已占用网格 {len(cells):,}", 1000)
-                    self._process_ui_events()
+                    if progress is not None:
+                        progress(min(78, 45 + int(30 * scanned / max(1, valid_rows))),
+                                 f"正在空间网格采样: {scanned:,}/{valid_rows:,}")
+                    if progress is None:
+                        self._show_status(
+                            f"空间网格采样落格: {scanned:,}/{valid_rows:,} | 已占用网格 {len(cells):,}", 1000)
+                        self._process_ui_events()
 
         rows = []
         for key in sorted(cells):
@@ -2454,8 +2849,11 @@ class DataIOMixin:
         if replacement < limit:
             reservoir[replacement] = item
 
-    def _read_zygo_xyz(self, path, enc, file_size):
+    def _read_zygo_xyz(self, path, enc, file_size, progress=None, cancel_event=None):
         """Parse Zygo XYZ Data File - Format 1 without numeric-width heuristics."""
+        self._check_cancel(cancel_event)
+        if progress is not None:
+            progress(12, "正在读取 Zygo 表头")
         with open(path, 'r', encoding=enc, errors='strict') as handle:
             header = [handle.readline().rstrip('\r\n') for _ in range(14)]
         if not header or header[0].strip().lstrip('\ufeff') != 'Zygo XYZ Data File - Format 1':
@@ -2487,10 +2885,17 @@ class DataIOMixin:
             raise ValueError(
                 "Zygo 第8行 CameraRes 解析失败；格式要求 CameraRes 为引号感知分词后的第7字段，时间戳为第8字段。") from exc
 
-        pitch_x = float(self.height_matrix_pitch_x_um)
-        pitch_y = float(self.height_matrix_pitch_y_um)
-        mismatch_x = abs(pitch_x - camera_res_um) / camera_res_um > 0.01
-        mismatch_y = abs(pitch_y - camera_res_um) / camera_res_um > 0.01
+        if str(getattr(self, 'pitch_source', 'manual')) == 'auto':
+            pitch_x = pitch_y = float(camera_res_um)
+            pitch_source = 'Zygo CameraRes'
+        else:
+            pitch_x = float(self.height_matrix_pitch_x_um)
+            pitch_y = float(self.height_matrix_pitch_y_um)
+            pitch_source = '用户手动'
+        mismatch_x = (pitch_source == '用户手动' and
+                      abs(pitch_x - camera_res_um) / camera_res_um > 0.01)
+        mismatch_y = (pitch_source == '用户手动' and
+                      abs(pitch_y - camera_res_um) / camera_res_um > 0.01)
         pitch_warning = ''
         if mismatch_x or mismatch_y:
             pitch_warning = (
@@ -2527,6 +2932,7 @@ class DataIOMixin:
 
         with open(path, 'r', encoding=enc, errors='ignore') as handle:
             for line_no, line in enumerate(handle, start=1):
+                self._check_cancel(cancel_event)
                 text = line.strip().lstrip('\ufeff')
                 if text == '#':
                     if not in_body:
@@ -2582,6 +2988,10 @@ class DataIOMixin:
                     else:
                         if z_um < state['min'][1][2]: state['min'] = item
                         if z_um > state['max'][1][2]: state['max'] = item
+                if progress is not None and body_rows % 100000 == 0:
+                    progress(min(78, 25 + int(
+                        50 * body_rows / max(1, phase_width * phase_height))),
+                        f"正在读取 Zygo 数据: {body_rows:,}/{phase_width * phase_height:,}")
 
         if not in_body or not body_closed:
             raise ValueError("Zygo 正文边界不完整：必须存在两个独立的 # 分隔行。")
@@ -2597,6 +3007,11 @@ class DataIOMixin:
         rows.sort(key=lambda item: item[0])
         frame = pd.DataFrame([item[1] for item in rows],
                              columns=['X', 'Y', 'Z', '_matrix_row', '_matrix_col'])
+        if not sampled:
+            frame['_topology_row'] = frame['_matrix_row'].to_numpy(dtype=int)
+            frame['_topology_col'] = frame['_matrix_col'].to_numpy(dtype=int)
+        if progress is not None:
+            progress(85, "Zygo 已转换为物理坐标和像素拓扑")
 
         expected = phase_width * phase_height
         note_parts = [
@@ -2642,7 +3057,7 @@ class DataIOMixin:
             'phase_origin_y': origin_y,
             'sampling_pitch_x_um': pitch_x,
             'sampling_pitch_y_um': pitch_y,
-            'sampling_pitch_source': '用户输入',
+            'sampling_pitch_source': pitch_source,
             'matrix_pitch_x_um': pitch_x,
             'matrix_pitch_y_um': pitch_y,
             'detected_camera_res_um': camera_res_um,
@@ -2659,6 +3074,7 @@ class DataIOMixin:
         best = None
         run = None
         header_candidate = None
+        scan_start = self._configured_start_line(self.input_layout_mode)
 
         def finish_run():
             nonlocal best, run
@@ -2668,7 +3084,7 @@ class DataIOMixin:
                     best = dict(run, score=score)
             run = None
 
-        for row_index in range(len(raw)):
+        for row_index in range(scan_start, len(raw)):
             values = raw.iloc[row_index].tolist()
             tokens = self._trim_trailing_empty_tokens(
                 ['' if pd.isna(value) else str(value).strip() for value in values])
@@ -2766,13 +3182,17 @@ class DataIOMixin:
                 return index
         raise ValueError(f"Precitec字段缺失: {expected}")
 
-    def _read_precitec_fss(self, path, enc, file_size):
+    def _read_precitec_fss(self, path, enc, file_size, progress=None, cancel_event=None):
         """Parse Precitec FSS Explorer semicolon point tables and retain all columns."""
+        self._check_cancel(cancel_event)
+        if progress is not None:
+            progress(12, "正在扫描 Precitec 表头和扫描参数")
         header_line_no = None
         columns = None
         preamble = []
         with open(path, 'r', encoding=enc, errors='ignore') as handle:
             for line_no, line in enumerate(handle, start=1):
+                self._check_cancel(cancel_event)
                 text = line.strip().lstrip('\ufeff')
                 if text.startswith('#Encoder V;'):
                     columns = self._trim_trailing_empty_tokens(
@@ -2802,6 +3222,7 @@ class DataIOMixin:
             record_index = 0
             with open(path, 'r', encoding=enc, errors='ignore') as handle:
                 for line_no, line in enumerate(handle, start=1):
+                    self._check_cancel(cancel_event)
                     if line_no <= header_line_no:
                         continue
                     text = line.strip()
@@ -2809,6 +3230,10 @@ class DataIOMixin:
                         continue
                     current_index = record_index
                     record_index += 1
+                    if progress is not None and record_index % 100000 == 0:
+                        denominator = max(1, expected_points or record_index + 1)
+                        progress(min(78, 25 + int(50 * record_index / denominator)),
+                                 f"正在读取 Precitec 数据: {record_index:,}")
                     tokens = self._trim_trailing_empty_tokens(
                         [token.strip() for token in text.split(';')])
                     if len(tokens) != len(columns):
@@ -2960,13 +3385,20 @@ class DataIOMixin:
             topology_reason = '验证通过' if topology_valid else '；'.join(reasons)
             matrix_rows = []
             matrix_cols = []
+            topology_rows_out = []
+            topology_cols_out = []
             for record_index, _, _ in rows:
                 row_no, raw_col = divmod(int(record_index), int(points_per_line))
                 col_no = points_per_line - 1 - raw_col if row_no in serpentine_rows else raw_col
                 matrix_rows.append(row_no)
                 matrix_cols.append(col_no)
+                topology_rows_out.append(row_no)
+                topology_cols_out.append(col_no)
             frame['_matrix_row'] = matrix_rows
             frame['_matrix_col'] = matrix_cols
+            if topology_valid and not sampled:
+                frame['_topology_row'] = topology_rows_out
+                frame['_topology_col'] = topology_cols_out
         else:
             median_step = 0.0
             topology_reason = '缺少 PointsPerLine/NumberOfLines，回退普通点云拓扑'
@@ -3014,6 +3446,8 @@ class DataIOMixin:
             'precitec_topology_reason': topology_reason,
             'precitec_serpentine_rows': len(serpentine_rows),
             'precitec_local_spacing_mm': float(median_step),
+            'topology_method': ('matrix8' if topology_valid and not sampled
+                                else 'Delaunay/adaptive kNN'),
             'header_source_line': int(header_line_no),
             'header_confidence': 'semantic',
             'header_source': 'precitec',
@@ -3045,7 +3479,7 @@ class DataIOMixin:
         suffix = Path(path).suffix.lower()
         file_size = Path(path).stat().st_size
         layout_mode = getattr(self, 'input_layout_mode', 'point_table')
-        if layout_mode not in ('point_table', 'height_matrix', 'zygo_xyz'):
+        if layout_mode not in ('point_table', 'pixel_xy', 'height_matrix', 'zygo_xyz'):
             layout_mode = 'point_table'
         self.import_info['input_layout_mode'] = layout_mode
 
@@ -3060,19 +3494,30 @@ class DataIOMixin:
                 raise ValueError(
                     "当前选择了 Zygo XYZ，但文件首行不是 'Zygo XYZ Data File - Format 1'。\n"
                     "请核对文件，或在导入策略中切换为 XYZ 点表。")
-            df = self._read_zygo_xyz(path, signature_encoding, file_size)
+            df = self._read_zygo_xyz(
+                path, signature_encoding, file_size, progress=progress,
+                cancel_event=cancel_event)
             self.import_info['display_limit'] = self._display_limit()
             self._update_import_status_label()
+            return df
+        if signature == 'zygo_xyz_format_1' and layout_mode == 'pixel_xy':
+            df = self._read_zygo_xyz(
+                path, signature_encoding, file_size, progress=progress,
+                cancel_event=cancel_event)
+            self.import_info['input_layout_mode'] = 'pixel_xy'
+            self.import_info['display_limit'] = self._display_limit()
             return df
         if signature == 'zygo_xyz_format_1':
             raise ValueError(
                 "检测到 Zygo XYZ Data File - Format 1。\n"
-                "为避免通用点表解析产生错误坐标，请在“导入策略”中选择“Zygo XYZ”后重新导入。")
+                "为避免错误坐标，请在“导入策略”中选择“Pixel XY / 像素XY”或兼容的“Zygo XYZ”。")
         if signature == 'precitec_fss' and layout_mode != 'point_table':
             raise ValueError(
                 "检测到 Precitec FSS Explorer 点表。请在“导入策略”中选择“XYZ 点表”后重新导入。")
         if signature == 'precitec_fss':
-            df = self._read_precitec_fss(path, signature_encoding, file_size)
+            df = self._read_precitec_fss(
+                path, signature_encoding, file_size, progress=progress,
+                cancel_event=cancel_event)
             self.import_info['display_limit'] = self._display_limit()
             self._update_import_status_label()
             return df
@@ -3099,10 +3544,10 @@ class DataIOMixin:
             df = None
             layout = None
 
-            for enc in ('utf-8-sig', 'gbk', 'utf-16', 'latin-1'):
+            for enc in self._encoding_candidates():
                 try:
                     self._check_cancel(cancel_event)
-                    manual_start = max(0, int(getattr(self, 'height_matrix_start_row', 0)) - 1)
+                    manual_start = self._configured_start_line(layout_mode)
                     matrix_metadata = None
                     if layout_mode == 'height_matrix':
                         matrix_metadata = self._scan_height_matrix_metadata(
@@ -3111,10 +3556,14 @@ class DataIOMixin:
                         if manual_cols > 0:
                             matrix_metadata['expected_cols'] = manual_cols
                             matrix_metadata['detected_fields'].append('手动列数')
+                        manual_rows = int(getattr(self, 'height_matrix_rows', 0) or 0)
+                        if manual_rows > 0:
+                            matrix_metadata['expected_rows'] = manual_rows
+                            matrix_metadata['detected_fields'].append('手动行数')
                     layout = self._detect_text_layout(
                         path, enc, start_line_no=manual_start, layout_mode=layout_mode,
                         matrix_metadata=matrix_metadata, progress=progress,
-                        cancel_event=cancel_event)
+                        cancel_event=cancel_event, forced_sep=self._delimiter_override())
                     if layout is not None:
                         if matrix_metadata is not None:
                             layout['matrix_metadata'] = matrix_metadata
@@ -3145,22 +3594,22 @@ class DataIOMixin:
                     path, enc, layout['data_line_no'], layout.get('header_line_no'))
                 auto_sample = bool(getattr(self, 'auto_sample_large_text', True))
                 if auto_sample and file_size >= self._large_text_threshold_bytes():
-                    df = self._sample_large_text(path, enc, sep, ncols, col_names)
-                else:
-                    df = pd.read_csv(path, sep=sep, engine='python', encoding=enc,
-                                     comment='#', skip_blank_lines=True,
-                                     on_bad_lines='skip', header=None,
-                                     skiprows=layout['data_line_no'],
-                                     na_values=list(self.MISSING_TEXT_TOKENS),
-                                     keep_default_na=True)
-                    if df.shape[1] >= len(col_names):
-                        df = df.iloc[:, :len(col_names)]
-                        df.columns = col_names
+                    if layout_mode == 'pixel_xy':
+                        df = self._sample_large_pixel_text(
+                            path, enc, sep, ncols, col_names,
+                            layout['data_line_no'], progress, cancel_event)
                     else:
-                        df.columns = [f'Col{i+1}' for i in range(df.shape[1])]
+                        df = self._sample_large_text(
+                            path, enc, sep, ncols, col_names, progress, cancel_event)
+                else:
+                    df = self._read_full_delimited_text(
+                        path, enc, sep, ncols, col_names, layout['data_line_no'],
+                        progress=progress, cancel_event=cancel_event)
                     self.import_info.update({
                         'strategy': '文本全量读取',
-                        'source_format': '通用文本XYZ点表',
+                        'source_format': ('通用文本Pixel XY点表'
+                                          if layout_mode == 'pixel_xy'
+                                          else '通用文本XYZ点表'),
                         'sampled': False,
                         'sample_method_key': 'full',
                         'extrema_preserved': True,
@@ -3189,8 +3638,11 @@ class DataIOMixin:
                 if auto_sample and file_size >= self._large_text_threshold_bytes():
                     raise ValueError("文件超过超大文本阈值，但前5000行未识别到有效数值数据行；\n"
                                      "为避免全量读入卡死，已停止导入。请检查Zeiss TXT头部格式，或关闭自动抽样后重试。")
-                for enc in ('utf-8-sig', 'gbk', 'utf-16', 'latin-1'):
-                    for sep in (None, ',', '\t', ';', r'\s+'):
+                fallback_seps = ((self._delimiter_override(),)
+                                 if self._delimiter_override() is not None
+                                 else (None, ',', '\t', ';', '；', '|', r'\s+'))
+                for enc in self._encoding_candidates():
+                    for sep in fallback_seps:
                         try:
                             df_try = pd.read_csv(path, sep=sep, engine='python', encoding=enc,
                                                  comment='#', skip_blank_lines=True, on_bad_lines='skip',
@@ -3200,7 +3652,9 @@ class DataIOMixin:
                                 df = df_try
                                 self.import_info.update({
                                     'strategy': '文本全量读取(回退嗅探)',
-                                    'source_format': '通用文本XYZ点表',
+                                    'source_format': ('通用文本Pixel XY点表'
+                                                      if layout_mode == 'pixel_xy'
+                                                      else '通用文本XYZ点表'),
                                     'sampled': False,
                                     'sample_method_key': 'full',
                                     'extrema_preserved': True,
@@ -3236,6 +3690,14 @@ class DataIOMixin:
 
         self.import_info['import_rows'] = len(df)
         self.import_info['display_limit'] = self._display_limit()
+        self.import_info.setdefault(
+            'input_semantics',
+            {'point_table': 'xyz_physical', 'pixel_xy': 'pixel_xy',
+             'height_matrix': 'height_matrix', 'zygo_xyz': 'pixel_xy'}.get(
+                 layout_mode, 'xyz_physical'))
+        self._check_cancel(cancel_event)
+        if progress is not None:
+            progress(88, "文件解析完成，正在标准化坐标与列映射")
         self._update_import_status_label()
         return df
 
@@ -3251,7 +3713,6 @@ class DataIOMixin:
         """Load a known path; used by both the file dialog and platform integration."""
         path = str(Path(path).expanduser().resolve())
         if (_parsed_payload is None
-                and getattr(self, 'input_layout_mode', 'point_table') == 'height_matrix'
                 and self.isVisible() and self._task_thread is None):
             previous_info = copy.deepcopy(getattr(self, 'import_info', {}))
             previous_note = str(getattr(self, 'last_import_note', ''))
@@ -3271,7 +3732,7 @@ class DataIOMixin:
 
             def success(payload):
                 self.load_path(path, _parsed_payload=payload)
-                self._on_task_progress(100, "Z Matrix 导入与首次分析完成")
+                self._on_task_progress(100, "文件导入、标准化与首次分析完成")
 
             def failure(message):
                 restore_previous()
@@ -3279,10 +3740,10 @@ class DataIOMixin:
 
             def cancelled():
                 restore_previous()
-                self._show_status("Z Matrix 导入已取消，已保留此前有效数据。", 5000)
+                self._show_status("文件导入已取消，已保留此前有效数据。", 5000)
 
             return self._run_background_task(
-                "Z Matrix 导入", task, success, failure, on_cancel=cancelled)
+                "文件导入", task, success, failure, on_cancel=cancelled)
         try:
             if _parsed_payload is None:
                 self.absolute_raw_df = self._read_table(path)
@@ -3298,7 +3759,17 @@ class DataIOMixin:
             for cb in [self.cb_x_col, self.cb_y_col, self.cb_z_col]:
                 cb.blockSignals(True); cb.clear(); cb.addItems(cols); cb.blockSignals(False)
 
-            if (self.import_info.get('height_matrix') or
+            mapping_required = False
+            manual_indices = tuple(int(getattr(self, name, 0) or 0) - 1
+                                   for name in ('import_x_col', 'import_y_col', 'import_z_col'))
+            manual_mapping = all(index >= 0 for index in manual_indices)
+            if manual_mapping:
+                if len(set(manual_indices)) != 3 or max(manual_indices) >= len(cols):
+                    raise ValueError("手动 X/Y/Z 列号必须互不重复且位于文件列范围内。")
+                self.cb_x_col.setCurrentIndex(manual_indices[0])
+                self.cb_y_col.setCurrentIndex(manual_indices[1])
+                self.cb_z_col.setCurrentIndex(manual_indices[2])
+            elif (self.import_info.get('height_matrix') or
                     self.import_info.get('source_format') == 'Zygo XYZ Data File - Format 1') \
                     and all(c in cols for c in ('X', 'Y', 'Z')):
                 self.cb_x_col.setCurrentText('X')
@@ -3317,13 +3788,16 @@ class DataIOMixin:
                 self.cb_x_unit.setCurrentText('mm')
                 self.cb_y_unit.setCurrentText('mm')
                 self.cb_z_unit.setCurrentText('µm')
-            elif len(cols) >= 3 and all(re.fullmatch(r'Col\d+', c) for c in cols):
-                # 无表头 X/Y/Z 文本默认按 Col1/Col2/Col3 映射，适配 Zeiss/XYZ 常见导出
+            elif (len(cols) == 3 and
+                  all(re.fullmatch(r'Col\d+', c) for c in cols)):
+                # 仅无表头且恰好3列允许稳定的位置默认。
                 self.cb_x_col.setCurrentIndex(0)
                 self.cb_y_col.setCurrentIndex(1)
                 self.cb_z_col.setCurrentIndex(2)
             else:
-                semantic = self._header_semantics(cols)
+                semantic = (self._pixel_header_semantics(cols)
+                            if self.input_layout_mode == 'pixel_xy'
+                            else self._header_semantics(cols))
                 if semantic['unambiguous']:
                     mapping = semantic['mapping']
                     self.cb_x_col.setCurrentIndex(mapping['x'])
@@ -3334,16 +3808,43 @@ class DataIOMixin:
                     if units.get('y'): self.cb_y_unit.setCurrentText(units['y'])
                     if units.get('z'): self.cb_z_unit.setCurrentText(units['z'])
                 else:
-                    # 自定义表头保留真实名称，但不臆测语义；仅给出稳定的初始选择供用户修改。
+                    # 自定义或无表头多列只保留列名，禁止静默猜前三列。
                     self.cb_x_col.setCurrentIndex(0)
-                    self.cb_y_col.setCurrentIndex(1 if len(cols) > 1 else 0)
-                    self.cb_z_col.setCurrentIndex(2 if len(cols) > 2 else 0)
+                    self.cb_y_col.setCurrentIndex(0)
+                    self.cb_z_col.setCurrentIndex(0)
+                    mapping_required = True
+
+            override_units = {
+                'x': str(getattr(self, 'import_x_unit', 'auto')),
+                'y': str(getattr(self, 'import_y_unit', 'auto')),
+                'z': str(getattr(self, 'import_z_unit', 'auto')),
+            }
+            for axis, combo in (('x', self.cb_x_unit), ('y', self.cb_y_unit),
+                                ('z', self.cb_z_unit)):
+                if override_units[axis] != 'auto':
+                    combo.setCurrentText(override_units[axis])
             self.import_info['auto_mapping_result'] = {
                 'x': self.cb_x_col.currentText(),
                 'y': self.cb_y_col.currentText(),
                 'z': self.cb_z_col.currentText(),
             }
-            if self.pending_recipe is not None:
+            if mapping_required and self.pending_recipe is None:
+                self.import_info['mapping_required'] = True
+                self.df_raw = None
+                self.manual_mask = None
+                self.active_idx = None
+                self.last_metrics = None
+                self.current_coeffs = None
+                self.high_order_models = {}
+                self._clear_result_labels()
+                self._update_import_status_label()
+                self._show_status(
+                    "列语义不明确：已保留真实列名，请选择 X/Y/Z 后点击“应用映射”。", 15000)
+                QMessageBox.information(
+                    self, "需要列映射",
+                    "文件已读取，但无法唯一确定 X/Y/Z 列。\n"
+                    "为避免错误量测，软件没有猜测前三列。请在数据解析映射区选择后应用。")
+            elif self.pending_recipe is not None:
                 units = self.pending_recipe.get('units', {}) or {}
                 self._safe_set_combo_text(self.cb_x_unit, units.get('x_unit'))
                 self._safe_set_combo_text(self.cb_y_unit, units.get('y_unit'))
@@ -3382,6 +3883,9 @@ class DataIOMixin:
             for name, col in (("X", xc), ("Y", yc), ("Z", zc)):
                 if col not in self.absolute_raw_df.columns:
                     raise ValueError(f"{name}列 '{col}' 不在文件列中，请重新选择列映射。")
+            generic_pixel = (
+                getattr(self, 'input_layout_mode', 'point_table') == 'pixel_xy'
+                and self.import_info.get('source_format') != 'Zygo XYZ Data File - Format 1')
             temp_df = pd.DataFrame()
             temp_df['X'] = pd.to_numeric(self.absolute_raw_df[xc], errors='coerce')
             temp_df['Y'] = pd.to_numeric(self.absolute_raw_df[yc], errors='coerce')
@@ -3389,10 +3893,36 @@ class DataIOMixin:
             if '_matrix_row' in self.absolute_raw_df.columns and '_matrix_col' in self.absolute_raw_df.columns:
                 temp_df['_matrix_row'] = pd.to_numeric(self.absolute_raw_df['_matrix_row'], errors='coerce')
                 temp_df['_matrix_col'] = pd.to_numeric(self.absolute_raw_df['_matrix_col'], errors='coerce')
+            if '_topology_row' in self.absolute_raw_df.columns and '_topology_col' in self.absolute_raw_df.columns:
+                temp_df['_topology_row'] = pd.to_numeric(self.absolute_raw_df['_topology_row'], errors='coerce')
+                temp_df['_topology_col'] = pd.to_numeric(self.absolute_raw_df['_topology_col'], errors='coerce')
+            if generic_pixel:
+                raw_x = temp_df['X'].to_numpy(dtype=float)
+                raw_y = temp_df['Y'].to_numpy(dtype=float)
+                raw_z = temp_df['Z'].to_numpy(dtype=float)
+                valid_xy = (np.isfinite(raw_x) & np.isfinite(raw_y) &
+                            (np.abs(raw_x - np.rint(raw_x)) <= 1e-6) &
+                            (np.abs(raw_y - np.rint(raw_y)) <= 1e-6))
+                missing_count = int(np.sum(valid_xy & ~np.isfinite(raw_z)))
+                if np.any(valid_xy):
+                    px = np.rint(raw_x[valid_xy]).astype(np.int64)
+                    py = np.rint(raw_y[valid_xy]).astype(np.int64)
+                    matrix_cols = int(px.max() - px.min() + 1)
+                    matrix_rows = int(py.max() - py.min() + 1)
+                    self.import_info.update({
+                        'missing_points': missing_count,
+                        'matrix_cols': matrix_cols,
+                        'matrix_rows': matrix_rows,
+                        'source_matrix_positions': matrix_cols * matrix_rows,
+                    })
             temp_df = temp_df.dropna(subset=['X', 'Y', 'Z'])
 
             if len(temp_df) < 3:
                 raise ValueError("有效数据点少于 3 个，请检查列映射与单位选择。")
+            self.import_info['valid_rows'] = int(len(temp_df))
+            self.import_info['original_valid_points'] = int(
+                self.import_info.get('original_valid_points') or len(temp_df))
+            self.import_info['analysis_points'] = int(len(temp_df))
 
             unit_m = {"mm": 1.0, "µm": 1e-3, "nm": 1e-6}
             if self.import_info.get('source_format') == 'Zygo XYZ Data File - Format 1':
@@ -3403,8 +3933,42 @@ class DataIOMixin:
             x_unit = self.cb_x_unit.currentText()
             y_unit = self.cb_y_unit.currentText()
             z_unit = self.cb_z_unit.currentText()
-            temp_df['X'] = temp_df['X'] * unit_m[x_unit]
-            temp_df['Y'] = temp_df['Y'] * unit_m[y_unit]
+            if generic_pixel:
+                pixel_x = temp_df['X'].to_numpy(dtype=float)
+                pixel_y = temp_df['Y'].to_numpy(dtype=float)
+                rounded_x = np.rint(pixel_x)
+                rounded_y = np.rint(pixel_y)
+                if (np.max(np.abs(pixel_x - rounded_x)) > 1e-6 or
+                        np.max(np.abs(pixel_y - rounded_y)) > 1e-6):
+                    raise ValueError("Pixel X/Y 必须为整数像素序号；请检查导入类型或列映射。")
+                matrix_col = rounded_x.astype(np.int64)
+                matrix_row = rounded_y.astype(np.int64)
+                temp_df['_matrix_col'] = matrix_col
+                temp_df['_matrix_row'] = matrix_row
+                temp_df['X'] = ((pixel_x - float(getattr(self, 'pixel_origin_x', 0.0))) *
+                                float(self.height_matrix_pitch_x_um) / 1000.0)
+                temp_df['Y'] = ((pixel_y - float(getattr(self, 'pixel_origin_y', 0.0))) *
+                                float(self.height_matrix_pitch_y_um) / 1000.0)
+                if not self.import_info.get('sampled', False):
+                    temp_df['_topology_row'] = matrix_row
+                    temp_df['_topology_col'] = matrix_col
+                self.import_info.update({
+                    'input_semantics': 'pixel_xy',
+                    'sampling_pitch_x_um': float(self.height_matrix_pitch_x_um),
+                    'sampling_pitch_y_um': float(self.height_matrix_pitch_y_um),
+                    'sampling_pitch_source': ('用户手动' if self.pitch_source == 'manual'
+                                              else 'Auto/用户默认'),
+                    'pixel_origin_x': float(getattr(self, 'pixel_origin_x', 0.0)),
+                    'pixel_origin_y': float(getattr(self, 'pixel_origin_y', 0.0)),
+                    'topology_method': ('sampled_matrix8'
+                                        if '_topology_row' in temp_df.columns and
+                                           self.import_info.get('sampled')
+                                        else ('matrix8' if '_topology_row' in temp_df.columns
+                                              else 'Delaunay/adaptive kNN')),
+                })
+            else:
+                temp_df['X'] = temp_df['X'] * unit_m[x_unit]
+                temp_df['Y'] = temp_df['Y'] * unit_m[y_unit]
             temp_df['Z'] = temp_df['Z'] * unit_m[z_unit]
 
             self.import_info['mapping_x_col'] = xc
@@ -3418,6 +3982,10 @@ class DataIOMixin:
                 temp_df['_matrix_row'] = temp_df['_matrix_row'].astype(int)
                 temp_df['_matrix_col'] = temp_df['_matrix_col'].astype(int)
                 out_cols += ['_matrix_row', '_matrix_col']
+            if '_topology_row' in temp_df.columns and '_topology_col' in temp_df.columns:
+                temp_df['_topology_row'] = temp_df['_topology_row'].astype(int)
+                temp_df['_topology_col'] = temp_df['_topology_col'].astype(int)
+                out_cols += ['_topology_row', '_topology_col']
             self.df_raw = temp_df[out_cols]
             self._update_smart_tolerance_recommendation(self.df_raw['Z'].to_numpy(dtype=float),
                                                         apply_value=not preserve_analysis_settings)
