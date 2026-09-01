@@ -27,8 +27,9 @@ def surface_box_aspect(
     """Return a 3D box aspect that preserves XY geometry and keeps Z readable.
 
     X and Y always use their real range ratio. Z follows its real range when
-    practical, with a small lower bound so nearly flat optical surfaces remain
-    visible instead of collapsing to a line.
+    practical, with a display-only lower bound so nearly flat optical surfaces
+    remain readable instead of collapsing to a line. This does not scale the
+    data or change any measurement result.
     """
     x_extent = _finite_extent(x)
     y_extent = _finite_extent(y)
@@ -52,9 +53,10 @@ def set_surface_box_aspect(
     *,
     zoom: float | None = None,
     z_tick_count: int | None = None,
+    min_z_ratio: float = 0.18,
 ):
     """Apply the shared 3D aspect policy and tolerate older Matplotlib APIs."""
-    aspect = surface_box_aspect(x, y, z)
+    aspect = surface_box_aspect(x, y, z, min_z_ratio=min_z_ratio)
     if zoom is not None:
         try:
             ax.set_box_aspect(aspect, zoom=zoom)

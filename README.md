@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.5.5
+# Surface Rxy ZXY Analyzer V4.5.6
 
-面型及 Rxy 分析工具当前版本为 **V4.5.5**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
+面型及 Rxy 分析工具当前版本为 **V4.5.6**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.5.5.py`：V4.5.5 Python 启动入口。
-- `start_surface_analyzer_v4_5_5.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.5.6.py`：V4.5.6 Python 启动入口。
+- `start_surface_analyzer_v4_5_6.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -32,9 +32,15 @@ start_surface_analyzer_v4_5_5.bat
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.5.5.py
+python .\面型及Rxy分析工具V4.5.6.py
 python -m surface_analyzer
 ```
+
+## V4.5.6 重点
+
+- 修正 Zygo 等极薄表面数据的 3D 显示：3D 视图改为正交投影，放大时不再出现透视漂移。
+- 3D 坐标轴改用整张卡片宽高比并扩大安全缩放余量，不再被 `constrained_layout` 缩成一小块。
+- 对 X/Y 范围远大于 Z 起伏的平面表面设置仅用于显示的 Z 可读下限，原始坐标、比例和量测结果不变。
 
 ## V4.5.5 重点
 

@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.5.5."""
+"""Qt application shell for Surface Analyzer V4.5.6."""
 
 import sys
 import os
@@ -1894,6 +1894,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             ax.tick_params(colors='#9aa4ae', labelsize=8)
         # 3D 子图：背景面改浅色、网格变淡
         a3 = self.canvas.ax3d
+        # Metrology surfaces are easier to inspect in orthographic projection:
+        # wheel zoom stays visually centred instead of drifting with perspective.
+        a3.set_proj_type('ortho')
         for pane in (a3.xaxis.pane, a3.yaxis.pane, a3.zaxis.pane):
             pane.set_facecolor('#fbfcfd'); pane.set_edgecolor('#e6eaee'); pane.set_alpha(1.0)
         a3.tick_params(colors='#9aa4ae', labelsize=7)
@@ -1944,7 +1947,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         if len(detail_x) > 0:
             set_surface_box_aspect(
                 self.canvas.ax3d, detail_x, detail_y, detail_z,
-                zoom=1.02, z_tick_count=3)
+                zoom=1.18, z_tick_count=3, min_z_ratio=0.28)
 
         if self.temp_selected_mask is not None and self.temp_selected_mask.sum() > 0:
             selected_idx = np.where(self.temp_selected_mask)[0]

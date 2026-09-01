@@ -85,8 +85,16 @@ class MultiViewCanvas(QWidget):
         tlabel = QLabel(title); tlabel.setObjectName("plotTitle")
         head.addWidget(dot); head.addWidget(tlabel); head.addStretch()
         v.addLayout(head)
-        fig = Figure(constrained_layout=True)
-        ax = fig.add_subplot(111, projection=projection)
+        if projection == '3d':
+            # A manually positioned orthographic axis uses the wide card much
+            # better than constrained_layout, which tends to shrink 3D axes to
+            # a small square when Z is much smaller than X/Y.
+            fig = Figure(constrained_layout=False)
+            ax = fig.add_axes([0.01, 0.01, 0.96, 0.96], projection=projection)
+            ax.set_proj_type('ortho')
+        else:
+            fig = Figure(constrained_layout=True)
+            ax = fig.add_subplot(111, projection=projection)
         canvas = FigureCanvas(fig)
         v.addWidget(canvas, 1)
         eff = QGraphicsDropShadowEffect(card)

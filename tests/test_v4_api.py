@@ -367,6 +367,14 @@ class V4ApiTests(unittest.TestCase):
         self.assertAlmostEqual(aspect[1], 0.25)
         self.assertAlmostEqual(aspect[2], 0.18)
 
+    def test_3d_aspect_allows_a_more_readable_gui_z_floor(self):
+        aspect = surface_box_aspect(
+            [0.0, 0.30], [0.0, 0.25], [0.000024, 0.001526],
+            min_z_ratio=0.28)
+        self.assertAlmostEqual(aspect[0], 1.0)
+        self.assertAlmostEqual(aspect[1], 0.25 / 0.30)
+        self.assertAlmostEqual(aspect[2], 0.28)
+
     def test_3d_aspect_uses_real_z_ratio_when_large_enough(self):
         aspect = surface_box_aspect([0.0, 10.0], [0.0, 5.0], [0.0, 2.0])
         self.assertEqual(aspect, (1.0, 0.5, 0.2))
