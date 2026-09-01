@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.5.7
+# Surface Rxy ZXY Analyzer V4.5.8
 
-面型及 Rxy 分析工具当前版本为 **V4.5.7**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
+面型及 Rxy 分析工具当前版本为 **V4.5.8**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.5.7.py`：V4.5.7 Python 启动入口。
-- `start_surface_analyzer_v4_5_7.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.5.8.py`：V4.5.8 Python 启动入口。
+- `start_surface_analyzer_v4_5_8.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -32,9 +32,15 @@ start_surface_analyzer_v4_5_5.bat
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.5.7.py
+python .\面型及Rxy分析工具V4.5.8.py
 python -m surface_analyzer
 ```
+
+## V4.5.8 重点
+
+- Z Matrix 手动填写“矩阵数据起始行”后完全跳过矩阵表头扫描，不再显示“扫描表头 1000 行/2000 行”等过程提示。
+- 手动起始行模式下直接使用界面填写的起始行、Pitch、Z 单位和矩阵行列参数，不再读取表头声明值。
+- 导入策略弹窗移除高级解析中的重复“数据起始行”，Z 矩阵只保留“矩阵数据起始行”一个入口。
 
 ## V4.5.7 重点
 

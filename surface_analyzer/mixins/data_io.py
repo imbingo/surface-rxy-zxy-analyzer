@@ -496,12 +496,7 @@ class DataIOMixin:
         advanced_body.setVisible(False)
         advanced = QGridLayout(advanced_body)
         advanced_outer.addWidget(advanced_body)
-        advanced.addWidget(QLabel("数据起始行:"), 0, 0)
-        spin_start_row = NoWheelSpinBox(); spin_start_row.setRange(0, 10_000_000)
-        spin_start_row.setSpecialValueText("自动")
-        spin_start_row.setValue(int(getattr(self, 'import_start_row', 0)))
-        advanced.addWidget(spin_start_row, 0, 1)
-        advanced.addWidget(QLabel("编码:"), 1, 0)
+        advanced.addWidget(QLabel("编码:"), 0, 0)
         cb_encoding = NoWheelComboBox()
         for label, value in (("Auto", "auto"), ("UTF-8-SIG", "utf-8-sig"),
                              ("GBK", "gbk"), ("UTF-16", "utf-16"),
@@ -509,8 +504,8 @@ class DataIOMixin:
             cb_encoding.addItem(label, value)
         cb_encoding.setCurrentIndex(max(0, cb_encoding.findData(
             getattr(self, 'import_encoding', 'auto'))))
-        advanced.addWidget(cb_encoding, 1, 1)
-        advanced.addWidget(QLabel("分隔符:"), 2, 0)
+        advanced.addWidget(cb_encoding, 0, 1)
+        advanced.addWidget(QLabel("分隔符:"), 1, 0)
         cb_delimiter = NoWheelComboBox()
         for label, value in (("Auto", "auto"), ("逗号", ","), ("Tab", "\t"),
                              ("分号", ";"), ("中文分号", "；"),
@@ -518,12 +513,12 @@ class DataIOMixin:
             cb_delimiter.addItem(label, value)
         cb_delimiter.setCurrentIndex(max(0, cb_delimiter.findData(
             getattr(self, 'import_delimiter', 'auto'))))
-        advanced.addWidget(cb_delimiter, 2, 1)
+        advanced.addWidget(cb_delimiter, 1, 1)
 
         column_spins = []
         for row, (label, attr) in enumerate((('X / Pixel X列号:', 'import_x_col'),
                                              ('Y / Pixel Y列号:', 'import_y_col'),
-                                             ('Z列号:', 'import_z_col')), start=3):
+                                             ('Z列号:', 'import_z_col')), start=2):
             advanced.addWidget(QLabel(label), row, 0)
             spin = NoWheelSpinBox(); spin.setRange(0, 100_000)
             spin.setSpecialValueText("自动")
@@ -533,33 +528,33 @@ class DataIOMixin:
         unit_combos = []
         for row, (label, attr) in enumerate((('X单位:', 'import_x_unit'),
                                              ('Y单位:', 'import_y_unit'),
-                                             ('Z单位:', 'import_z_unit')), start=6):
+                                             ('Z单位:', 'import_z_unit')), start=5):
             advanced.addWidget(QLabel(label), row, 0)
             combo = NoWheelComboBox(); combo.addItems(['auto', 'mm', 'µm', 'nm'])
             combo.setCurrentText(str(getattr(self, attr, 'auto')))
             advanced.addWidget(combo, row, 1); unit_combos.append(combo)
 
-        advanced.addWidget(QLabel("Pixel Origin X/Y:"), 9, 0)
+        advanced.addWidget(QLabel("Pixel Origin X/Y:"), 8, 0)
         origin_row = QHBoxLayout()
         spin_origin_x = NoWheelDoubleSpinBox(); spin_origin_x.setRange(-1e9, 1e9)
         spin_origin_y = NoWheelDoubleSpinBox(); spin_origin_y.setRange(-1e9, 1e9)
         spin_origin_x.setValue(float(getattr(self, 'pixel_origin_x', 0.0)))
         spin_origin_y.setValue(float(getattr(self, 'pixel_origin_y', 0.0)))
         origin_row.addWidget(spin_origin_x); origin_row.addWidget(spin_origin_y)
-        advanced.addLayout(origin_row, 9, 1)
+        advanced.addLayout(origin_row, 8, 1)
 
-        advanced.addWidget(QLabel("Pitch来源:"), 10, 0)
+        advanced.addWidget(QLabel("Pitch来源:"), 9, 0)
         cb_pitch_source = NoWheelComboBox()
         cb_pitch_source.addItem("Auto（可靠文件值优先）", "auto")
         cb_pitch_source.addItem("手动输入", "manual")
         cb_pitch_source.setCurrentIndex(max(0, cb_pitch_source.findData(
             getattr(self, 'pitch_source', 'manual'))))
-        advanced.addWidget(cb_pitch_source, 10, 1)
-        advanced.addWidget(QLabel("矩阵行数:"), 11, 0)
+        advanced.addWidget(cb_pitch_source, 9, 1)
+        advanced.addWidget(QLabel("矩阵行数:"), 10, 0)
         spin_matrix_rows = NoWheelSpinBox(); spin_matrix_rows.setRange(0, 100_000)
         spin_matrix_rows.setSpecialValueText("自动")
         spin_matrix_rows.setValue(int(getattr(self, 'height_matrix_rows', 0)))
-        advanced.addWidget(spin_matrix_rows, 11, 1)
+        advanced.addWidget(spin_matrix_rows, 10, 1)
         layout.addWidget(advanced_group)
 
         def toggle_advanced(checked):
@@ -668,7 +663,6 @@ class DataIOMixin:
             self.height_matrix_start_row = int(spin_matrix_start.value())
             self.height_matrix_cols = int(spin_matrix_cols.value())
             self.height_matrix_rows = int(spin_matrix_rows.value())
-            self.import_start_row = int(spin_start_row.value())
             self.import_encoding = str(cb_encoding.currentData())
             self.import_delimiter = str(cb_delimiter.currentData())
             self.import_x_col, self.import_y_col, self.import_z_col = (
@@ -732,6 +726,27 @@ class DataIOMixin:
 
     def _height_matrix_manual_start(self):
         return int(getattr(self, 'height_matrix_start_row', 0) or 0) > 0
+
+    def _manual_height_matrix_metadata(self):
+        manual_cols = int(getattr(self, 'height_matrix_cols', 0) or 0)
+        manual_rows = int(getattr(self, 'height_matrix_rows', 0) or 0)
+        detected_fields = []
+        if manual_cols > 0:
+            detected_fields.append('手动列数')
+        if manual_rows > 0:
+            detected_fields.append('手动行数')
+        return {
+            'expected_rows': manual_rows if manual_rows > 0 else None,
+            'expected_cols': manual_cols if manual_cols > 0 else None,
+            'pitch_x_um': float(getattr(self, 'height_matrix_pitch_x_um', 47.242)),
+            'pitch_y_um': float(getattr(self, 'height_matrix_pitch_y_um', 47.242)),
+            'z_unit': str(getattr(self, 'height_matrix_z_unit', 'µm')),
+            'source_format': '通用Z矩阵',
+            'invalid_values': [],
+            'height_marker_line': None,
+            'metadata': {},
+            'detected_fields': detected_fields,
+        }
 
     @staticmethod
     def _split_text_line(line, sep):
@@ -1696,8 +1711,6 @@ class DataIOMixin:
                 if invalid_hint and value is not None:
                     result['invalid_values'].append(value)
                     result['detected_fields'].append('无效值')
-                if progress is not None and line_no and line_no % 1000 == 0:
-                    progress(10, f"正在扫描矩阵表头: {line_no:,} 行")
         if keyence:
             result['source_format'] = 'Keyence VR ImageDataCsv'
         result['invalid_values'] = list(dict.fromkeys(result['invalid_values']))
@@ -3638,24 +3651,19 @@ class DataIOMixin:
                     manual_start_set = self._height_matrix_manual_start()
                     matrix_metadata = None
                     if layout_mode == 'height_matrix':
-                        matrix_metadata = self._scan_height_matrix_metadata(
-                            path, enc, progress=progress, cancel_event=cancel_event)
                         manual_cols = int(getattr(self, 'height_matrix_cols', 0) or 0)
                         manual_rows = int(getattr(self, 'height_matrix_rows', 0) or 0)
                         if manual_start_set:
-                            matrix_metadata['expected_cols'] = (
-                                manual_cols if manual_cols > 0 else None)
-                            matrix_metadata['expected_rows'] = (
-                                manual_rows if manual_rows > 0 else None)
-                            matrix_metadata['detected_fields'] = [
-                                field for field in matrix_metadata.get('detected_fields', [])
-                                if field not in ('水平', '垂直', '手动列数', '手动行数')]
-                        if manual_cols > 0:
-                            matrix_metadata['expected_cols'] = manual_cols
-                            matrix_metadata['detected_fields'].append('手动列数')
-                        if manual_rows > 0:
-                            matrix_metadata['expected_rows'] = manual_rows
-                            matrix_metadata['detected_fields'].append('手动行数')
+                            matrix_metadata = self._manual_height_matrix_metadata()
+                        else:
+                            matrix_metadata = self._scan_height_matrix_metadata(
+                                path, enc, progress=progress, cancel_event=cancel_event)
+                            if manual_cols > 0:
+                                matrix_metadata['expected_cols'] = manual_cols
+                                matrix_metadata['detected_fields'].append('手动列数')
+                            if manual_rows > 0:
+                                matrix_metadata['expected_rows'] = manual_rows
+                                matrix_metadata['detected_fields'].append('手动行数')
                         matrix_metadata['manual_start_row'] = manual_start_set
                     layout = self._detect_text_layout(
                         path, enc, start_line_no=manual_start, layout_mode=layout_mode,

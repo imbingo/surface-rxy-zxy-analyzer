@@ -106,7 +106,7 @@ class V4ApiTests(unittest.TestCase):
         window.height_matrix_start_row = 123
         window.input_layout_mode = "height_matrix"
         recipe = window._current_recipe_dict()
-        self.assertEqual(APP_VERSION, "V4.5.7")
+        self.assertEqual(APP_VERSION, "V4.5.8")
         self.assertEqual(recipe["large_file"]["matrix_start_row"], 123)
         self.assertEqual(recipe["large_file"]["sampling_pitch_x_um"],
                          recipe["large_file"]["matrix_pitch_x_um"])
