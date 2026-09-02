@@ -36,7 +36,7 @@ class RecipeMixin:
         """导出当前界面参数，不包含测量数据本身。"""
         return {
             'recipe_type': 'SurfaceRxyZxyAnalyzerRecipe',
-            'schema_version': 6,
+            'schema_version': 7,
             'app_version': self.APP_VERSION,
             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'column_mapping': {
@@ -49,7 +49,7 @@ class RecipeMixin:
             'filter': {'mode_index': int(self.cb_filter.currentIndex()), 'mode_text': self.cb_filter.currentText(), 'neighbor_k': int(self.spin_k.value()), 'threshold_um': float(self.spin_thresh.value()), 'sigma_k': float(self.spin_sigma.value()), 'sigma_iters': int(self.spin_sigma_iter.value())},
             'input': {
                 'layout_mode': str(getattr(self, 'input_layout_mode', 'point_table')),
-                'data_start_row': int(getattr(self, 'import_start_row', 0)),
+                'search_start_row': int(getattr(self, 'import_search_start_row', 0)),
                 'encoding': str(getattr(self, 'import_encoding', 'auto')),
                 'delimiter': str(getattr(self, 'import_delimiter', 'auto')),
                 'x_col_index': int(getattr(self, 'import_x_col', 0)),
@@ -87,7 +87,6 @@ class RecipeMixin:
                 'matrix_pitch_x_um': float(self.height_matrix_pitch_x_um),
                 'matrix_pitch_y_um': float(self.height_matrix_pitch_y_um),
                 'matrix_z_unit': str(self.height_matrix_z_unit),
-                'matrix_start_row': int(self.height_matrix_start_row),
                 'matrix_cols': int(getattr(self, 'height_matrix_cols', 0)),
                 'matrix_rows': int(getattr(self, 'height_matrix_rows', 0)),
             },
@@ -136,6 +135,14 @@ class RecipeMixin:
 
     def apply_recipe(self, recipe, path_hint='', remap_current_data=True):
         """将Recipe写入UI；若尚未载入数据，列映射名称会暂存，下一次载入文件后自动匹配。"""
+        try:
+            schema_version = int(recipe.get('schema_version', 1) or 1)
+        except (TypeError, ValueError, OverflowError):
+            schema_version = 1
+        if schema_version > 7:
+            raise ValueError(
+                f"该 Recipe schema {schema_version} 高于当前支持的 schema 7，"
+                "为避免覆盖未知字段，已停止加载。")
         self.pending_recipe = recipe
         input_config = recipe.get('input', {}) or {}
         input_layout = str(input_config.get('layout_mode', getattr(self, 'input_layout_mode', 'point_table')))
@@ -143,7 +150,6 @@ class RecipeMixin:
             self.input_layout_mode = input_layout
             QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer").setValue(
                 "input_layout_mode", self.input_layout_mode)
-        self.import_start_row = int(input_config.get('data_start_row', getattr(self, 'import_start_row', 0)) or 0)
         self.import_encoding = str(input_config.get('encoding', getattr(self, 'import_encoding', 'auto')) or 'auto')
         self.import_delimiter = str(input_config.get('delimiter', getattr(self, 'import_delimiter', 'auto')) or 'auto')
         self.import_x_col = int(input_config.get('x_col_index', getattr(self, 'import_x_col', 0)) or 0)
@@ -210,8 +216,24 @@ class RecipeMixin:
             lf.get('sampling_pitch_y_um', lf.get('matrix_pitch_y_um')),
             self.height_matrix_pitch_y_um, 0.0001, 1e6)
         self.height_matrix_z_unit = self._normalize_unit_label(lf.get('matrix_z_unit', self.height_matrix_z_unit), self.height_matrix_z_unit)
-        self.height_matrix_start_row = bounded_int(
-            lf.get('matrix_start_row'), self.height_matrix_start_row, 0, 50000)
+        if 'search_start_row' in input_config:
+            legacy_search_start = input_config.get('search_start_row')
+        elif input_layout == 'height_matrix':
+            legacy_search_start = 0
+            for candidate in (
+                    lf.get('matrix_start_row'),
+                    input_config.get('height_matrix_start_row'),
+                    recipe.get('height_matrix_start_row')):
+                if candidate not in (None, '', 0, '0'):
+                    legacy_search_start = candidate
+                    break
+            if legacy_search_start in (None, '', 0, '0'):
+                legacy_search_start = input_config.get('data_start_row', 0)
+        else:
+            legacy_search_start = input_config.get('data_start_row', 0)
+        self.import_search_start_row = bounded_int(
+            legacy_search_start, getattr(self, 'import_search_start_row', 0),
+            0, 10_000_000)
         self.height_matrix_cols = bounded_int(
             lf.get('matrix_cols'), getattr(self, 'height_matrix_cols', 0), 0, 100000)
         self.height_matrix_rows = bounded_int(
@@ -226,7 +248,7 @@ class RecipeMixin:
         self.import_info['sampling_pitch_x_um'] = self.height_matrix_pitch_x_um
         self.import_info['sampling_pitch_y_um'] = self.height_matrix_pitch_y_um
         self.import_info['matrix_z_unit'] = self.height_matrix_z_unit
-        self.import_info['matrix_start_row'] = self.height_matrix_start_row
+        self.import_info['search_start_row'] = self.import_search_start_row
         gap = recipe.get('gap', {}) or {}
         if hasattr(self, 'spin_tol'):
             self.spin_tol.setValue(float(gap.get('tolerance_mm', self.spin_tol.value())))

@@ -44,6 +44,7 @@ class V450Tests(unittest.TestCase):
                 path = Path(directory) / f'header_{index}.csv'
                 path.write_text(header + '\n\n# comment\n0,0,1\n1,0,2\n0,1,3\n1,1,4\n', encoding='utf-8')
                 window = SurfaceAnalyzerPro()
+                window.input_layout_mode = 'point_table'
                 frame = window._read_table(path)
                 self.assertEqual(tuple(frame.columns), expected)
                 self.assertEqual(window.import_info['header_confidence'], 'semantic')
@@ -59,6 +60,7 @@ class V450Tests(unittest.TestCase):
                 'StagePos1;StagePos1;Thickness_AVG\n\n# operator comment\n'
                 '0;0;1\n1;0;2\n0;1;3\n1;1;4\n', encoding='utf-8')
             window = SurfaceAnalyzerPro()
+            window.input_layout_mode = 'point_table'
             frame = window._read_table(path)
             self.assertEqual(list(frame.columns), ['StagePos1', 'StagePos1_2', 'Thickness_AVG'])
             self.assertEqual(window.import_info['header_confidence'], 'candidate')
@@ -70,6 +72,7 @@ class V450Tests(unittest.TestCase):
             text_path = Path(directory) / 'comment.xyz'
             text_path.write_text('# X;Y;Z\n# note\n0;0;1\n1;0;2\n0;1;3\n1;1;4\n', encoding='utf-8')
             window = SurfaceAnalyzerPro()
+            window.input_layout_mode = 'point_table'
             frame = window._read_table(text_path)
             self.assertEqual(list(frame.columns), ['X', 'Y', 'Z'])
             self.assertEqual(window.import_info['header_confidence'], 'semantic')
@@ -85,6 +88,7 @@ class V450Tests(unittest.TestCase):
             ]
             pd.DataFrame(rows).to_excel(excel_path, header=False, index=False)
             window = SurfaceAnalyzerPro()
+            window.input_layout_mode = 'point_table'
             frame = window._read_table(excel_path)
             self.assertEqual(list(frame.columns), ['X Pos [mm]', 'Y Pos [mm]', 'Thickness', 'Intensity'])
             self.assertEqual(window.import_info['header_confidence'], 'semantic')
@@ -120,6 +124,7 @@ class V450Tests(unittest.TestCase):
                     lines.append(f'1;2;3;4;{thickness};50;{x:.3f};{row * 0.2:.3f}')
             path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
             window = SurfaceAnalyzerPro()
+            window.input_layout_mode = 'point_table'
             frame = window._read_table(path)
             self.assertEqual(window.import_info['bad_rows'], 1)
             self.assertTrue(window.import_info['precitec_topology_valid'])
@@ -184,6 +189,7 @@ class V450Tests(unittest.TestCase):
             path = Path(directory) / 'undo.csv'
             path.write_text('X,Y,Z\n0,0,1\n1,0,1\n2,0,1\n0,1,1\n1,1,1\n2,1,1\n', encoding='utf-8')
             window = SurfaceAnalyzerPro()
+            window.input_layout_mode = 'point_table'
             self.assertTrue(window.load_path(path))
             window.on_select(SimpleNamespace(xdata=-0.1, ydata=-0.1),
                              SimpleNamespace(xdata=0.1, ydata=1.1), 'XY')

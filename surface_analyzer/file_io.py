@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from .config import MISSING_TEXT_TOKENS
+from .delimited_text import detect_delimiter, tokenize_delimited_line
 
 
 TEXT_SUFFIXES = {".csv", ".txt", ".tsv", ".dat", ".asc", ".xyz", ""}
@@ -27,15 +27,13 @@ class LoadedPoints:
 
 
 def _split(line: str, separator: str) -> list[str]:
-    if separator == "whitespace":
-        return re.split(r"\s+", line.strip())
-    return [part.strip() for part in line.strip().split(separator)]
+    normalized = r"\s+" if separator == "whitespace" else separator
+    return tokenize_delimited_line(line, normalized)
 
 
 def _separator(line: str) -> str:
-    counts = {",": line.count(","), ";": line.count(";"), "\t": line.count("\t")}
-    separator, count = max(counts.items(), key=lambda item: item[1])
-    return separator if count else "whitespace"
+    separator = detect_delimiter(line, ("\t", ",", ";", "；", "|"))
+    return "whitespace" if separator == r"\s+" else separator
 
 
 def _number_or_missing(token: str) -> bool:

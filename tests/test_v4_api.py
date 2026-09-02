@@ -101,13 +101,16 @@ class V4ApiTests(unittest.TestCase):
             self.assertIn("跳过前置说明: 11 行", window.last_import_note)
             window.close()
 
-    def test_v402_recipe_persists_manual_matrix_start_row(self):
+    def test_v460_recipe_persists_unified_search_start_row(self):
         window = SurfaceAnalyzerPro()
-        window.height_matrix_start_row = 123
+        window.import_search_start_row = 123
         window.input_layout_mode = "height_matrix"
         recipe = window._current_recipe_dict()
-        self.assertEqual(APP_VERSION, "V4.5.8")
-        self.assertEqual(recipe["large_file"]["matrix_start_row"], 123)
+        self.assertEqual(APP_VERSION, "V4.6.0")
+        self.assertEqual(recipe["schema_version"], 7)
+        self.assertEqual(recipe["input"]["search_start_row"], 123)
+        self.assertNotIn("data_start_row", recipe["input"])
+        self.assertNotIn("matrix_start_row", recipe["large_file"])
         self.assertEqual(recipe["large_file"]["sampling_pitch_x_um"],
                          recipe["large_file"]["matrix_pitch_x_um"])
         self.assertEqual(recipe["input"]["layout_mode"], "height_matrix")
@@ -266,13 +269,18 @@ class V4ApiTests(unittest.TestCase):
             pitch_y = grid.itemAtPosition(9, 1).widget()
             matrix_unit = grid.itemAtPosition(10, 1).widget()
             labels = [label.text() for label in strategy_group.findChildren(QLabel)]
+            layout_labels = [label.text() for label in layout_group.findChildren(QLabel)]
+            search_start = layout_group.layout().itemAtPosition(2, 1).widget()
             observed["layouts"] = [layout_combo.itemData(i) for i in range(layout_combo.count())]
             observed["labels"] = labels
+            observed["layout_labels"] = layout_labels
             layout_combo.setCurrentIndex(layout_combo.findData("point_table"))
             observed["point_pitch"] = (pitch_x.isEnabled(), pitch_y.isEnabled())
             layout_combo.setCurrentIndex(layout_combo.findData("pixel_xy"))
             observed["pixel_pitch"] = (pitch_x.isEnabled(), pitch_y.isEnabled())
             observed["pixel_matrix_unit"] = matrix_unit.isEnabled()
+            layout_combo.setCurrentIndex(layout_combo.findData("zygo_xyz"))
+            observed["zygo_search_enabled"] = search_start.isEnabled()
             return QDialog.DialogCode.Rejected
 
         with patch.object(QDialog, "exec", inspect_dialog):
@@ -282,9 +290,11 @@ class V4ApiTests(unittest.TestCase):
             ["point_table", "pixel_xy", "height_matrix", "zygo_xyz"])
         self.assertIn("X 采样间距 (µm/点):", observed["labels"])
         self.assertIn("Y 采样间距 (µm/点):", observed["labels"])
+        self.assertIn("正文搜索起始行:", observed["layout_labels"])
         self.assertEqual(observed["point_pitch"], (False, False))
         self.assertEqual(observed["pixel_pitch"], (True, True))
         self.assertFalse(observed["pixel_matrix_unit"])
+        self.assertFalse(observed["zygo_search_enabled"])
         window.close()
 
     def test_advanced_import_settings_are_collapsed_by_default(self):
@@ -354,6 +364,7 @@ class V4ApiTests(unittest.TestCase):
             "sampling_pitch_y_um": -5,
             "matrix_start_row": 999999,
         })
+        recipe["input"]["search_start_row"] = 99_999_999
         with patch.object(QMessageBox, "information", return_value=QMessageBox.StandardButton.Ok), \
              patch.object(QMessageBox, "warning", return_value=QMessageBox.StandardButton.Ok):
             window.apply_recipe(recipe, remap_current_data=False)
@@ -364,7 +375,7 @@ class V4ApiTests(unittest.TestCase):
         self.assertEqual(window.display_point_limit, 5000)
         self.assertEqual(window.height_matrix_pitch_x_um, 1e6)
         self.assertEqual(window.height_matrix_pitch_y_um, 0.0001)
-        self.assertEqual(window.height_matrix_start_row, 50000)
+        self.assertEqual(window.import_search_start_row, 10_000_000)
         window.close()
 
     def test_matrix_legacy_missing_values_do_not_remove_real_deep_values(self):
@@ -478,7 +489,7 @@ class V4ApiTests(unittest.TestCase):
             recipe = source._current_recipe_dict()
             json.dumps(recipe, ensure_ascii=False)
             expected_mask = source.manual_mask.copy()
-            self.assertEqual(recipe["schema_version"], 6)
+            self.assertEqual(recipe["schema_version"], 7)
             self.assertEqual(len(recipe["manual_deletion"]["operations"]), 3)
             self.assertEqual(len(recipe["manual_deletion"]["source_sha256"]), 64)
             self.assertTrue(all(op["transform_pipeline"] == ["CW90"]

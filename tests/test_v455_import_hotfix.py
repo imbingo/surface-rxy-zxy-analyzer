@@ -26,7 +26,7 @@ class V455UnifiedImportHotfixTests(unittest.TestCase):
         self.window = SurfaceAnalyzerPro()
         self.window.import_encoding = "auto"
         self.window.import_delimiter = "auto"
-        self.window.import_start_row = 0
+        self.window.import_search_start_row = 0
         self.window.import_x_col = 0
         self.window.import_y_col = 0
         self.window.import_z_col = 0

@@ -345,7 +345,7 @@ class V455MatrixAndTraceabilityTests(unittest.TestCase):
         self.assertEqual(self.window.import_info["matrix_cols"], cols)
         self.assertEqual(len(frame), rows * cols)
 
-    def test_height_matrix_manual_start_row_overrides_declared_dims(self):
+    def test_height_matrix_search_lower_bound_and_manual_dims_override_metadata(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         path = Path(directory.name) / "vr_manual.csv"
@@ -366,8 +366,9 @@ class V455MatrixAndTraceabilityTests(unittest.TestCase):
             lines.append(
                 ",".join(str(float(100 + row * 10 + col)) for col in range(cols)) + ",")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        self.window.height_matrix_start_row = 10
+        self.window.import_search_start_row = 9
         self.window.height_matrix_cols = cols
+        self.window.height_matrix_rows = rows
 
         frame = self.window._read_table(path)
         self.assertEqual(self.window.import_info["matrix_rows"], rows)
@@ -375,18 +376,18 @@ class V455MatrixAndTraceabilityTests(unittest.TestCase):
         self.assertEqual(self.window.import_info["matrix_data_start_row"], 10)
         self.assertEqual(len(frame), rows * cols)
 
-    def test_manual_start_row_skips_header_metadata_scan(self):
+    def test_search_start_row_keeps_metadata_scan(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         path = Path(directory.name) / "pure.csv"
         path.write_text("1,2,3\n4,5,6\n7,8,9\n", encoding="utf-8")
-        self.window.height_matrix_start_row = 1
+        self.window.import_search_start_row = 1
 
         with patch.object(
                 self.window, "_scan_height_matrix_metadata",
-                side_effect=AssertionError("manual start row must not scan headers")) as scan:
+                wraps=self.window._scan_height_matrix_metadata) as scan:
             frame = self.window._read_table(path)
-        scan.assert_not_called()
+        self.assertGreaterEqual(scan.call_count, 1)
         self.assertEqual(self.window.import_info["matrix_rows"], 3)
         self.assertEqual(len(frame), 9)
 

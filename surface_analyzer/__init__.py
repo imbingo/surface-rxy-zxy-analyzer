@@ -1,4 +1,4 @@
-"""Surface Rxy/Zxy Analyzer V4.5.8 public package."""
+"""Surface Rxy/Zxy Analyzer V4.6.0 public package."""
 
 from .version import APP_VERSION, SOURCE_BASE_VERSION, SOURCE_COMMIT, __version__
 

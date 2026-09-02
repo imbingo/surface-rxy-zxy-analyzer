@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.5.8."""
+"""Qt application shell for Surface Analyzer V4.6.0."""
 
 import sys
 import os
@@ -109,10 +109,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.height_matrix_pitch_x_um = 47.242
         self.height_matrix_pitch_y_um = 47.242
         self.height_matrix_z_unit = "µm"
-        self.height_matrix_start_row = 0   # 0=自动识别；>0 为文件中的 1 基数据起始行
         self.height_matrix_cols = 0        # 0=自动/表头；>0 为人工指定矩阵列数
         self.height_matrix_rows = 0        # 0=自动/表头；>0 为人工指定矩阵行数
-        self.import_start_row = 0           # 三种输入共用，0=自动；>0 为1基数据起始行
+        self.import_search_start_row = 0    # 0=自动；>0 为1基正文搜索下界
         self.import_encoding = 'auto'
         self.import_delimiter = 'auto'
         self.import_x_col = 0               # 0=自动；>0 为1基列号
@@ -124,6 +123,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.pixel_origin_x = 0.0
         self.pixel_origin_y = 0.0
         self.settings = QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer")
+        for legacy_start_key in (
+                "import_start_row", "height_matrix_start_row",
+                "matrix_start_row", "data_start_row"):
+            self.settings.remove(legacy_start_key)
         saved_layout = str(self.settings.value("input_layout_mode", "point_table"))
         self.input_layout_mode = saved_layout if saved_layout in (
             'point_table', 'pixel_xy', 'height_matrix', 'zygo_xyz') else 'point_table'
@@ -162,7 +165,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             'bad_rows': 0,
             'z_source_field': '',
             'z_source_unit': '',
-            'matrix_start_row': self.height_matrix_start_row,
+            'search_start_row': self.import_search_start_row,
             'notes': ''
         }
         # V3.5.1: 大文件策略不再占用左侧UI，改为右侧工具条按钮弹窗设置
