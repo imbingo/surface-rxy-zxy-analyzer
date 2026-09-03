@@ -256,6 +256,49 @@ class V461MatrixRowsAndSelectionOverlayTests(unittest.TestCase):
         for before, after in zip(before_camera, after_camera):
             np.testing.assert_allclose(before, after)
 
+    def test_double_click_restores_3d_home_limits_and_camera_only(self):
+        window, _, _, _ = self._selection_window()
+        self.addCleanup(window.close)
+        axis = window.canvas.ax3d
+        home = copy.deepcopy(window._plot_home_limits['3D'])
+        before_2d = {
+            name: (view.get_xlim(), view.get_ylim())
+            for name, view in {
+                'XY': window.canvas.ax_xy,
+                'XZ': window.canvas.ax_xz,
+                'YZ': window.canvas.ax_yz,
+            }.items()
+        }
+        before_active = window.active_idx.copy()
+        before_manual = window.manual_mask.copy()
+        before_metrics = copy.deepcopy(window.last_metrics)
+
+        axis.set_xlim3d(1.0, 3.0)
+        axis.set_ylim3d(1.5, 4.5)
+        axis.set_zlim3d(0.995, 1.01)
+        axis.view_init(elev=63, azim=18, roll=7)
+        with patch.object(axis.figure.canvas, 'draw_idle') as draw, \
+                patch.object(window, 'update_analysis') as update:
+            window.on_3d_canvas_click(SimpleNamespace(
+                inaxes=axis, button=1, dblclick=True,
+                canvas=axis.figure.canvas))
+
+        np.testing.assert_allclose(axis.get_xlim3d(), home[0])
+        np.testing.assert_allclose(axis.get_ylim3d(), home[1])
+        np.testing.assert_allclose(axis.get_zlim3d(), home[2])
+        np.testing.assert_allclose(
+            (axis.elev, axis.azim, getattr(axis, 'roll', 0.0)), home[3:])
+        for name, view in {'XY': window.canvas.ax_xy,
+                           'XZ': window.canvas.ax_xz,
+                           'YZ': window.canvas.ax_yz}.items():
+            np.testing.assert_allclose(view.get_xlim(), before_2d[name][0])
+            np.testing.assert_allclose(view.get_ylim(), before_2d[name][1])
+        np.testing.assert_array_equal(window.active_idx, before_active)
+        np.testing.assert_array_equal(window.manual_mask, before_manual)
+        self.assertEqual(window.last_metrics, before_metrics)
+        draw.assert_called_once()
+        update.assert_not_called()
+
     def test_vr_demo_declared_rows_mismatch_imports_with_warning(self):
         path = Path(__file__).resolve().parents[1] / "demo_data" / \
             "V4.6.1_Keyence_VR_声明15行_实际13行_Demo.csv"

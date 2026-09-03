@@ -447,18 +447,21 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         right_layout.addWidget(self._build_results_strip())
 
         self.canvas = MultiViewCanvas(self)
-        # MultiViewCanvas uses one FigureCanvas per view. Bind each 2D canvas once;
-        # the 3D view intentionally has no selection/context-menu handler.
+        # MultiViewCanvas uses one FigureCanvas per view. Selection/context menus
+        # stay 2D-only; 3D receives only the display reset handler.
         self._plot_click_cids = [
             ax.figure.canvas.mpl_connect('button_press_event', self.on_canvas_click)
             for ax in (self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz)
         ]
+        self._plot_3d_reset_cid = self.canvas.ax3d.figure.canvas.mpl_connect(
+            'button_press_event', self.on_3d_canvas_click)
         self._plot_scroll_cids = [
             ax.figure.canvas.mpl_connect('scroll_event', self.on_canvas_scroll)
             for ax in (self.canvas.ax_xy, self.canvas.ax_xz,
                        self.canvas.ax_yz, self.canvas.ax3d)
         ]
-        for ax in (self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz):
+        for ax in (self.canvas.ax_xy, self.canvas.ax_xz,
+                   self.canvas.ax_yz, self.canvas.ax3d):
             ax.figure.canvas.setToolTip("滚轮缩放；双击恢复该视图原始大小")
         right_layout.addWidget(self.canvas, 1)
 
@@ -1853,12 +1856,17 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._temp_selection_overlay_artists['3D'] = self.canvas.ax3d.scatter(
             txs, tys, tzs, depthshade=False, **params)
 
-    def _remember_2d_plot_home_limits(self):
-        """Remember the unzoomed limits for independent 2D-view reset."""
+    def _remember_plot_home_state(self):
+        """Remember the unzoomed limits and 3D camera for per-view reset."""
         self._plot_home_limits = {
             'XY': (self.canvas.ax_xy.get_xlim(), self.canvas.ax_xy.get_ylim()),
             'XZ': (self.canvas.ax_xz.get_xlim(), self.canvas.ax_xz.get_ylim()),
             'YZ': (self.canvas.ax_yz.get_xlim(), self.canvas.ax_yz.get_ylim()),
+            '3D': (
+                self.canvas.ax3d.get_xlim3d(), self.canvas.ax3d.get_ylim3d(),
+                self.canvas.ax3d.get_zlim3d(), self.canvas.ax3d.elev,
+                self.canvas.ax3d.azim, getattr(self.canvas.ax3d, 'roll', 0.0),
+            ),
         }
 
     def draw_plots(self, tx, ty, tz, roi_mask_all=None, preserve_view=False):
@@ -1953,7 +1961,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.canvas.ax_xy.relim()
             self.canvas.ax_xy.autoscale_view()
             if view_state is None:
-                self._remember_2d_plot_home_limits()
+                self._remember_plot_home_state()
             if view_state is not None:
                 self._restore_plot_view_state(view_state)
             self.canvas.draw()
@@ -1998,7 +2006,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._draw_temp_selection_overlay(tx, ty, plot_z_all, display_limit)
 
         if view_state is None:
-            self._remember_2d_plot_home_limits()
+            self._remember_plot_home_state()
         if view_state is not None:
             self._restore_plot_view_state(view_state)
         self.canvas.draw()

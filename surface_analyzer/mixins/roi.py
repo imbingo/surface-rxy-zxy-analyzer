@@ -1277,6 +1277,28 @@ class ROIMixin:
         self.statusBar().showMessage(f"Recipe已重放 {len(replayed)} 次手动删除，共删除 {deleted:,} 点", 10000)
         return {'status': 'ok', 'operations': len(replayed), 'deleted': deleted}
 
+    def _restore_plot_home_view(self, view, event):
+        home = (getattr(self, '_plot_home_limits', {}) or {}).get(view)
+        if home is None:
+            return False
+        if view == '3D':
+            axis = self.canvas.ax3d
+            axis.set_xlim3d(home[0]); axis.set_ylim3d(home[1]); axis.set_zlim3d(home[2])
+            axis.view_init(elev=home[3], azim=home[4], roll=home[5])
+        else:
+            event.inaxes.set_xlim(home[0])
+            event.inaxes.set_ylim(home[1])
+        event.canvas.draw_idle()
+        self.statusBar().showMessage(f"{view} 视图已恢复原始大小", 3000)
+        return True
+
+    def on_3d_canvas_click(self, event):
+        """Restore the initial 3D limits and camera on a left double-click."""
+        button = getattr(getattr(event, 'button', None), 'value', getattr(event, 'button', None))
+        if (button == 1 and bool(getattr(event, 'dblclick', False))
+                and getattr(event, 'inaxes', None) is self.canvas.ax3d):
+            self._restore_plot_home_view('3D', event)
+
     def on_canvas_click(self, event):
         button = getattr(getattr(event, 'button', None), 'value', getattr(event, 'button', None))
         if button == 1 and bool(getattr(event, 'dblclick', False)):
@@ -1286,12 +1308,8 @@ class ROIMixin:
                 self.canvas.ax_yz: 'YZ',
             }
             view = axes.get(getattr(event, 'inaxes', None))
-            home = (getattr(self, '_plot_home_limits', {}) or {}).get(view)
-            if home is not None:
-                event.inaxes.set_xlim(home[0])
-                event.inaxes.set_ylim(home[1])
-                event.canvas.draw_idle()
-                self.statusBar().showMessage(f"{view} 视图已恢复原始大小", 3000)
+            if view is not None:
+                self._restore_plot_home_view(view, event)
             return
         if button == 3:
             if self.temp_selected_mask is not None and np.any(self.temp_selected_mask):
