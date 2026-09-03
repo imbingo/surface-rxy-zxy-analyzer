@@ -1279,6 +1279,20 @@ class ROIMixin:
 
     def on_canvas_click(self, event):
         button = getattr(getattr(event, 'button', None), 'value', getattr(event, 'button', None))
+        if button == 1 and bool(getattr(event, 'dblclick', False)):
+            axes = {
+                self.canvas.ax_xy: 'XY',
+                self.canvas.ax_xz: 'XZ',
+                self.canvas.ax_yz: 'YZ',
+            }
+            view = axes.get(getattr(event, 'inaxes', None))
+            home = (getattr(self, '_plot_home_limits', {}) or {}).get(view)
+            if home is not None:
+                event.inaxes.set_xlim(home[0])
+                event.inaxes.set_ylim(home[1])
+                event.canvas.draw_idle()
+                self.statusBar().showMessage(f"{view} 视图已恢复原始大小", 3000)
+            return
         if button == 3:
             if self.temp_selected_mask is not None and np.any(self.temp_selected_mask):
                 self._show_selection_context_menu()

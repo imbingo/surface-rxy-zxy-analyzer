@@ -458,6 +458,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             for ax in (self.canvas.ax_xy, self.canvas.ax_xz,
                        self.canvas.ax_yz, self.canvas.ax3d)
         ]
+        for ax in (self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz):
+            ax.figure.canvas.setToolTip("滚轮缩放；双击恢复该视图原始大小")
         right_layout.addWidget(self.canvas, 1)
 
         self.right_stack = QStackedWidget()
@@ -1851,6 +1853,14 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._temp_selection_overlay_artists['3D'] = self.canvas.ax3d.scatter(
             txs, tys, tzs, depthshade=False, **params)
 
+    def _remember_2d_plot_home_limits(self):
+        """Remember the unzoomed limits for independent 2D-view reset."""
+        self._plot_home_limits = {
+            'XY': (self.canvas.ax_xy.get_xlim(), self.canvas.ax_xy.get_ylim()),
+            'XZ': (self.canvas.ax_xz.get_xlim(), self.canvas.ax_xz.get_ylim()),
+            'YZ': (self.canvas.ax_yz.get_xlim(), self.canvas.ax_yz.get_ylim()),
+        }
+
     def draw_plots(self, tx, ty, tz, roi_mask_all=None, preserve_view=False):
         view_state = None
         if preserve_view:
@@ -1942,6 +1952,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self._draw_roi_overlays(self.canvas.ax_xy)
             self.canvas.ax_xy.relim()
             self.canvas.ax_xy.autoscale_view()
+            if view_state is None:
+                self._remember_2d_plot_home_limits()
             if view_state is not None:
                 self._restore_plot_view_state(view_state)
             self.canvas.draw()
@@ -1985,6 +1997,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
         self._draw_temp_selection_overlay(tx, ty, plot_z_all, display_limit)
 
+        if view_state is None:
+            self._remember_2d_plot_home_limits()
         if view_state is not None:
             self._restore_plot_view_state(view_state)
         self.canvas.draw()

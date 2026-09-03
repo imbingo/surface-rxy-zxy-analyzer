@@ -208,6 +208,75 @@ class V461MatrixRowsAndSelectionOverlayTests(unittest.TestCase):
             artist = window._temp_selection_overlay_artists[view]
             self.assertEqual(artist.get_label(), "_temp_selection_overlay")
 
+    def test_double_click_restores_each_2d_view_home_limits_only(self):
+        window, _, _, _ = self._selection_window()
+        self.addCleanup(window.close)
+        axes = {
+            "XY": window.canvas.ax_xy,
+            "XZ": window.canvas.ax_xz,
+            "YZ": window.canvas.ax_yz,
+        }
+        home = copy.deepcopy(window._plot_home_limits)
+        before_active = window.active_idx.copy()
+        before_manual = window.manual_mask.copy()
+        before_camera = (
+            window.canvas.ax3d.get_xlim3d(), window.canvas.ax3d.get_ylim3d(),
+            window.canvas.ax3d.get_zlim3d(), window.canvas.ax3d.elev,
+            window.canvas.ax3d.azim,
+        )
+
+        for view, axis in axes.items():
+            with self.subTest(view=view):
+                untouched = {
+                    name: (other.get_xlim(), other.get_ylim())
+                    for name, other in axes.items() if name != view
+                }
+                axis.set_xlim(1.25, 2.75)
+                axis.set_ylim(1.5, 3.0)
+                with patch.object(axis.figure.canvas, "draw_idle") as draw, \
+                        patch.object(window, "update_analysis") as update:
+                    window.on_canvas_click(SimpleNamespace(
+                        inaxes=axis, button=1, dblclick=True,
+                        canvas=axis.figure.canvas))
+                np.testing.assert_allclose(axis.get_xlim(), home[view][0])
+                np.testing.assert_allclose(axis.get_ylim(), home[view][1])
+                for name, limits in untouched.items():
+                    np.testing.assert_allclose(axes[name].get_xlim(), limits[0])
+                    np.testing.assert_allclose(axes[name].get_ylim(), limits[1])
+                draw.assert_called_once()
+                update.assert_not_called()
+
+        np.testing.assert_array_equal(window.active_idx, before_active)
+        np.testing.assert_array_equal(window.manual_mask, before_manual)
+        after_camera = (
+            window.canvas.ax3d.get_xlim3d(), window.canvas.ax3d.get_ylim3d(),
+            window.canvas.ax3d.get_zlim3d(), window.canvas.ax3d.elev,
+            window.canvas.ax3d.azim,
+        )
+        for before, after in zip(before_camera, after_camera):
+            np.testing.assert_allclose(before, after)
+
+    def test_vr_demo_declared_rows_mismatch_imports_with_warning(self):
+        path = Path(__file__).resolve().parents[1] / "demo_data" / \
+            "V4.6.1_Keyence_VR_声明15行_实际13行_Demo.csv"
+        for search_start_row in (0, 13):
+            with self.subTest(search_start_row=search_start_row):
+                window = SurfaceAnalyzerPro()
+                self.addCleanup(window.close)
+                window.input_layout_mode = "height_matrix"
+                window.import_search_start_row = search_start_row
+                window.height_matrix_rows = 0
+                window.auto_sample_large_text = False
+                frame = window._read_table(path)
+                info = window.import_info
+                self.assertEqual(info["source_format"], "Keyence VR ImageDataCsv")
+                self.assertEqual(info["declared_rows"], 15)
+                self.assertEqual(info["actual_rows"], 13)
+                self.assertEqual((info["matrix_rows"], info["matrix_cols"]), (13, 16))
+                self.assertTrue(info["row_count_mismatch"])
+                self.assertIn("已按实际矩阵正文导入", info["notes"])
+                self.assertEqual(len(frame), 12 * 16)
+
 
 if __name__ == "__main__":
     unittest.main()
