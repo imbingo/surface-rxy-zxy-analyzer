@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.6.0
+# Surface Rxy ZXY Analyzer V4.6.1
 
-面型及 Rxy 分析工具当前版本为 **V4.6.0**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
+面型及 Rxy 分析工具当前版本为 **V4.6.1**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.6.0.py`：V4.6.0 Python 启动入口。
-- `start_surface_analyzer_v4_6_0.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.6.1.py`：V4.6.1 Python 启动入口。
+- `start_surface_analyzer_v4_6_1.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,27 +14,33 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_6_0.bat
+start_surface_analyzer_v4_6_1.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_6_0.bat
+.\start_surface_analyzer_v4_6_1.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_6_0.bat --check
+.\start_surface_analyzer_v4_6_1.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.6.0.py
+python .\面型及Rxy分析工具V4.6.1.py
 python -m surface_analyzer
 ```
+
+## V4.6.1 Hotfix
+
+- Z Matrix 表头声明的行数仅作为进度提示和导入警告；只有用户手动指定的矩阵行数仍是硬约束，文本与 Excel 行为一致。
+- 普通临时选择在 XY、XZ、YZ 和 3D 四视图同步高亮；3D 使用当前显示 Z 值，并仅对绘制覆盖层做均匀抽样。
+- 覆盖层抽样不修改真实临时选择掩码、选中数量、删除、ROI 或计算输入，四视图缩放与 3D 相机状态保持不变。
 
 ## V4.6.0 重点
 

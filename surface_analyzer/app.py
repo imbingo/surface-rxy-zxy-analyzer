@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.6.0."""
+"""Qt application shell for Surface Analyzer V4.6.1."""
 
 import sys
 import os
@@ -1820,6 +1820,37 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         except Exception as e:
             self._show_status(f"分析出错: {e}", 10000)
 
+    def _draw_temp_selection_overlay(self, tx, ty, plot_z_all, display_limit):
+        """Draw one display-only sample of the current selection in all views."""
+        self._temp_selection_overlay_artists = {}
+        self._last_temp_selection_display_indices = np.array([], dtype=int)
+        mask = self.temp_selected_mask
+        if mask is None or len(mask) != len(tx) or not np.any(mask):
+            return
+
+        selected_idx = np.flatnonzero(mask)
+        overlay_limit = max(1, min(int(display_limit), 25_000))
+        if len(selected_idx) > overlay_limit:
+            pick = np.linspace(0, len(selected_idx) - 1, overlay_limit, dtype=int)
+            selected_idx = selected_idx[pick]
+        self._last_temp_selection_display_indices = selected_idx.copy()
+
+        txs = tx[selected_idx]
+        tys = ty[selected_idx]
+        tzs = plot_z_all[selected_idx]
+        params = {
+            'c': 'red', 's': 50, 'marker': 'x', 'linewidths': 2,
+            'zorder': 10, 'label': '_temp_selection_overlay',
+        }
+        self._temp_selection_overlay_artists['XY'] = self.canvas.ax_xy.scatter(
+            txs, tys, **params)
+        self._temp_selection_overlay_artists['XZ'] = self.canvas.ax_xz.scatter(
+            txs, tzs, **params)
+        self._temp_selection_overlay_artists['YZ'] = self.canvas.ax_yz.scatter(
+            tys, tzs, **params)
+        self._temp_selection_overlay_artists['3D'] = self.canvas.ax3d.scatter(
+            txs, tys, tzs, depthshade=False, **params)
+
     def draw_plots(self, tx, ty, tz, roi_mask_all=None, preserve_view=False):
         view_state = None
         if preserve_view:
@@ -1952,15 +1983,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 self.canvas.ax3d, detail_x, detail_y, detail_z,
                 zoom=1.18, z_tick_count=3, min_z_ratio=0.28)
 
-        if self.temp_selected_mask is not None and self.temp_selected_mask.sum() > 0:
-            selected_idx = np.where(self.temp_selected_mask)[0]
-            if len(selected_idx) > display_limit:
-                pick = np.linspace(0, len(selected_idx) - 1, display_limit, dtype=int)
-                selected_idx = selected_idx[pick]
-            txs, tys, tzs = tx[selected_idx], ty[selected_idx], plot_z_all[selected_idx]
-            for ax in [self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz]:
-                sx, sy = (txs, tys) if ax == self.canvas.ax_xy else (txs, tzs) if ax == self.canvas.ax_xz else (tys, tzs)
-                ax.scatter(sx, sy, c='red', s=50, marker='x', linewidth=2)
+        self._draw_temp_selection_overlay(tx, ty, plot_z_all, display_limit)
 
         if view_state is not None:
             self._restore_plot_view_state(view_state)

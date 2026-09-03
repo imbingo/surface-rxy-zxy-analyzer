@@ -1380,12 +1380,10 @@ class DataIOMixin:
         metadata = self._excel_height_matrix_metadata(raw)
         manual_cols = int(getattr(self, 'height_matrix_cols', 0) or 0)
         manual_rows = int(getattr(self, 'height_matrix_rows', 0) or 0)
+        declared_rows = metadata.get('expected_rows')
         if manual_cols > 0:
             metadata['expected_cols'] = manual_cols
-        if manual_rows > 0:
-            metadata['expected_rows'] = manual_rows
         expected_cols = metadata.get('expected_cols')
-        expected_rows = metadata.get('expected_rows')
         runs = []
         run = None
         for row_index in range(manual_start, len(raw)):
@@ -1428,9 +1426,10 @@ class DataIOMixin:
                 coordinate_header = True
         if values.shape[0] < 2 or values.shape[1] < 2:
             raise ValueError("Excel矩阵去除坐标标签后小于2×2，无法生成面型。")
-        if expected_rows is not None and values.shape[0] != int(expected_rows):
+        if manual_rows > 0 and values.shape[0] != manual_rows:
             raise ValueError(
-                f"Excel Z Matrix 行数与表头冲突：声明 {int(expected_rows)}，实际 {values.shape[0]}。")
+                f"Excel Z Matrix 行数与用户设定冲突："
+                f"用户指定 {manual_rows}，实际 {values.shape[0]}。")
         if expected_cols is not None and values.shape[1] != int(expected_cols):
             raise ValueError(
                 f"Excel Z Matrix 列数与表头冲突：声明 {int(expected_cols)}，实际 {values.shape[1]}。")
@@ -1459,6 +1458,13 @@ class DataIOMixin:
             frame = self._height_matrix_dataframe(
                 values, values.shape[0], values.shape[1], pitch_x, pitch_y)
             method_key, extrema_preserved, strategy = 'full', True, 'Excel高度矩阵全量读取'
+        actual_rows = int(values.shape[0])
+        row_count_mismatch = bool(
+            declared_rows is not None and actual_rows != int(declared_rows))
+        row_warning = (
+            f"表头声明 {int(declared_rows)} 行，实际正文 {actual_rows} 行，"
+            "已按实际矩阵正文导入。"
+            if row_count_mismatch else "")
         self.import_info.update({
             'strategy': strategy,
             'source_format': metadata['source_format'],
@@ -1466,8 +1472,12 @@ class DataIOMixin:
             'sample_method_key': method_key,
             'extrema_preserved': extrema_preserved,
             'height_matrix': True,
-            'matrix_rows': int(values.shape[0]),
+            'matrix_rows': actual_rows,
             'matrix_cols': int(values.shape[1]),
+            'declared_rows': (int(declared_rows) if declared_rows is not None else None),
+            'actual_rows': actual_rows,
+            'manual_expected_rows': (manual_rows if manual_rows > 0 else None),
+            'row_count_mismatch': row_count_mismatch,
             'source_matrix_positions': int(values.size),
             'source_valid_rows': valid_points,
             'original_valid_points': valid_points,
@@ -1491,12 +1501,14 @@ class DataIOMixin:
                                 if self.import_info.get('sample_method_key') == 'stride'
                                 else ('matrix8' if self.import_info.get('sample_method_key') == 'full'
                                       else 'Delaunay/adaptive kNN')),
-            'notes': (f"Excel矩阵 {values.shape[0]}×{values.shape[1]} | 有效 {valid_points:,} | "
-                      f"分析 {len(frame):,} | 跳过前置说明 {selected['start']} 行"),
+            'notes': (f"Excel矩阵 {actual_rows}×{values.shape[1]} | 有效 {valid_points:,} | "
+                      f"分析 {len(frame):,} | 跳过前置说明 {selected['start']} 行"
+                      + (f" | 警告: {row_warning}" if row_warning else "")),
         })
         self.last_import_note = (
-            f"已按Z矩阵读取Excel：{values.shape[0]}×{values.shape[1]}；有效 {valid_points:,}，"
-            f"分析 {len(frame):,}；跳过前置说明 {selected['start']} 行。")
+            f"已按Z矩阵读取Excel：{actual_rows}×{values.shape[1]}；有效 {valid_points:,}，"
+            f"分析 {len(frame):,}；跳过前置说明 {selected['start']} 行。"
+            + (f" {row_warning}" if row_warning else ""))
         if progress is not None:
             progress(85, "Excel Z Matrix 解析完成，正在初始化分析数据")
         return frame
@@ -1895,6 +1907,7 @@ class DataIOMixin:
         data_line_no = int(layout['data_line_no'])
         data_end_line_no = layout.get('data_end_line_no')
         expected_rows = layout.get('expected_rows')
+        expected_rows_hard = layout.get('expected_rows_hard')
         allow_padding = bool(layout.get('expected_cols'))
         matrix_started = False
         row_count = 0
@@ -1933,9 +1946,11 @@ class DataIOMixin:
                                  f"正在预扫描高度矩阵: {row_count:,} 行")
         if row_count == 0 or valid_points == 0:
             raise ValueError("Z Matrix 未识别到有效的连续二维数据区。")
-        if expected_rows is not None and row_count != int(expected_rows):
+        if expected_rows_hard is not None and row_count != int(expected_rows_hard):
             raise ValueError(
-                f"Z Matrix 行数与表头冲突：表头声明 {int(expected_rows):,} 行，实际识别 {row_count:,} 行。")
+                f"Z Matrix 行数与用户设定冲突："
+                f"用户指定 {int(expected_rows_hard):,} 行，"
+                f"实际识别 {row_count:,} 行。")
         return {
             'matrix_rows': row_count,
             'matrix_cols': ncols,
@@ -2281,7 +2296,10 @@ class DataIOMixin:
                 f"Z Matrix 列数与表头冲突：表头声明 {int(expected_cols):,} 列，"
                 f"实际识别 {int(layout['ncols']):,} 列。")
         layout['expected_cols'] = int(expected_cols) if expected_cols is not None else None
-        layout['expected_rows'] = metadata.get('expected_rows')
+        declared_rows = metadata.get('expected_rows')
+        manual_rows = int(getattr(self, 'height_matrix_rows', 0) or 0)
+        layout['expected_rows'] = declared_rows
+        layout['expected_rows_hard'] = manual_rows if manual_rows > 0 else None
         if str(getattr(self, 'pitch_source', 'manual')) == 'manual':
             pitch_x = float(self.height_matrix_pitch_x_um)
             pitch_y = float(self.height_matrix_pitch_y_um)
@@ -2362,6 +2380,12 @@ class DataIOMixin:
 
         analysis_points = len(frame)
         source_format = str(metadata.get('source_format') or '通用Z矩阵')
+        row_count_mismatch = bool(
+            declared_rows is not None and rows_count != int(declared_rows))
+        row_warning = (
+            f"表头声明 {int(declared_rows):,} 行，实际正文 {rows_count:,} 行，"
+            "已按实际矩阵正文导入。"
+            if row_count_mismatch else "")
         self.import_info.update({
             'source_format': source_format,
             'height_matrix': True,
@@ -2373,6 +2397,10 @@ class DataIOMixin:
             'display_points': min(analysis_points, self._display_limit()),
             'matrix_rows': rows_count,
             'matrix_cols': cols_count,
+            'declared_rows': (int(declared_rows) if declared_rows is not None else None),
+            'actual_rows': rows_count,
+            'manual_expected_rows': (manual_rows if manual_rows > 0 else None),
+            'row_count_mismatch': row_count_mismatch,
             'matrix_pitch_x_um': pitch_x,
             'matrix_pitch_y_um': pitch_y,
             'sampling_pitch_x_um': pitch_x,
@@ -2402,12 +2430,14 @@ class DataIOMixin:
         self.import_info['notes'] = (
             f"{source_format} {rows_count}×{cols_count} | 有效 {valid_points:,} | "
             f"分析 {analysis_points:,} | Pitch {pitch_x:g}/{pitch_y:g}µm"
-            + (f" | 采样触发: {'+'.join(trigger)}" if sampled else ""))
+            + (f" | 采样触发: {'+'.join(trigger)}" if sampled else "")
+            + (f" | 警告: {row_warning}" if row_warning else ""))
         self.last_import_note = (
             f"{source_format} 已{'抽样' if sampled else '全量'}导入；矩阵 {rows_count:,}×{cols_count:,}，"
             f"有效 {valid_points:,} 点，参与分析 {analysis_points:,} 点；"
             f"跳过前置说明: {int(layout['data_line_no'])} 行；"
-            f"Pitch X={pitch_x:g}µm / Y={pitch_y:g}µm（{meta_source}），Z单位 {z_unit}。")
+            f"Pitch X={pitch_x:g}µm / Y={pitch_y:g}µm（{meta_source}），Z单位 {z_unit}。"
+            + (f" {row_warning}" if row_warning else ""))
         if progress is not None:
             progress(85, "Z Matrix 解析完成，正在初始化分析数据")
         return frame
@@ -3693,7 +3723,6 @@ class DataIOMixin:
                             matrix_metadata['expected_cols'] = manual_cols
                             matrix_metadata['detected_fields'].append('手动列数')
                         if manual_rows > 0:
-                            matrix_metadata['expected_rows'] = manual_rows
                             matrix_metadata['detected_fields'].append('手动行数')
                     layout = self._detect_text_layout(
                         path, enc, start_line_no=search_start, layout_mode=layout_mode,
