@@ -4,6 +4,7 @@ import re
 import mmap
 import json
 import tempfile
+import time
 from collections import deque
 from pathlib import Path
 from datetime import datetime
@@ -23,7 +24,7 @@ from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
     QStackedWidget, QSizeGrip,
 )
-from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
+from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, pyqtSignal
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
 
@@ -204,7 +205,10 @@ class ParallelismCanvas(FigureCanvas):
 
 
 class GapMatchCanvas(FigureCanvas):
-    """多层胶厚扣减匹配诊断：用堆叠层 XY 点显示哪些点没有匹配到单片层。"""
+    """多层胶厚 XY 配准画布；堆叠固定，单片层只允许平移。"""
+
+    layer_moved = pyqtSignal(str, float, float, bool)
+
     def __init__(self, parent=None):
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
         plt.rcParams['axes.unicode_minus'] = False
@@ -213,88 +217,165 @@ class GapMatchCanvas(FigureCanvas):
         super().__init__(self.fig)
         self.setParent(parent)
         self.setMinimumHeight(460)
-        self.plot_diagnostic(None)
+        self._records = {'stack': None, 'base1': None, 'base2': None}
+        self._active_layer = None
+        self._drag_state = None
+        self._last_drag_emit = 0.0
+        self._home_limits = None
+        self.mpl_connect('button_press_event', self._on_press)
+        self.mpl_connect('motion_notify_event', self._on_motion)
+        self.mpl_connect('button_release_event', self._on_release)
+        self.plot_registration(None, None, None, 0.05, None, None)
 
-    def plot_diagnostic(self, diag):
+    @staticmethod
+    def _display_xy(rec, limit=50000):
+        if rec is None:
+            return np.array([]), np.array([])
+        x = np.asarray(rec['x'], dtype=float) + float(rec.get('offset_x', 0.0))
+        y = np.asarray(rec['y'], dtype=float) + float(rec.get('offset_y', 0.0))
+        finite = np.isfinite(x) & np.isfinite(y)
+        x, y = x[finite], y[finite]
+        if len(x) > limit:
+            pick = np.linspace(0, len(x) - 1, limit, dtype=int)
+            x, y = x[pick], y[pick]
+        return x, y
+
+    def _set_drag_cursor(self, closed=False):
+        if self._active_layer in ('base1', 'base2') and self._records.get(self._active_layer) is not None:
+            self.setCursor(Qt.CursorShape.ClosedHandCursor if closed else Qt.CursorShape.OpenHandCursor)
+        else:
+            self.unsetCursor()
+
+    def _on_press(self, event):
+        if (event.button != 1 or event.inaxes is not self.ax or event.xdata is None or event.ydata is None
+                or self._active_layer not in ('base1', 'base2')):
+            return
+        rec = self._records.get(self._active_layer)
+        if rec is None:
+            return
+        self._drag_state = (
+            float(event.xdata), float(event.ydata),
+            float(rec.get('offset_x', 0.0)), float(rec.get('offset_y', 0.0)),
+        )
+        self._set_drag_cursor(closed=True)
+
+    def _on_motion(self, event):
+        if self._drag_state is None or event.inaxes is not self.ax or event.xdata is None or event.ydata is None:
+            return
+        now = time.monotonic()
+        if now - self._last_drag_emit < 0.035:
+            return
+        self._last_drag_emit = now
+        start_x, start_y, offset_x, offset_y = self._drag_state
+        self.layer_moved.emit(
+            self._active_layer,
+            offset_x + float(event.xdata) - start_x,
+            offset_y + float(event.ydata) - start_y,
+            False,
+        )
+
+    def _on_release(self, event):
+        if self._drag_state is None:
+            return
+        layer = self._active_layer
+        start_x, start_y, offset_x, offset_y = self._drag_state
+        self._drag_state = None
+        self._set_drag_cursor(closed=False)
+        if event.inaxes is self.ax and event.xdata is not None and event.ydata is not None:
+            final_x = offset_x + float(event.xdata) - start_x
+            final_y = offset_y + float(event.ydata) - start_y
+        else:
+            rec = self._records.get(layer)
+            final_x = float(rec.get('offset_x', offset_x)) if rec is not None else offset_x
+            final_y = float(rec.get('offset_y', offset_y)) if rec is not None else offset_y
+        self.layer_moved.emit(layer, final_x, final_y, True)
+
+    def plot_registration(self, stack, base1, base2, tolerance, active_layer, diag,
+                          preserve_view=False):
+        previous_limits = None
+        if preserve_view and self.ax.has_data():
+            previous_limits = (self.ax.get_xlim(), self.ax.get_ylim())
+        self._records = {'stack': stack, 'base1': base1, 'base2': base2}
+        self._active_layer = active_layer if active_layer in ('base1', 'base2') else None
         self.fig.clear()
         self.ax = self.fig.add_subplot(111)
         ax = self.ax
         ax.clear()
-        if not diag:
-            ax.set_title("多层扣减匹配诊断")
-            ax.text(0.5, 0.5, "计算胶厚后显示匹配/未匹配点分布",
+        if stack is None and base1 is None and base2 is None:
+            ax.set_title("多层胶厚 XY 配准")
+            ax.text(0.5, 0.5, "依次写入堆叠总成、单片 1 / 单片 2 后显示 XY 点云",
                     transform=ax.transAxes, ha='center', va='center', color='#8a94a3')
             ax.set_axis_off()
             self.draw()
             return
 
-        x = diag['x']
-        y = diag['y']
-        valid1 = diag['valid1']
-        valid2 = diag.get('valid2')
-        final_valid = diag['final_valid']
-        finite = np.isfinite(x) & np.isfinite(y)
-        x = x[finite]
-        y = y[finite]
-        valid1 = valid1[finite]
-        final_valid = final_valid[finite]
-        if valid2 is not None:
-            valid2 = valid2[finite]
-
-        total_full = len(x)
-        matched_full = int(final_valid.sum())
-        display_note = ""
-        if total_full > 100000:
-            unmatched_idx = np.flatnonzero(~final_valid)
-            matched_idx = np.flatnonzero(final_valid)
-            keep_parts = []
-            if len(unmatched_idx) > 0:
-                max_unmatched = min(len(unmatched_idx), 60000)
-                if len(unmatched_idx) > max_unmatched:
-                    unmatched_idx = unmatched_idx[np.linspace(0, len(unmatched_idx) - 1, max_unmatched, dtype=int)]
-                keep_parts.append(unmatched_idx)
-            remaining = max(10000, 100000 - sum(len(k) for k in keep_parts))
-            if len(matched_idx) > remaining:
-                matched_idx = matched_idx[np.linspace(0, len(matched_idx) - 1, remaining, dtype=int)]
-            keep_parts.append(matched_idx)
-            keep = np.sort(np.concatenate(keep_parts)) if keep_parts else np.array([], dtype=int)
-            x, y = x[keep], y[keep]
-            valid1, final_valid = valid1[keep], final_valid[keep]
-            if valid2 is not None:
-                valid2 = valid2[keep]
-            display_note = f" | 显示 {len(keep):,}/{total_full:,} 点"
-
-        ax.set_title(f"多层扣减匹配诊断 | 容差 {diag['tolerance']:.3f} mm", fontsize=11)
+        ax.set_axis_on()
+        ax.set_title(f"多层胶厚 XY 配准 | 对齐判定: |ΔXY| ≤ {float(tolerance):.3f} mm", fontsize=11)
         ax.set_xlabel("X (mm)")
         ax.set_ylabel("Y (mm)")
         ax.grid(True, linestyle='-', linewidth=0.6, color='#edf0f3')
-        set_xy_equal_aspect(ax)
 
-        def scatter_mask(mask, label, color, marker='o', size=16, alpha=0.90, zorder=2):
-            if np.any(mask):
-                kwargs = {
-                    's': size, 'c': color, 'marker': marker, 'alpha': alpha,
-                    'label': f"{label} ({int(mask.sum()):,})",
-                    'rasterized': True, 'zorder': zorder
-                }
-                if marker not in ('x', '+', '1', '2', '3', '4'):
-                    kwargs['edgecolors'] = 'none'
-                ax.scatter(x[mask], y[mask], **kwargs)
+        layers = (
+            ('stack', stack, '堆叠总成（固定基准）', '#7b8490', 10, 0.52, 1),
+            ('base1', base1, '单片 1', '#2563eb', 12, 0.68, 2),
+            ('base2', base2, '单片 2', '#7c3aed', 12, 0.68, 3),
+        )
+        for key, rec, label, color, size, alpha, zorder in layers:
+            x, y = self._display_xy(rec)
+            if len(x):
+                suffix = " [当前可拖动]" if key == self._active_layer else ""
+                ax.scatter(x, y, s=size, c=color, alpha=alpha, edgecolors='none',
+                           label=f"{label}{suffix} ({int(rec['n']):,})",
+                           rasterized=True, zorder=zorder)
 
-        scatter_mask(final_valid, "成功匹配", '#2f6db0', 'o', 12, 0.72, 1)
-        if valid2 is None:
-            scatter_mask(~valid1, "未匹配单片1", '#dc2626', 'x', 24, 0.95, 4)
+        highlight_key = self._active_layer
+        if highlight_key is None and diag is not None:
+            highlight_key = 'final'
+        if stack is not None and diag is not None:
+            if highlight_key == 'final':
+                valid = np.asarray(diag.get('final_valid', []), dtype=bool)
+                highlight_label = "全部参与扣减点"
+            else:
+                layer_diag = (diag.get('layers') or {}).get(highlight_key, {})
+                valid = np.asarray(layer_diag.get('valid', []), dtype=bool)
+                highlight_label = "当前层已对齐点"
+            sx = np.asarray(stack['x'], dtype=float)
+            sy = np.asarray(stack['y'], dtype=float)
+            finite = np.isfinite(sx) & np.isfinite(sy)
+            if len(valid) == len(sx):
+                valid = valid & finite
+                indices = np.flatnonzero(valid)
+                full_count = len(indices)
+                if len(indices) > 40000:
+                    indices = indices[np.linspace(0, len(indices) - 1, 40000, dtype=int)]
+                if len(indices):
+                    ax.scatter(sx[indices], sy[indices], s=30, facecolors='none',
+                               edgecolors='#ef4444', linewidths=0.9, alpha=0.95,
+                               label=f"{highlight_label} ({full_count:,})", rasterized=True, zorder=6)
+
+        if previous_limits is not None:
+            ax.set_xlim(previous_limits[0])
+            ax.set_ylim(previous_limits[1])
         else:
-            miss_both = (~valid1) & (~valid2)
-            miss_b1 = (~valid1) & valid2
-            miss_b2 = valid1 & (~valid2)
-            scatter_mask(miss_b1, "未匹配单片1", '#dc2626', 'x', 28, 0.95, 4)
-            scatter_mask(miss_b2, "未匹配单片2", '#f59e0b', '^', 26, 0.95, 4)
-            scatter_mask(miss_both, "两层都未匹配", '#7c3aed', 'x', 32, 0.95, 5)
-
-        ax.text(0.01, 0.99,
-                f"堆叠点 {total_full:,} | 成功 {matched_full:,} | 未参与扣减 {total_full - matched_full:,}{display_note}",
-                transform=ax.transAxes, ha='left', va='top', fontsize=9,
-                color='#374151', bbox=dict(boxstyle='round,pad=0.28', fc='white', ec='#e5e7eb', alpha=0.88))
-        ax.legend(loc='lower right', frameon=True, fontsize=8)
+            set_xy_equal_aspect(ax)
+            self._home_limits = (ax.get_xlim(), ax.get_ylim())
+        active_text = {
+            'base1': '当前：单片 1，可按住左键拖动',
+            'base2': '当前：单片 2，可按住左键拖动',
+        }.get(self._active_layer, '请选择单片层进行粗对齐')
+        ax.text(0.01, 0.99, active_text, transform=ax.transAxes, ha='left', va='top',
+                fontsize=9, color='#374151',
+                bbox=dict(boxstyle='round,pad=0.28', fc='white', ec='#e5e7eb', alpha=0.90))
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(loc='lower right', frameon=True, fontsize=8)
+        self._set_drag_cursor()
         self.draw()
+
+    def plot_diagnostic(self, diag):
+        """兼容旧调用；新界面统一走 plot_registration。"""
+        self.plot_registration(
+            self._records.get('stack'), self._records.get('base1'), self._records.get('base2'),
+            float(diag.get('tolerance', 0.05)) if diag else 0.05,
+            self._active_layer, diag,
+        )

@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.6.1
+# Surface Rxy ZXY Analyzer V4.6.2
 
-面型及 Rxy 分析工具当前版本为 **V4.6.1**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
+面型及 Rxy 分析工具当前版本为 **V4.6.2**。GitHub `main` 根目录保留当前版本的运行入口、模块、文档、测试和 Demo；旧版本文件统一放在 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.6.1.py`：V4.6.1 Python 启动入口。
-- `start_surface_analyzer_v4_6_1.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.6.2.py`：V4.6.2 Python 启动入口。
+- `start_surface_analyzer_v4_6_2.bat`：Windows 推荐启动脚本，自动创建并复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,27 +14,36 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_6_1.bat
+start_surface_analyzer_v4_6_2.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_6_1.bat
+.\start_surface_analyzer_v4_6_2.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_6_1.bat --check
+.\start_surface_analyzer_v4_6_2.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.6.1.py
+python .\面型及Rxy分析工具V4.6.2.py
 python -m surface_analyzer
 ```
+
+## V4.6.2 重点
+
+- 多层胶厚页改为三层 XY 叠加配准视图：堆叠总成固定为灰色基准，单片 1 为蓝色、单片 2 为紫色。
+- 选择单片层后可直接在 XY 图内拖动做粗对齐；红色空心圈实时标记与当前层 XY 欧氏距离不大于误差窗口的堆叠点。
+- 新增仅优化 X/Y 平移的自动匹配，以稳健 ICP 最小化双向全点最近邻残差 RMS；已有对齐数据可跳过手动拖动。
+- 容差匹配与胶厚扣减使用已保存的单片层配准位移，详细胶厚结果仍写回主控页；任何层、位移或容差变化都会使旧胶厚结果失效。
+- 胶厚页新增结果 CSV、报告图和“清空当前”；CSV 包含每个有效点的层坐标、Z 值、匹配索引和匹配距离，报告图包含配准与 Inner Gap 分布。
+- 新增配准恢复、容差边界、配准后扣减和页面状态测试；完整回归为 121 项通过。
 
 ## V4.6.1 Hotfix
 

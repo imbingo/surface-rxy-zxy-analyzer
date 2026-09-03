@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.6.1."""
+"""Qt application shell for Surface Analyzer V4.6.2."""
 
 import sys
 import os
@@ -196,6 +196,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.data_base1 = None
         self.data_base2 = None
         self.data_stack = None
+        self.gap_active_layer = None
+        self.gap_result = None
 
         # V3.8.0: 平行度分析寄存器。保存主页面当前已变换、滤波、删点后的参与拟合点。
         self.parallel_base = None
@@ -499,6 +501,20 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.btn_calc_gap, self.btn_calc_parallel, self.btn_import_recipe, self.btn_export_recipe,
             self.btn_roi_mouse, self.btn_del, self.btn_undo_del,
         ]
+        for optional_control in (
+                getattr(self, 'btn_auto_match_gap', None),
+                getattr(self, 'btn_export_gap_csv', None),
+                getattr(self, 'btn_export_gap_report', None),
+                getattr(self, 'btn_set_gap_stack', None),
+                getattr(self, 'btn_set_gap_base1', None),
+                getattr(self, 'btn_set_gap_base2', None),
+                getattr(self, 'btn_clear_gap_base2', None),
+                getattr(self, 'btn_clear_gap_current', None),
+                getattr(self, 'btn_gap_select_base1', None),
+                getattr(self, 'btn_gap_select_base2', None),
+                getattr(self, 'spin_tol', None)):
+            if optional_control is not None:
+                self._task_controls.append(optional_control)
 
     def _toggle_max_restore(self):
         if self.isMaximized():
@@ -567,6 +583,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.btn_cancel_task.setEnabled(True)
         for control in self._task_controls:
             control.setEnabled(True)
+        self._sync_gap_action_state()
 
     def _set_system_frame_enabled(self, enabled):
         self.use_system_frame = bool(enabled)
@@ -1151,58 +1168,67 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._configure_left_scroll(scroll)
         w = QWidget()
         ll = QVBoxLayout(w)
+        ll.setContentsMargins(14, 12, 14, 12)
+        ll.setSpacing(7)
+
+        title = QLabel("多层胶厚扣减")
+        title.setObjectName("stepTitle")
+        ll.addWidget(title)
 
         guide_lbl = QLabel(
-            "<div style='line-height: 1.5; font-size: 12px; color: #333;'>"
-            "<b>堆叠胶厚 (Gap) 运算流程：</b><br>"
+            "<div style='line-height: 1.35; font-size: 11px; color: #333;'>"
             "公式：<span style='color:red; font-weight:bold;'>Inner Gap = 堆叠总成 - 单片1 [- 单片2]</span><br>"
-            "1. 务必确保所有数据在载入后，都点击了<b>[平移归零]</b>，使X,Y坐标网格原点对齐。<br>"
-            "2. 依次载入不同层数据并存入下方对应的寄存器中（寄存器会显示来源文件名，请核对）。<br>"
-            "3. 【对齐误差窗口】：用于补偿机台定位偏差。容差越大，匹配点越多，但过大可能匹配到错误邻居。<br>"
-            "4. 右侧匹配诊断图会显示哪些堆叠点没有在单片层中找到容差内匹配点。"
+            "堆叠固定；选中单片层可在右侧 XY 图拖动。红圈表示误差窗口内已对齐；自动匹配仅优化 X/Y 平移。"
             "</div>"
         )
         guide_lbl.setWordWrap(True)
         ll.addWidget(guide_lbl)
 
-        grp_stack = QGroupBox("1. 堆叠总成数据 (Stack / 顶层)")
+        grp_stack = QGroupBox("1. 堆叠总成（固定基准 / 灰色）")
         gl_stack = QVBoxLayout(grp_stack)
+        gl_stack.setContentsMargins(8, 6, 8, 7); gl_stack.setSpacing(4)
         self.lbl_stack_status = QLabel("尚未设置"); self.lbl_stack_status.setStyleSheet("color: #c0392b; font-weight: bold;")
         self.lbl_stack_status.setWordWrap(True)
-        btn_set_stack = QPushButton("将当前视图设为【堆叠总成】"); btn_set_stack.setFixedHeight(35)
+        btn_set_stack = self.btn_set_gap_stack = QPushButton("将当前数据设为【堆叠总成】"); btn_set_stack.setFixedHeight(32)
         btn_set_stack.setObjectName("accentSoftBtn")
         btn_set_stack.clicked.connect(lambda: self.set_memory_slot('stack'))
         gl_stack.addWidget(self.lbl_stack_status); gl_stack.addWidget(btn_set_stack)
         ll.addWidget(grp_stack)
 
-        grp_base1 = QGroupBox("2. 单片 1 数据 (Base 1 / 底层)")
+        grp_base1 = QGroupBox("2. 单片 1（蓝色 / 可拖动）")
         gl_base1 = QVBoxLayout(grp_base1)
+        gl_base1.setContentsMargins(8, 6, 8, 7); gl_base1.setSpacing(4)
         self.lbl_base1_status = QLabel("尚未设置"); self.lbl_base1_status.setStyleSheet("color: #c0392b; font-weight: bold;")
         self.lbl_base1_status.setWordWrap(True)
-        btn_set_base1 = QPushButton("将当前视图设为【单片 1】"); btn_set_base1.setFixedHeight(35)
+        row_base1 = QHBoxLayout()
+        btn_set_base1 = self.btn_set_gap_base1 = QPushButton("将当前数据设为【单片 1】"); btn_set_base1.setFixedHeight(32)
         btn_set_base1.setObjectName("accentSoftBtn")
         btn_set_base1.clicked.connect(lambda: self.set_memory_slot('base1'))
-        gl_base1.addWidget(self.lbl_base1_status); gl_base1.addWidget(btn_set_base1)
+        self.btn_gap_select_base1 = QPushButton("选择 / 拖动")
+        self.btn_gap_select_base1.setCheckable(True)
+        self.btn_gap_select_base1.setFixedHeight(32)
+        self.btn_gap_select_base1.clicked.connect(lambda: self.select_gap_layer('base1'))
+        row_base1.addWidget(btn_set_base1, 1)
+        row_base1.addWidget(self.btn_gap_select_base1)
+        gl_base1.addWidget(self.lbl_base1_status); gl_base1.addLayout(row_base1)
         ll.addWidget(grp_base1)
 
-        grp_base2 = QGroupBox("3. 单片 2 数据 (Base 2 / 夹层) [选填]")
+        grp_base2 = QGroupBox("3. 单片 2（紫色 / 可拖动）[选填]")
         gl_base2 = QVBoxLayout(grp_base2)
+        gl_base2.setContentsMargins(8, 6, 8, 7); gl_base2.setSpacing(4)
         self.lbl_base2_status = QLabel("可选空置"); self.lbl_base2_status.setStyleSheet("color: #7f8c8d; font-weight: bold;")
         self.lbl_base2_status.setWordWrap(True)
         hl_b2 = QHBoxLayout()
-        btn_set_base2 = QPushButton("设为【单片 2】"); btn_set_base2.setFixedHeight(35); btn_set_base2.clicked.connect(lambda: self.set_memory_slot('base2'))
-        btn_clear_base2 = QPushButton("清除"); btn_clear_base2.setFixedHeight(35)
+        btn_set_base2 = self.btn_set_gap_base2 = QPushButton("设为【单片 2】"); btn_set_base2.setFixedHeight(32); btn_set_base2.clicked.connect(lambda: self.set_memory_slot('base2'))
+        self.btn_gap_select_base2 = QPushButton("选择 / 拖动")
+        self.btn_gap_select_base2.setCheckable(True)
+        self.btn_gap_select_base2.setFixedHeight(32)
+        self.btn_gap_select_base2.clicked.connect(lambda: self.select_gap_layer('base2'))
+        btn_clear_base2 = self.btn_clear_gap_base2 = QPushButton("清除"); btn_clear_base2.setFixedHeight(32)
         btn_clear_base2.clicked.connect(lambda: self.clear_memory_slot('base2'))
-        hl_b2.addWidget(btn_set_base2); hl_b2.addWidget(btn_clear_base2)
+        hl_b2.addWidget(btn_set_base2, 1); hl_b2.addWidget(self.btn_gap_select_base2); hl_b2.addWidget(btn_clear_base2)
         gl_base2.addWidget(self.lbl_base2_status); gl_base2.addLayout(hl_b2)
         ll.addWidget(grp_base2)
-
-        btn_clear_all = QPushButton("清空全部寄存器")
-        btn_clear_all.setFixedHeight(35)
-        btn_clear_all.clicked.connect(self.clear_all_memory_slots)
-        ll.addWidget(btn_clear_all)
-
-        ll.addStretch()
 
         hl_tol = QHBoxLayout()
         lbl_tol = QLabel("坐标对齐误差窗口 (mm):")
@@ -1214,22 +1240,48 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.spin_tol.setRange(0.001, 10.000)
         self.spin_tol.setSingleStep(0.01)
         self.spin_tol.setValue(0.050)
-        self.spin_tol.setFixedHeight(35)
+        self.spin_tol.setFixedHeight(32)
+        self.spin_tol.setToolTip("按 XY 平面欧氏距离判断：sqrt(ΔX²+ΔY²) 不大于此值即为已对齐。")
+        self.spin_tol.valueChanged.connect(self._on_gap_tolerance_changed)
         hl_tol.addWidget(self.spin_tol)
         ll.addLayout(hl_tol)
 
-        action_row = QHBoxLayout()
+        self.btn_auto_match_gap = QPushButton("自动匹配（最小化全点残差）")
+        self.btn_auto_match_gap.setObjectName("accentSoftBtn")
+        self.btn_auto_match_gap.setFixedHeight(34)
+        self.btn_auto_match_gap.setToolTip("以当前粗对齐位置和两层中心位置为初值，仅优化单片层的 X/Y 平移。")
+        self.btn_auto_match_gap.clicked.connect(self.auto_match_gap_layers)
+        ll.addWidget(self.btn_auto_match_gap)
+
         self.btn_calc_gap = QPushButton("容差匹配点云并计算胶厚")
         self.btn_calc_gap.setObjectName("accentBtn")
-        self.btn_calc_gap.setFixedHeight(60)
+        self.btn_calc_gap.setFixedHeight(38)
         self.btn_calc_gap.clicked.connect(self.calculate_gap)
-        action_row.addWidget(self.btn_calc_gap, 1)
-        ll.addLayout(action_row)
+        ll.addWidget(self.btn_calc_gap)
+
+        export_row = QHBoxLayout()
+        export_row.setSpacing(8)
+        self.btn_export_gap_csv = QPushButton("导出 CSV")
+        self.btn_export_gap_csv.setFixedHeight(32)
+        self.btn_export_gap_csv.clicked.connect(self.export_gap_csv)
+        self.btn_export_gap_report = QPushButton("导出报告图")
+        self.btn_export_gap_report.setFixedHeight(32)
+        self.btn_export_gap_report.clicked.connect(self.export_gap_report)
+        export_row.addWidget(self.btn_export_gap_csv)
+        export_row.addWidget(self.btn_export_gap_report)
+        ll.addLayout(export_row)
+
+        btn_clear_all = self.btn_clear_gap_current = QPushButton("清空当前")
+        btn_clear_all.setFixedHeight(32)
+        btn_clear_all.clicked.connect(self.clear_all_memory_slots)
+        ll.addWidget(btn_clear_all)
+        ll.addStretch()
 
         scroll.setWidget(w)
         parent_widget.setLayout(QVBoxLayout())
         parent_widget.layout().addWidget(scroll)
         parent_widget.layout().setContentsMargins(0, 0, 0, 0)
+        self._sync_gap_action_state()
 
     def _on_tab_changed(self, index):
         if hasattr(self, 'right_stack'):
@@ -1383,14 +1435,15 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         cv = QVBoxLayout(card)
         cv.setContentsMargins(12, 10, 12, 10)
         cv.setSpacing(6)
-        head = QLabel("多层扣减匹配诊断")
+        head = QLabel("多层胶厚 XY 配准")
         head.setObjectName("plotTitle")
-        hint = QLabel("以堆叠总成 XY 点为基准，显示哪些点成功匹配、哪些点没有在单片层中找到容差内最近点。")
+        hint = QLabel("灰色堆叠总成固定不可选；蓝色单片 1、紫色单片 2 可分别选择并拖动。红点表示当前层在坐标误差窗口内已对齐的堆叠点。")
         hint.setObjectName("mutedNote")
         hint.setWordWrap(True)
         cv.addWidget(head)
         cv.addWidget(hint)
         self.gap_match_canvas = GapMatchCanvas(self)
+        self.gap_match_canvas.layer_moved.connect(self.on_gap_layer_moved)
         cv.addWidget(self.gap_match_canvas, 1)
         self._add_shadow(card, blur=20, dy=3, alpha=30)
         outer.addWidget(card, 1)
