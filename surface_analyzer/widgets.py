@@ -216,15 +216,17 @@ class GapMatchCanvas(FigureCanvas):
         self.ax = self.fig.add_subplot(111)
         super().__init__(self.fig)
         self.setParent(parent)
-        self.setMinimumHeight(460)
+        self.setMinimumHeight(360)
         self._records = {'stack': None, 'base1': None, 'base2': None}
         self._active_layer = None
         self._drag_state = None
         self._last_drag_emit = 0.0
         self._home_limits = None
+        self._record_key = None
         self.mpl_connect('button_press_event', self._on_press)
         self.mpl_connect('motion_notify_event', self._on_motion)
         self.mpl_connect('button_release_event', self._on_release)
+        self.mpl_connect('scroll_event', self._on_scroll)
         self.plot_registration(None, None, None, 0.05, None, None)
 
     @staticmethod
@@ -247,6 +249,10 @@ class GapMatchCanvas(FigureCanvas):
             self.unsetCursor()
 
     def _on_press(self, event):
+        if (event.button == 1 and bool(getattr(event, 'dblclick', False))
+                and event.inaxes is self.ax):
+            self._restore_home_view()
+            return
         if (event.button != 1 or event.inaxes is not self.ax or event.xdata is None or event.ydata is None
                 or self._active_layer not in ('base1', 'base2')):
             return
@@ -290,12 +296,47 @@ class GapMatchCanvas(FigureCanvas):
             final_y = float(rec.get('offset_y', offset_y)) if rec is not None else offset_y
         self.layer_moved.emit(layer, final_x, final_y, True)
 
+    def _on_scroll(self, event):
+        """Zoom around the cursor without changing any registration data."""
+        if event.inaxes is not self.ax or event.xdata is None or event.ydata is None:
+            return
+        step = float(getattr(event, 'step', 0.0) or 0.0)
+        if event.button == 'up' or step > 0:
+            scale = 0.85
+        elif event.button == 'down' or step < 0:
+            scale = 1.0 / 0.85
+        else:
+            return
+        if not np.isfinite(event.xdata) or not np.isfinite(event.ydata):
+            return
+
+        def scaled_limits(limits, center):
+            low, high = map(float, limits)
+            return (center + (low - center) * scale,
+                    center + (high - center) * scale)
+
+        self.ax.set_xlim(scaled_limits(self.ax.get_xlim(), float(event.xdata)))
+        self.ax.set_ylim(scaled_limits(self.ax.get_ylim(), float(event.ydata)))
+        self.draw_idle()
+
+    def _restore_home_view(self):
+        if self._home_limits is None:
+            return
+        self.ax.set_xlim(self._home_limits[0])
+        self.ax.set_ylim(self._home_limits[1])
+        self.draw_idle()
+
     def plot_registration(self, stack, base1, base2, tolerance, active_layer, diag,
                           preserve_view=False):
+        record_key = tuple(
+            None if rec is None else (id(rec.get('x')), id(rec.get('y')), len(rec.get('x', [])))
+            for rec in (stack, base1, base2))
+        data_changed = record_key != self._record_key
         previous_limits = None
-        if preserve_view and self.ax.has_data():
+        if preserve_view and not data_changed and self.ax.has_data():
             previous_limits = (self.ax.get_xlim(), self.ax.get_ylim())
         self._records = {'stack': stack, 'base1': base1, 'base2': base2}
+        self._record_key = record_key
         self._active_layer = active_layer if active_layer in ('base1', 'base2') else None
         self.fig.clear()
         self.ax = self.fig.add_subplot(111)
@@ -306,6 +347,7 @@ class GapMatchCanvas(FigureCanvas):
             ax.text(0.5, 0.5, "依次写入堆叠总成、单片 1 / 单片 2 后显示 XY 点云",
                     transform=ax.transAxes, ha='center', va='center', color='#8a94a3')
             ax.set_axis_off()
+            self._home_limits = None
             self.draw()
             return
 
@@ -360,9 +402,9 @@ class GapMatchCanvas(FigureCanvas):
             set_xy_equal_aspect(ax)
             self._home_limits = (ax.get_xlim(), ax.get_ylim())
         active_text = {
-            'base1': '当前：单片 1，可按住左键拖动',
-            'base2': '当前：单片 2，可按住左键拖动',
-        }.get(self._active_layer, '请选择单片层进行粗对齐')
+            'base1': '当前：单片 1，可左键拖动；滚轮缩放，双击复位',
+            'base2': '当前：单片 2，可左键拖动；滚轮缩放，双击复位',
+        }.get(self._active_layer, '请选择单片层进行粗对齐；滚轮缩放，双击复位')
         ax.text(0.01, 0.99, active_text, transform=ax.transAxes, ha='left', va='top',
                 fontsize=9, color='#374151',
                 bbox=dict(boxstyle='round,pad=0.28', fc='white', ec='#e5e7eb', alpha=0.90))

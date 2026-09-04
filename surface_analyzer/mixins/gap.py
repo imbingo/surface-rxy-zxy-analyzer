@@ -16,6 +16,11 @@ from ..workers import TaskCancelled
 
 
 class GapAnalysisMixin:
+    GAP_REGISTRATION_MODE_LABELS = {
+        'none': '未配准',
+        'manual': '人工粗对齐',
+        'auto': '自动精对齐',
+    }
     GAP_LAYER_COLORS = {
         'stack': '#7b8490',
         'base1': '#2563eb',
@@ -31,19 +36,21 @@ class GapAnalysisMixin:
         )
 
     @staticmethod
-    def _gap_layer_status(rec, empty_text="尚未设置"):
+    def _gap_layer_status(rec, empty_text="尚未设置", fixed=False):
         if rec is None:
             return empty_text
         quality = (rec.get('metric_quality') or {}).get('label', '全量计算')
         dx = float(rec.get('offset_x', 0.0))
         dy = float(rec.get('offset_y', 0.0))
+        mode = ('固定基准' if fixed else GapAnalysisMixin.GAP_REGISTRATION_MODE_LABELS.get(
+            rec.get('registration_mode', 'none'), '未配准'))
         return (f"来源: {rec['name']} ({int(rec['n']):,} 点) | {quality}\n"
-                f"XY 配准位移: ΔX {dx:+.4f} mm | ΔY {dy:+.4f} mm")
+                f"XY 配准位移: ΔX {dx:+.4f} mm | ΔY {dy:+.4f} mm | {mode}")
 
     def _update_gap_slot_labels(self):
         if not hasattr(self, 'lbl_stack_status'):
             return
-        self.lbl_stack_status.setText(self._gap_layer_status(self.data_stack))
+        self.lbl_stack_status.setText(self._gap_layer_status(self.data_stack, fixed=True))
         self.lbl_base1_status.setText(self._gap_layer_status(self.data_base1))
         self.lbl_base2_status.setText(self._gap_layer_status(self.data_base2, "可选空置"))
         self.lbl_stack_status.setStyleSheet(
@@ -97,13 +104,14 @@ class GapAnalysisMixin:
             'metric_quality': dict(self._current_metric_quality()),
             'sampled': bool(self.import_info.get('sampled', False)),
             'offset_x': 0.0, 'offset_y': 0.0,
+            'registration_mode': 'none',
         }
         setattr(self, f"data_{slot}", rec)
         self._invalidate_gap_result()
         if slot in ('base1', 'base2'):
             self.select_gap_layer(slot)
         else:
-            self._refresh_gap_registration()
+            self._refresh_gap_registration(preserve_view=False)
         self._update_gap_slot_labels()
         self._sync_gap_action_state()
         names = {'stack': '堆叠总成（固定基准）', 'base1': '单片 1', 'base2': '单片 2'}
@@ -117,7 +125,7 @@ class GapAnalysisMixin:
             self.gap_active_layer = 'base1' if slot != 'base1' and self.data_base1 is not None else None
         self._invalidate_gap_result()
         self._update_gap_slot_labels()
-        self._refresh_gap_registration()
+        self._refresh_gap_registration(preserve_view=False)
         self._sync_gap_action_state()
 
     def clear_all_memory_slots(self):
@@ -125,7 +133,7 @@ class GapAnalysisMixin:
         self.gap_active_layer = None
         self.gap_result = None
         self._update_gap_slot_labels()
-        self._refresh_gap_registration()
+        self._refresh_gap_registration(preserve_view=False)
         self._sync_gap_action_state()
         self._show_status("已清空当前胶厚配准与计算结果", 3000)
 
@@ -147,6 +155,7 @@ class GapAnalysisMixin:
         rec['offset_x'] = float(offset_x)
         rec['offset_y'] = float(offset_y)
         if changed:
+            rec['registration_mode'] = 'manual'
             self._invalidate_gap_result()
         self._update_gap_slot_labels()
         self._refresh_gap_registration(preserve_view=True)
@@ -219,7 +228,7 @@ class GapAnalysisMixin:
             'tolerance': float(tolerance),
         }
 
-    def _refresh_gap_registration(self, preserve_view=False):
+    def _refresh_gap_registration(self, preserve_view=True):
         tolerance = float(self.spin_tol.value()) if hasattr(self, 'spin_tol') else 0.05
         diag = self._registration_diagnostic(
             self.data_stack, self.data_base1, self.data_base2, tolerance)
@@ -278,7 +287,7 @@ class GapAnalysisMixin:
 
     @classmethod
     def _optimize_translation(cls, stack, moving, tolerance, cancel_event=None):
-        """Robust translation-only ICP; minimizes symmetric nearest-point residual."""
+        """Locally refine the current translation using symmetric nearest-point residual."""
         reference = cls._registration_sample(stack['x'], stack['y'])
         moving_xy = cls._registration_sample(moving['x'], moving['y'])
         if len(reference) < 3 or len(moving_xy) < 3:
@@ -288,13 +297,13 @@ class GapAnalysisMixin:
             float(moving.get('offset_x', 0.0)),
             float(moving.get('offset_y', 0.0)),
         ])
-        centroid = np.median(reference, axis=0) - np.median(moving_xy, axis=0)
+        max_adjustment = max(float(tolerance) * 3.0, 0.01)
 
         def cancelled():
             return cancel_event is not None and cancel_event.is_set()
 
-        def refine(seed):
-            offset = np.asarray(seed, dtype=float).copy()
+        def refine():
+            offset = start.copy()
             iterations = 0
             for iterations in range(1, 31):
                 if cancelled():
@@ -309,6 +318,8 @@ class GapAnalysisMixin:
                 residual = reference[idx[keep]] - shifted[keep]
                 delta = np.mean(residual, axis=0)
                 offset += delta
+                if float(np.hypot(*(offset - start))) > max_adjustment:
+                    break
                 if float(np.hypot(delta[0], delta[1])) < 1e-9:
                     break
             return offset, iterations
@@ -323,19 +334,54 @@ class GapAnalysisMixin:
             matched = int(np.sum(d_ref <= tolerance))
             return rms, matched
 
-        candidates = []
-        for seed in (start, centroid):
-            offset, iterations = refine(seed)
-            rms, matched = score(offset)
-            candidates.append((rms, -matched, offset, iterations))
-        _, _, best, iterations = min(candidates, key=lambda item: (item[0], item[1]))
-        rms, matched = score(best)
+        start_rms, start_matched = score(start)
+        proposed, iterations = refine()
+        adjustment = float(np.hypot(*(proposed - start)))
+        if not np.isfinite(proposed).all() or adjustment > max_adjustment:
+            return {
+                'accepted': False,
+                'reason': 'max_adjustment',
+                'offset_x': float(start[0]),
+                'offset_y': float(start[1]),
+                'proposed_offset_x': float(proposed[0]),
+                'proposed_offset_y': float(proposed[1]),
+                'rms': start_rms,
+                'matched': start_matched,
+                'iterations': int(iterations),
+                'adjustment': adjustment,
+                'max_adjustment': max_adjustment,
+                'start_offset_x': float(start[0]),
+                'start_offset_y': float(start[1]),
+            }
+        rms, matched = score(proposed)
+        if rms > start_rms + 1e-12:
+            return {
+                'accepted': False,
+                'reason': 'no_improvement',
+                'offset_x': float(start[0]),
+                'offset_y': float(start[1]),
+                'proposed_offset_x': float(proposed[0]),
+                'proposed_offset_y': float(proposed[1]),
+                'rms': start_rms,
+                'matched': start_matched,
+                'iterations': int(iterations),
+                'adjustment': adjustment,
+                'max_adjustment': max_adjustment,
+                'start_offset_x': float(start[0]),
+                'start_offset_y': float(start[1]),
+            }
         return {
-            'offset_x': float(best[0]),
-            'offset_y': float(best[1]),
+            'accepted': True,
+            'reason': '',
+            'offset_x': float(proposed[0]),
+            'offset_y': float(proposed[1]),
             'rms': rms,
             'matched': matched,
             'iterations': int(iterations),
+            'adjustment': adjustment,
+            'max_adjustment': max_adjustment,
+            'start_offset_x': float(start[0]),
+            'start_offset_y': float(start[1]),
         }
 
     @classmethod
@@ -354,32 +400,86 @@ class GapAnalysisMixin:
         if self.data_stack is None or self.data_base1 is None:
             QMessageBox.warning(self, "数据不完整", "请先设置堆叠总成和单片 1。")
             return
-        stack, base1, base2 = self.data_stack, self.data_base1, self.data_base2
+        def snapshot(rec):
+            if rec is None:
+                return None
+            return {
+                'x': rec['x'], 'y': rec['y'], 'z': rec['z'],
+                'name': rec['name'], 'n': rec['n'],
+                'offset_x': float(rec.get('offset_x', 0.0)),
+                'offset_y': float(rec.get('offset_y', 0.0)),
+            }
+
+        stack, base1, base2 = (
+            snapshot(self.data_stack), snapshot(self.data_base1), snapshot(self.data_base2))
         tolerance = float(self.spin_tol.value())
         self._run_background_task(
             "胶厚自动匹配",
             lambda progress, cancel: self._auto_registration_payload(
                 stack, base1, base2, tolerance, progress, cancel),
             self._apply_auto_registration,
-            lambda message: QMessageBox.critical(self, "自动匹配失败", message),
+            self._on_gap_auto_failure,
+            on_cancel=self._on_gap_auto_cancelled,
         )
 
+    def _on_gap_auto_failure(self, message):
+        self._show_status("自动精对齐失败；当前人工偏移已保留。", 8000)
+        QMessageBox.critical(
+            self, "自动匹配失败", f"{message}\n\n未应用任何自动结果，当前人工偏移保持不变。")
+
+    def _on_gap_auto_cancelled(self):
+        self._show_status("自动精对齐已取消；当前人工偏移已保留。", 8000)
+
     def _apply_auto_registration(self, result):
-        for key, values in result.items():
-            rec = getattr(self, f"data_{key}", None)
-            if rec is not None:
-                rec['offset_x'] = values['offset_x']
-                rec['offset_y'] = values['offset_y']
-        self._invalidate_gap_result()
-        self._update_gap_slot_labels()
-        self._refresh_gap_registration()
+        applied = False
         details = []
         for key, values in result.items():
+            rec = getattr(self, f"data_{key}", None)
             label = '单片 1' if key == 'base1' else '单片 2'
+            if rec is None:
+                continue
+            current = np.array([
+                float(rec.get('offset_x', 0.0)), float(rec.get('offset_y', 0.0))])
+            start = np.array([
+                float(values.get('start_offset_x', current[0])),
+                float(values.get('start_offset_y', current[1])),
+            ])
+            if not np.allclose(current, start, rtol=0.0, atol=1e-12):
+                details.append(f"{label}: 数据已变化，保留当前人工偏移")
+                continue
+            candidate = np.array([
+                float(values.get('offset_x', np.nan)),
+                float(values.get('offset_y', np.nan)),
+            ])
+            adjustment = float(values.get('adjustment', np.inf))
+            max_adjustment = float(values.get('max_adjustment', -np.inf))
+            valid_result = (
+                values.get('accepted', False)
+                and np.isfinite(candidate).all()
+                and np.isfinite(adjustment)
+                and np.isfinite(max_adjustment)
+                and adjustment <= max_adjustment
+            )
+            if not valid_result:
+                if values.get('reason') == 'max_adjustment' or adjustment > max_adjustment:
+                    details.append(
+                        f"{label}: 自动精对齐结果偏离当前人工位置过大，已保留人工配准结果")
+                else:
+                    details.append(f"{label}: 自动结果无效，已保留当前人工偏移")
+                continue
+            rec['offset_x'] = float(candidate[0])
+            rec['offset_y'] = float(candidate[1])
+            rec['registration_mode'] = 'auto'
+            applied = True
             details.append(
                 f"{label}: ΔX {values['offset_x']:+.4f} mm，ΔY {values['offset_y']:+.4f} mm，"
                 f"全点残差 RMS {values['rms'] * 1000:.2f} µm")
-        self._show_status("自动匹配完成 | " + " | ".join(details), 10000)
+        if applied:
+            self._invalidate_gap_result()
+        self._update_gap_slot_labels()
+        self._refresh_gap_registration(preserve_view=True)
+        prefix = "自动精对齐完成" if applied else "自动精对齐未应用"
+        self._show_status(prefix + " | " + " | ".join(details), 12000)
 
     @classmethod
     def _compute_gap_payload(cls, stack, base1, base2, tolerance, progress, cancel_event):
@@ -450,14 +550,17 @@ class GapAnalysisMixin:
                                      for rec in (stack, base1, base2) if rec),
             'layers': {
                 'stack': {'name': stack['name'], 'n': int(stack.get('n', len(stack['z']))),
-                          'offset_x': 0.0, 'offset_y': 0.0},
+                          'offset_x': 0.0, 'offset_y': 0.0,
+                          'registration_mode': 'none'},
                 'base1': {'name': base1['name'], 'n': int(base1.get('n', len(base1['z']))),
                           'offset_x': float(base1.get('offset_x', 0.0)),
-                          'offset_y': float(base1.get('offset_y', 0.0))},
+                          'offset_y': float(base1.get('offset_y', 0.0)),
+                          'registration_mode': base1.get('registration_mode', 'none')},
                 'base2': None if base2 is None else {
                     'name': base2['name'], 'n': int(base2.get('n', len(base2['z']))),
                     'offset_x': float(base2.get('offset_x', 0.0)),
-                    'offset_y': float(base2.get('offset_y', 0.0))},
+                    'offset_y': float(base2.get('offset_y', 0.0)),
+                    'registration_mode': base2.get('registration_mode', 'none')},
             },
             'diagnostic': {
                 'layers': {
@@ -524,9 +627,12 @@ class GapAnalysisMixin:
         self.current_coeffs = None
         self.clear_rois(update=False)
         self.update_analysis()
+        if self.last_metrics is not None:
+            payload['plane_metrics'] = dict(self.last_metrics)
+            payload['plane_metric_count'] = int(len(self.active_idx))
         self.tabs.setCurrentIndex(self.math_tab_index)
         self._on_tab_changed(self.math_tab_index)
-        self._refresh_gap_registration()
+        self._refresh_gap_registration(preserve_view=True)
         self._sync_gap_action_state()
         self._show_status(f"Gap 计算完成，共 {len(self.df_raw):,} 个有效匹配点。", 8000)
         message = (f"成功配对并算出 Inner Gap\n容差设定: {payload['tolerance']} mm\n"
@@ -554,6 +660,28 @@ class GapAnalysisMixin:
             })
         return pd.DataFrame(data)
 
+    def _gap_plane_metrics(self, payload=None):
+        """Return the main-analysis plane metrics for the final Inner Gap points."""
+        payload = self.gap_result if payload is None else payload
+        if payload is None:
+            raise ValueError("暂无有效胶厚结果。")
+        if (payload is self.gap_result
+                and self.current_source_name == payload.get('name')
+                and self.last_metrics is not None):
+            metrics = dict(self.last_metrics)
+            payload['plane_metrics'] = metrics
+            payload['plane_metric_count'] = int(len(self.active_idx))
+            return metrics
+        metrics = payload.get('plane_metrics')
+        if metrics is None:
+            metrics = self.compute_plane_metrics(
+                np.asarray(payload['x'], dtype=float),
+                np.asarray(payload['y'], dtype=float),
+                np.asarray(payload['z'], dtype=float))
+            payload['plane_metrics'] = metrics
+            payload['plane_metric_count'] = int(len(payload['z']))
+        return metrics
+
     def export_gap_csv(self):
         if self.gap_result is None:
             QMessageBox.warning(self, "暂无结果", "请先完成容差匹配并计算胶厚。")
@@ -563,18 +691,22 @@ class GapAnalysisMixin:
             return
         try:
             payload = self.gap_result
+            metrics = self._gap_plane_metrics(payload)
             with open(path, 'w', encoding='utf-8-sig', newline='') as handle:
                 handle.write(f"# ===== 多层胶厚扣减 {self.APP_VERSION} 导出 =====\n")
                 handle.write(f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
                 handle.write(f"# 公式: Inner Gap = 堆叠总成 - 单片1{' - 单片2' if payload['layers']['base2'] else ''}\n")
                 handle.write("# 坐标系: X/Y 毫米；配准仅做 XY 平移；堆叠总成固定\n")
                 handle.write(f"# 匹配规则: 最近邻欧氏距离 <= {payload['tolerance']:.6f} mm\n")
+                handle.write(f"# Gap_Rx_urad: {metrics['rx']:.9f}\n")
+                handle.write(f"# Gap_Ry_urad: {metrics['ry']:.9f}\n")
                 for key, label in (('stack', '堆叠总成'), ('base1', '单片1'), ('base2', '单片2')):
                     rec = payload['layers'].get(key)
                     if rec is not None:
                         handle.write(
                             f"# {label}: {rec['name']} | 点数 {rec['n']} | "
-                            f"ΔX {rec['offset_x']:+.6f} mm | ΔY {rec['offset_y']:+.6f} mm\n")
+                            f"ΔX {rec['offset_x']:+.6f} mm | ΔY {rec['offset_y']:+.6f} mm | "
+                            f"配准方式 {('固定基准' if key == 'stack' else self.GAP_REGISTRATION_MODE_LABELS.get(rec.get('registration_mode', 'none'), '未配准'))}\n")
                 handle.write(f"# 有效匹配点: {len(payload['z'])}\n")
                 self._gap_result_frame().to_csv(handle, index=False)
             self._show_status(f"胶厚 CSV 已导出: {path}", 6000)
@@ -592,6 +724,7 @@ class GapAnalysisMixin:
         plt.rcParams['axes.unicode_minus'] = False
         payload = self.gap_result
         z = np.asarray(payload['z'], dtype=float)
+        metrics = self._gap_plane_metrics(payload)
         fig = Figure(figsize=(16.0, 9.2), constrained_layout=True)
         FigureCanvasAgg(fig)
         grid = fig.add_gridspec(2, 2, width_ratios=[0.82, 1.75], height_ratios=[1, 1])
@@ -603,24 +736,31 @@ class GapAnalysisMixin:
         lines = [
             "结果摘要",
             f"有效匹配点  {len(z):,}",
+            f"平面拟合点  {int(payload.get('plane_metric_count', len(z))):,}",
             f"容差窗口  {payload['tolerance']:.3f} mm",
-            f"平均胶厚  {np.mean(z):.6f} mm",
+            f"平均胶厚  {metrics['mean_z']:.6f} mm",
+            f"Gap Rx  {metrics['rx']:.2f} µrad",
+            f"Gap Ry  {metrics['ry']:.2f} µrad",
+            f"平面残差 PV  {metrics['pv']:.3f} µm",
+            f"平面残差 RMS  {metrics['rms']:.3f} µm",
+            f"TTV  {metrics['ttv']:.3f} µm",
             f"最小 / 最大  {np.min(z):.6f} / {np.max(z):.6f} mm",
-            f"胶厚极差  {np.ptp(z):.6f} mm",
-            f"标准差  {np.std(z):.6f} mm",
             "",
             "XY 配准位移（堆叠固定）",
-            f"单片 1  ΔX {layers['base1']['offset_x']:+.5f} mm  ΔY {layers['base1']['offset_y']:+.5f} mm",
+            f"单片 1  ΔX {layers['base1']['offset_x']:+.5f} mm  ΔY {layers['base1']['offset_y']:+.5f} mm  "
+            f"{self.GAP_REGISTRATION_MODE_LABELS.get(layers['base1'].get('registration_mode', 'none'), '未配准')}",
         ]
         if layers['base2'] is not None:
             lines.append(
-                f"单片 2  ΔX {layers['base2']['offset_x']:+.5f} mm  ΔY {layers['base2']['offset_y']:+.5f} mm")
+                f"单片 2  ΔX {layers['base2']['offset_x']:+.5f} mm  ΔY {layers['base2']['offset_y']:+.5f} mm  "
+                f"{self.GAP_REGISTRATION_MODE_LABELS.get(layers['base2'].get('registration_mode', 'none'), '未配准')}")
         lines.extend(["", "数据来源", f"堆叠  {Path(str(layers['stack']['name'])).name}",
                       f"单片 1  {Path(str(layers['base1']['name'])).name}"])
         if layers['base2'] is not None:
             lines.append(f"单片 2  {Path(str(layers['base2']['name'])).name}")
         lines.extend(["", "口径", "XY 最近邻欧氏距离不大于容差的点参与扣减。",
-                      "自动匹配与手动拖动只改变单片层 XY 平移，不改变 Z。"])
+                      "Rx/Ry 与主控页共用最终点集的最佳拟合平面定义。",
+                      "自动精对齐与手动拖动只改变单片层 XY 平移，不改变 Z。"])
         ax_info.text(0.02, 0.98, "\n".join(lines), va='top', ha='left', fontsize=10.5,
                      linespacing=1.55, color='#334155', transform=ax_info.transAxes,
                      bbox=dict(boxstyle='round,pad=0.7', fc='#f8fafc', ec='#dbe3ec'))

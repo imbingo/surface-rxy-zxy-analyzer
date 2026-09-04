@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.6.2."""
+"""Qt application shell for Surface Analyzer V4.6.3."""
 
 import sys
 import os
@@ -512,7 +512,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 getattr(self, 'btn_clear_gap_current', None),
                 getattr(self, 'btn_gap_select_base1', None),
                 getattr(self, 'btn_gap_select_base2', None),
-                getattr(self, 'spin_tol', None)):
+                getattr(self, 'spin_tol', None),
+                getattr(self, 'gap_match_canvas', None)):
             if optional_control is not None:
                 self._task_controls.append(optional_control)
 
@@ -1249,7 +1250,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.btn_auto_match_gap = QPushButton("自动匹配（最小化全点残差）")
         self.btn_auto_match_gap.setObjectName("accentSoftBtn")
         self.btn_auto_match_gap.setFixedHeight(34)
-        self.btn_auto_match_gap.setToolTip("以当前粗对齐位置和两层中心位置为初值，仅优化单片层的 X/Y 平移。")
+        self.btn_auto_match_gap.setToolTip(
+            "可选局部精修：只以当前人工偏移为初值，在附近优化 X/Y 平移；不负责全局找位置。")
         self.btn_auto_match_gap.clicked.connect(self.auto_match_gap_layers)
         ll.addWidget(self.btn_auto_match_gap)
 
@@ -1437,7 +1439,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         cv.setSpacing(6)
         head = QLabel("多层胶厚 XY 配准")
         head.setObjectName("plotTitle")
-        hint = QLabel("灰色堆叠总成固定不可选；蓝色单片 1、紫色单片 2 可分别选择并拖动。红点表示当前层在坐标误差窗口内已对齐的堆叠点。")
+        hint = QLabel("灰色堆叠总成固定不可选；蓝色单片 1、紫色单片 2 可分别选择并拖动。红点表示当前层在坐标误差窗口内已对齐的堆叠点。滚轮以鼠标位置缩放，双击恢复全图。")
         hint.setObjectName("mutedNote")
         hint.setWordWrap(True)
         cv.addWidget(head)
