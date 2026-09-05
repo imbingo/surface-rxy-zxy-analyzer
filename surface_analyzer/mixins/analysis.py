@@ -121,9 +121,16 @@ class AnalysisMixin:
     def fit_plane(x, y, z):
         """中心化最小二乘拟合 Z = aX + bY + c，返回 [a, b, c]。
         中心化避免绝对 stage 大坐标导致的病态法方程。"""
+        x, y, z = (np.asarray(v, dtype=float) for v in (x, y, z))
+        if (any(v.ndim != 1 for v in (x, y, z))
+                or not (len(x) == len(y) == len(z)) or len(z) < 3
+                or not all(np.isfinite(v).all() for v in (x, y, z))):
+            raise ValueError("平面拟合至少需要3个有效且长度一致的XYZ点。")
         x0, y0 = x.mean(), y.mean()
         A = np.column_stack([x - x0, y - y0, np.ones_like(x)])
-        sol, *_ = np.linalg.lstsq(A, z, rcond=None)
+        sol, _, rank, _ = np.linalg.lstsq(A, z, rcond=None)
+        if rank < 3:
+            raise ValueError("点分布共线或退化，无法确定二维平面，请扩大ROI或检查扫描数据。")
         a, b, c0 = sol
         return np.array([a, b, c0 - a * x0 - b * y0])
 

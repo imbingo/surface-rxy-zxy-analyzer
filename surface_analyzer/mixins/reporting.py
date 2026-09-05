@@ -36,6 +36,15 @@ from ..polynomial import fit_polynomial_surface, evaluate_polynomial_surface
 
 
 class ReportingMixin:
+    def _current_result_exportable(self):
+        if self.import_info.get('gap_result_stale', False):
+            QMessageBox.warning(self, "胶厚结果已失效", "配准已变化，请重新计算胶厚后再导出主控结果。")
+            return False
+        if self.last_metrics is None:
+            QMessageBox.warning(self, "分析结果无效", "请先完成有效的二维面型分析后再导出。")
+            return False
+        return True
+
     @staticmethod
     def _import_trace_text(import_info):
         info = import_info or {}
@@ -100,6 +109,8 @@ class ReportingMixin:
     def export_report_image(self):
         """导出当前测量的报告图（与批量处理同款：主页面全部信息 + 四视图）。
         默认命名 Result_<导入文件名>_<时间>.png。"""
+        if not self._current_result_exportable():
+            return
         if self.df_raw is None or self.active_idx is None or self.last_metrics is None:
             QMessageBox.warning(self, "暂无数据", "请先载入并解析数据，再导出测量报告图。")
             return
@@ -137,6 +148,8 @@ class ReportingMixin:
 
     def save_file(self):
         if self.df_raw is None or self.active_idx is None: return
+        if not self._current_result_exportable():
+            return
         if not self._confirm_estimated_metrics('导出CSV'):
             return
         path, _ = QFileDialog.getSaveFileName(self, "导出", "Result_Data.csv", "CSV (*.csv)")

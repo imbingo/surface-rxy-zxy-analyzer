@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QFileDialog, QMessageBox
 from scipy.spatial import cKDTree
 
 from ..workers import TaskCancelled
+from .analysis import AnalysisMixin
 
 
 class GapAnalysisMixin:
@@ -129,6 +130,7 @@ class GapAnalysisMixin:
         self._sync_gap_action_state()
 
     def clear_all_memory_slots(self):
+        self._invalidate_gap_result()
         self.data_stack = self.data_base1 = self.data_base2 = None
         self.gap_active_layer = None
         self.gap_result = None
@@ -282,7 +284,9 @@ class GapAnalysisMixin:
         y = np.asarray(y, dtype=float)
         finite = np.isfinite(x) & np.isfinite(y)
         points = np.column_stack([x[finite], y[finite]])
-        if len(points) > limit:
+        if limit is not None and len(points) > limit:
+            # Deterministic spatial ordering: file row order is not geometry.
+            points = points[np.lexsort((points[:, 1], points[:, 0]))]
             pick = np.linspace(0, len(points) - 1, limit, dtype=int)
             points = points[pick]
         return points
@@ -290,7 +294,8 @@ class GapAnalysisMixin:
     @classmethod
     def _optimize_translation(cls, stack, moving, tolerance, cancel_event=None):
         """Locally refine current translation using robust moving-to-reference overlap."""
-        reference = cls._registration_sample(stack['x'], stack['y'])
+        reference = cls._registration_sample(stack['x'], stack['y'], limit=None)
+        moving_full = cls._registration_sample(moving['x'], moving['y'], limit=None)
         moving_xy = cls._registration_sample(moving['x'], moving['y'])
         if len(reference) < 3 or len(moving_xy) < 3:
             raise ValueError("自动匹配至少需要每层 3 个有效 XY 点。")
@@ -308,7 +313,7 @@ class GapAnalysisMixin:
         # points then pull ICP away from the visibly aligned region.  The local
         # capture gate keeps those points out while retaining the existing
         # maximum-adjustment safety boundary.
-        start_shifted = moving_xy + start
+        start_shifted = moving_full + start
         start_dist, _ = tree_ref.query(start_shifted)
         start_local = np.isfinite(start_dist) & (start_dist <= capture_radius)
         min_local_points = max(3, min(20, int(np.ceil(len(moving_xy) * 0.01))))
@@ -337,7 +342,7 @@ class GapAnalysisMixin:
             return offset, iterations
 
         def score(offset):
-            shifted = moving_xy + offset
+            shifted = moving_full + offset
             tree_moving = cKDTree(shifted)
             d_ref, _ = tree_moving.query(reference)
             d_mov, _ = tree_ref.query(shifted)
@@ -583,8 +588,10 @@ class GapAnalysisMixin:
                 'base2_z': np.asarray(base2['z'])[idx2[valid]].copy(),
                 'base2_distance': dist2[valid].copy(),
             })
+        plane_metrics = AnalysisMixin.compute_plane_metrics(sx[valid], sy[valid], gap_z)
         return {
             'x': sx[valid], 'y': sy[valid], 'z': gap_z, 'name': gap_name,
+            'plane_metrics': plane_metrics, 'plane_metric_count': len(gap_z),
             'details': details,
             'reports': reports, 'tolerance': float(tolerance),
             'sampled': any(rec.get('sampled', False) for rec in (stack, base1, base2) if rec),
@@ -669,9 +676,7 @@ class GapAnalysisMixin:
         self.current_coeffs = None
         self.clear_rois(update=False)
         self.update_analysis()
-        if self.last_metrics is not None:
-            payload['plane_metrics'] = dict(self.last_metrics)
-            payload['plane_metric_count'] = int(len(self.active_idx))
+        self._gap_plane_metrics(payload)
         self.tabs.setCurrentIndex(self.math_tab_index)
         self._on_tab_changed(self.math_tab_index)
         self._refresh_gap_registration(preserve_view=True)
@@ -703,17 +708,10 @@ class GapAnalysisMixin:
         return pd.DataFrame(data)
 
     def _gap_plane_metrics(self, payload=None):
-        """Return the main-analysis plane metrics for the final Inner Gap points."""
+        """Metrics belong to the exported gap snapshot, not mutable main-page state."""
         payload = self.gap_result if payload is None else payload
         if payload is None:
             raise ValueError("暂无有效胶厚结果。")
-        if (payload is self.gap_result
-                and self.current_source_name == payload.get('name')
-                and self.last_metrics is not None):
-            metrics = dict(self.last_metrics)
-            payload['plane_metrics'] = metrics
-            payload['plane_metric_count'] = int(len(self.active_idx))
-            return metrics
         metrics = payload.get('plane_metrics')
         if metrics is None:
             metrics = self.compute_plane_metrics(
@@ -739,6 +737,7 @@ class GapAnalysisMixin:
                 handle.write(f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
                 handle.write(f"# 公式: Inner Gap = 堆叠总成 - 单片1{' - 单片2' if payload['layers']['base2'] else ''}\n")
                 handle.write("# 坐标系: X/Y 毫米；配准仅做 XY 平移；堆叠总成固定\n")
+                handle.write("# 结果口径: 全部有效匹配点的原始胶厚快照；不包含主控后续旋转、ROI或滤波\n")
                 handle.write(f"# 匹配规则: 最近邻欧氏距离 <= {payload['tolerance']:.6f} mm\n")
                 handle.write(f"# Gap_Rx_urad: {metrics['rx']:.9f}\n")
                 handle.write(f"# Gap_Ry_urad: {metrics['ry']:.9f}\n")
@@ -801,7 +800,8 @@ class GapAnalysisMixin:
         if layers['base2'] is not None:
             lines.append(f"单片 2  {Path(str(layers['base2']['name'])).name}")
         lines.extend(["", "口径", "XY 最近邻欧氏距离不大于容差的点参与扣减。",
-                      "Rx/Ry 与主控页共用最终点集的最佳拟合平面定义。",
+                      "指标与图表均使用全部有效匹配点的胶厚快照。",
+                      "不包含主控后续旋转、ROI或滤波。",
                       "自动精对齐与手动拖动只改变单片层 XY 平移，不改变 Z。"])
         ax_info.text(0.02, 0.98, "\n".join(lines), va='top', ha='left', fontsize=10.5,
                      linespacing=1.55, color='#334155', transform=ax_info.transAxes,

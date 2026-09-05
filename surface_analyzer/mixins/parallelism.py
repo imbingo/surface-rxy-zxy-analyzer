@@ -44,7 +44,11 @@ class ParallelismMixin:
         if len(fz) < 3:
             QMessageBox.warning(self, "点数不足", "参与拟合点少于 3 个，无法写入平行度分析。")
             return None
-        metrics = self.compute_plane_metrics(fx, fy, fz)
+        try:
+            metrics = self.compute_plane_metrics(fx, fy, fz)
+        except ValueError as exc:
+            QMessageBox.warning(self, "平面分析无效", str(exc))
+            return None
         quality = self._current_metric_quality()
         import_snapshot = copy.deepcopy(getattr(self, 'import_info', {}) or {})
         return {

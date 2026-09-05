@@ -1883,7 +1883,12 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                     f"Fast {perf.get('fast_accept', 0):,} | Reject {perf.get('fast_reject', 0):,} | "
                     f"Slow {perf.get('slow_path', 0):,} | 局部拟合 {perf.get('local_plane_fits', 0):,}")
         except Exception as e:
-            self._show_status(f"分析出错: {e}", 10000)
+            self.last_metrics = None
+            self.current_coeffs = None
+            self.high_order_models = {}
+            self._clear_result_labels()
+            self._update_surface_display_metrics()
+            self._show_status(f"分析无效: {e}", 10000)
 
     def _draw_temp_selection_overlay(self, tx, ty, plot_z_all, display_limit):
         """Draw one display-only sample of the current selection in all views."""
