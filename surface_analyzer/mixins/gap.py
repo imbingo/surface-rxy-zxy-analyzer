@@ -132,6 +132,8 @@ class GapAnalysisMixin:
         self.data_stack = self.data_base1 = self.data_base2 = None
         self.gap_active_layer = None
         self.gap_result = None
+        if hasattr(self, 'lbl_gap_auto_feedback'):
+            self.lbl_gap_auto_feedback.clear()
         self._update_gap_slot_labels()
         self._refresh_gap_registration(preserve_view=False)
         self._sync_gap_action_state()
@@ -298,6 +300,18 @@ class GapAnalysisMixin:
             float(moving.get('offset_y', 0.0)),
         ])
         max_adjustment = max(float(tolerance) * 3.0, 0.01)
+        capture_radius = max_adjustment
+
+        # Establish the overlap from the operator's current coarse alignment.
+        # A fixed trim percentage is unsafe when the reference contains holes or
+        # only part of the moving layer can physically overlap it: non-overlap
+        # points then pull ICP away from the visibly aligned region.  The local
+        # capture gate keeps those points out while retaining the existing
+        # maximum-adjustment safety boundary.
+        start_shifted = moving_xy + start
+        start_dist, _ = tree_ref.query(start_shifted)
+        start_local = np.isfinite(start_dist) & (start_dist <= capture_radius)
+        min_local_points = max(3, min(20, int(np.ceil(len(moving_xy) * 0.01))))
 
         def cancelled():
             return cancel_event is not None and cancel_event.is_set()
@@ -310,11 +324,9 @@ class GapAnalysisMixin:
                     raise TaskCancelled()
                 shifted = moving_xy + offset
                 dist, idx = tree_ref.query(shifted)
-                finite = np.isfinite(dist)
-                if finite.sum() < 3:
+                keep = np.isfinite(dist) & (dist <= capture_radius)
+                if keep.sum() < min_local_points:
                     break
-                cutoff = float(np.quantile(dist[finite], 0.90))
-                keep = finite & (dist <= max(cutoff, float(tolerance)))
                 residual = reference[idx[keep]] - shifted[keep]
                 delta = np.mean(residual, axis=0)
                 offset += delta
@@ -330,19 +342,22 @@ class GapAnalysisMixin:
             d_ref, _ = tree_moving.query(reference)
             d_mov, _ = tree_ref.query(shifted)
             residuals = np.concatenate([d_ref, d_mov])
-            trim_count = max(3, int(np.ceil(len(d_mov) * 0.90)))
-            overlap_dist = np.partition(d_mov, trim_count - 1)[:trim_count]
+            # Score the same local candidates seen at the starting position so
+            # points entering/leaving the gate cannot improve the denominator.
+            overlap_dist = d_mov[start_local]
             matched_dist = d_mov[d_mov <= tolerance]
             return {
                 # Keep the historical full symmetric RMS as a diagnostic only.
                 # A stack may cover a much larger footprint than a single layer,
                 # so its non-overlapping area must not reject a valid local match.
                 'rms': float(np.sqrt(np.mean(residuals ** 2))),
-                'overlap_rms': float(np.sqrt(np.mean(overlap_dist ** 2))),
+                'overlap_rms': (float(np.sqrt(np.mean(overlap_dist ** 2)))
+                                if len(overlap_dist) else np.nan),
                 'matched_rms': (float(np.sqrt(np.mean(matched_dist ** 2)))
                                 if len(matched_dist) else np.nan),
                 'matched': int(len(matched_dist)),
                 'moving_points': int(len(d_mov)),
+                'local_points': int(len(overlap_dist)),
             }
 
         start_quality = score(start)
@@ -362,16 +377,20 @@ class GapAnalysisMixin:
                 'matched_rms': quality['matched_rms'],
                 'matched': quality['matched'],
                 'moving_points': quality['moving_points'],
+                'local_points': quality['local_points'],
                 'start_rms': start_quality['rms'],
                 'start_overlap_rms': start_quality['overlap_rms'],
                 'start_matched': start_quality['matched'],
                 'iterations': int(iterations),
                 'adjustment': adjustment,
                 'max_adjustment': max_adjustment,
+                'capture_radius': capture_radius,
                 'start_offset_x': float(start[0]),
                 'start_offset_y': float(start[1]),
             }
 
+        if start_local.sum() < min_local_points:
+            return result(False, 'insufficient_local_overlap', start, start_quality)
         if not np.isfinite(proposed).all() or adjustment > max_adjustment:
             return result(False, 'max_adjustment', start, start_quality)
         proposed_quality = score(proposed)
@@ -399,6 +418,9 @@ class GapAnalysisMixin:
         if self.data_stack is None or self.data_base1 is None:
             QMessageBox.warning(self, "数据不完整", "请先设置堆叠总成和单片 1。")
             return
+        if hasattr(self, 'lbl_gap_auto_feedback'):
+            self.lbl_gap_auto_feedback.setStyleSheet("color: #2563eb; font-size: 11px;")
+            self.lbl_gap_auto_feedback.setText("正在检查当前位置附近的真实重叠点…")
         def snapshot(rec):
             if rec is None:
                 return None
@@ -422,11 +444,17 @@ class GapAnalysisMixin:
         )
 
     def _on_gap_auto_failure(self, message):
+        if hasattr(self, 'lbl_gap_auto_feedback'):
+            self.lbl_gap_auto_feedback.setStyleSheet("color: #b91c1c; font-size: 11px;")
+            self.lbl_gap_auto_feedback.setText(f"自动匹配失败：{message}")
         self._show_status("自动精对齐失败；当前人工偏移已保留。", 8000)
         QMessageBox.critical(
             self, "自动匹配失败", f"{message}\n\n未应用任何自动结果，当前人工偏移保持不变。")
 
     def _on_gap_auto_cancelled(self):
+        if hasattr(self, 'lbl_gap_auto_feedback'):
+            self.lbl_gap_auto_feedback.setStyleSheet("color: #92400e; font-size: 11px;")
+            self.lbl_gap_auto_feedback.setText("自动匹配已取消，当前人工偏移保持不变。")
         self._show_status("自动精对齐已取消；当前人工偏移已保留。", 8000)
 
     def _apply_auto_registration(self, result):
@@ -466,6 +494,9 @@ class GapAnalysisMixin:
                 elif values.get('reason') == 'overlap_not_improved':
                     details.append(
                         f"{label}: 单片到堆叠的重叠匹配质量未改善，已保留当前人工偏移")
+                elif values.get('reason') == 'insufficient_local_overlap':
+                    details.append(
+                        f"{label}: 当前人工位置附近的重叠候选点不足，请先拖近后重试")
                 else:
                     details.append(f"{label}: 自动结果无效，已保留当前人工偏移")
                 continue
@@ -485,7 +516,12 @@ class GapAnalysisMixin:
         self._update_gap_slot_labels()
         self._refresh_gap_registration(preserve_view=True)
         prefix = "自动精对齐完成" if applied else "自动精对齐未应用"
-        self._show_status(prefix + " | " + " | ".join(details), 12000)
+        feedback = prefix + " | " + " | ".join(details)
+        if hasattr(self, 'lbl_gap_auto_feedback'):
+            color = '#166534' if applied else '#92400e'
+            self.lbl_gap_auto_feedback.setStyleSheet(f"color: {color}; font-size: 11px;")
+            self.lbl_gap_auto_feedback.setText(feedback)
+        self._show_status(feedback, 12000)
 
     @classmethod
     def _compute_gap_payload(cls, stack, base1, base2, tolerance, progress, cancel_event):

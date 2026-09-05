@@ -1251,9 +1251,14 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.btn_auto_match_gap.setObjectName("accentSoftBtn")
         self.btn_auto_match_gap.setFixedHeight(34)
         self.btn_auto_match_gap.setToolTip(
-            "可选局部精修：只以当前人工偏移为初值，在附近优化 X/Y 平移；不负责全局找位置。")
+            "可选局部精修：只以当前人工偏移为初值，使用附近真实重叠点优化 X/Y 平移；"
+            "孔洞和不重叠区域不参与拉动，不负责全局找位置。")
         self.btn_auto_match_gap.clicked.connect(self.auto_match_gap_layers)
         ll.addWidget(self.btn_auto_match_gap)
+        self.lbl_gap_auto_feedback = QLabel("")
+        self.lbl_gap_auto_feedback.setWordWrap(True)
+        self.lbl_gap_auto_feedback.setStyleSheet("color: #64748b; font-size: 11px;")
+        ll.addWidget(self.lbl_gap_auto_feedback)
 
         self.btn_calc_gap = QPushButton("容差匹配点云并计算胶厚")
         self.btn_calc_gap.setObjectName("accentBtn")

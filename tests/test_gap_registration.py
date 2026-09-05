@@ -78,10 +78,35 @@ class GapRegistrationTests(unittest.TestCase):
         result = GapAnalysisMixin._optimize_translation(stack, moving, tolerance=0.005)
 
         self.assertFalse(result['accepted'])
-        self.assertEqual(result['reason'], 'max_adjustment')
+        self.assertEqual(result['reason'], 'insufficient_local_overlap')
         self.assertEqual(result['offset_x'], 0.0)
         self.assertEqual(result['offset_y'], 0.0)
-        self.assertGreater(result['adjustment'], result['max_adjustment'])
+        self.assertEqual(result['adjustment'], 0.0)
+        self.assertEqual(result['local_points'], 0)
+
+    def test_auto_registration_ignores_nonoverlap_inside_annular_reference(self):
+        axis = np.arange(-40.0, 40.25, 0.5)
+        gx, gy = np.meshgrid(axis, axis)
+        x, y = gx.ravel(), gy.ravel()
+        radius = np.hypot(x, y)
+        stack_mask = (radius <= 40.0) & (radius > 15.0)
+        moving_mask = radius <= 15.0
+        stack = _record(
+            x[stack_mask], y[stack_mask], np.ones(int(stack_mask.sum())), "annular-stack")
+        moving = _record(
+            x[moving_mask], y[moving_mask], np.full(int(moving_mask.sum()), 0.4),
+            "wafer", dx=-15.4222, dy=-10.4964, mode="manual")
+
+        result = GapAnalysisMixin._optimize_translation(stack, moving, tolerance=0.060)
+
+        self.assertEqual(int(stack_mask.sum()), 17260)
+        self.assertEqual(int(moving_mask.sum()), 2821)
+        self.assertTrue(result['accepted'])
+        self.assertAlmostEqual(result['offset_x'], -15.5, places=9)
+        self.assertAlmostEqual(result['offset_y'], -10.5, places=9)
+        self.assertGreater(result['local_points'], 1000)
+        self.assertGreater(result['matched'], 1000)
+        self.assertLess(result['overlap_rms'], result['start_overlap_rms'])
 
     def test_auto_registration_accepts_partial_layer_when_overlap_improves(self):
         gx, gy = np.meshgrid(
@@ -219,6 +244,7 @@ class GapRegistrationTests(unittest.TestCase):
         self.assertEqual(window.data_base1['registration_mode'], 'auto')
         self.assertAlmostEqual(window.data_base1['offset_x'], -0.03)
         self.assertAlmostEqual(window.data_base1['offset_y'], 0.02)
+        self.assertIn('自动精对齐完成', window.lbl_gap_auto_feedback.text())
 
     def test_gap_report_metrics_numerically_equal_main_plane_metrics(self):
         window = SurfaceAnalyzerPro()
