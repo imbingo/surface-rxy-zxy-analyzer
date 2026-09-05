@@ -395,11 +395,13 @@ class GapMatchCanvas(FigureCanvas):
                                edgecolors='#ef4444', linewidths=0.9, alpha=0.95,
                                label=f"{highlight_label} ({full_count:,})", rasterized=True, zorder=6)
 
+        # Recreating the axes resets aspect to 'auto'. Limits alone do not
+        # preserve the physical XY scale on a rectangular canvas.
+        set_xy_equal_aspect(ax)
         if previous_limits is not None:
             ax.set_xlim(previous_limits[0])
             ax.set_ylim(previous_limits[1])
         else:
-            set_xy_equal_aspect(ax)
             self._home_limits = (ax.get_xlim(), ax.get_ylim())
         active_text = {
             'base1': '当前：单片 1，可左键拖动；滚轮缩放，双击复位',

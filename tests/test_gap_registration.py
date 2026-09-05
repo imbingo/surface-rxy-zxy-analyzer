@@ -313,6 +313,37 @@ class GapRegistrationTests(unittest.TestCase):
         np.testing.assert_allclose(canvas.ax.get_xlim(), zoom_x, atol=1e-12)
         np.testing.assert_allclose(canvas.ax.get_ylim(), zoom_y, atol=1e-12)
 
+    def test_gap_selection_and_drag_preserve_rendered_xy_scale(self):
+        window = self._window_with_layers(base2=True)
+        canvas = window.gap_match_canvas
+        canvas.resize(1200, 600)
+        window._refresh_gap_registration(preserve_view=False)
+
+        def geometry():
+            canvas.draw()
+            points = canvas.ax.transData.transform([[0, 0], [1, 0], [0, 1]])
+            scale_x = np.linalg.norm(points[1] - points[0])
+            scale_y = np.linalg.norm(points[2] - points[0])
+            self.assertAlmostEqual(scale_x, scale_y, places=7)
+            return points
+
+        geometry()
+        canvas._on_scroll(SimpleNamespace(
+            inaxes=canvas.ax, xdata=2., ydata=2., button='up', step=1))
+        before = geometry()
+        for layer in ('base2', 'base1'):
+            window.select_gap_layer(layer)
+            np.testing.assert_allclose(geometry(), before, atol=0.5, rtol=0)
+        canvas._on_press(SimpleNamespace(
+            inaxes=canvas.ax, xdata=2., ydata=2., button=1, dblclick=False))
+        canvas._on_motion(SimpleNamespace(inaxes=canvas.ax, xdata=2.01, ydata=1.99))
+        np.testing.assert_allclose(geometry(), before, atol=0.5, rtol=0)
+        canvas._on_release(SimpleNamespace(
+            inaxes=canvas.ax, xdata=2.01, ydata=1.99, button=1))
+        np.testing.assert_allclose(geometry(), before, atol=0.5, rtol=0)
+        self.assertAlmostEqual(window.data_base1['offset_x'], .01)
+        self.assertAlmostEqual(window.data_base1['offset_y'], -.01)
+
     def test_gap_canvas_double_click_restores_home_without_changing_offset(self):
         window = self._window_with_layers()
         canvas = window.gap_match_canvas
