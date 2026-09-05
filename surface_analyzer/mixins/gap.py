@@ -287,7 +287,7 @@ class GapAnalysisMixin:
 
     @classmethod
     def _optimize_translation(cls, stack, moving, tolerance, cancel_event=None):
-        """Locally refine the current translation using symmetric nearest-point residual."""
+        """Locally refine current translation using robust moving-to-reference overlap."""
         reference = cls._registration_sample(stack['x'], stack['y'])
         moving_xy = cls._registration_sample(moving['x'], moving['y'])
         if len(reference) < 3 or len(moving_xy) < 3:
@@ -330,59 +330,58 @@ class GapAnalysisMixin:
             d_ref, _ = tree_moving.query(reference)
             d_mov, _ = tree_ref.query(shifted)
             residuals = np.concatenate([d_ref, d_mov])
-            rms = float(np.sqrt(np.mean(residuals ** 2)))
-            matched = int(np.sum(d_ref <= tolerance))
-            return rms, matched
+            trim_count = max(3, int(np.ceil(len(d_mov) * 0.90)))
+            overlap_dist = np.partition(d_mov, trim_count - 1)[:trim_count]
+            matched_dist = d_mov[d_mov <= tolerance]
+            return {
+                # Keep the historical full symmetric RMS as a diagnostic only.
+                # A stack may cover a much larger footprint than a single layer,
+                # so its non-overlapping area must not reject a valid local match.
+                'rms': float(np.sqrt(np.mean(residuals ** 2))),
+                'overlap_rms': float(np.sqrt(np.mean(overlap_dist ** 2))),
+                'matched_rms': (float(np.sqrt(np.mean(matched_dist ** 2)))
+                                if len(matched_dist) else np.nan),
+                'matched': int(len(matched_dist)),
+                'moving_points': int(len(d_mov)),
+            }
 
-        start_rms, start_matched = score(start)
+        start_quality = score(start)
         proposed, iterations = refine()
         adjustment = float(np.hypot(*(proposed - start)))
+
+        def result(accepted, reason, offset, quality):
+            return {
+                'accepted': bool(accepted),
+                'reason': reason,
+                'offset_x': float(offset[0]),
+                'offset_y': float(offset[1]),
+                'proposed_offset_x': float(proposed[0]),
+                'proposed_offset_y': float(proposed[1]),
+                'rms': quality['rms'],
+                'overlap_rms': quality['overlap_rms'],
+                'matched_rms': quality['matched_rms'],
+                'matched': quality['matched'],
+                'moving_points': quality['moving_points'],
+                'start_rms': start_quality['rms'],
+                'start_overlap_rms': start_quality['overlap_rms'],
+                'start_matched': start_quality['matched'],
+                'iterations': int(iterations),
+                'adjustment': adjustment,
+                'max_adjustment': max_adjustment,
+                'start_offset_x': float(start[0]),
+                'start_offset_y': float(start[1]),
+            }
+
         if not np.isfinite(proposed).all() or adjustment > max_adjustment:
-            return {
-                'accepted': False,
-                'reason': 'max_adjustment',
-                'offset_x': float(start[0]),
-                'offset_y': float(start[1]),
-                'proposed_offset_x': float(proposed[0]),
-                'proposed_offset_y': float(proposed[1]),
-                'rms': start_rms,
-                'matched': start_matched,
-                'iterations': int(iterations),
-                'adjustment': adjustment,
-                'max_adjustment': max_adjustment,
-                'start_offset_x': float(start[0]),
-                'start_offset_y': float(start[1]),
-            }
-        rms, matched = score(proposed)
-        if rms > start_rms + 1e-12:
-            return {
-                'accepted': False,
-                'reason': 'no_improvement',
-                'offset_x': float(start[0]),
-                'offset_y': float(start[1]),
-                'proposed_offset_x': float(proposed[0]),
-                'proposed_offset_y': float(proposed[1]),
-                'rms': start_rms,
-                'matched': start_matched,
-                'iterations': int(iterations),
-                'adjustment': adjustment,
-                'max_adjustment': max_adjustment,
-                'start_offset_x': float(start[0]),
-                'start_offset_y': float(start[1]),
-            }
-        return {
-            'accepted': True,
-            'reason': '',
-            'offset_x': float(proposed[0]),
-            'offset_y': float(proposed[1]),
-            'rms': rms,
-            'matched': matched,
-            'iterations': int(iterations),
-            'adjustment': adjustment,
-            'max_adjustment': max_adjustment,
-            'start_offset_x': float(start[0]),
-            'start_offset_y': float(start[1]),
-        }
+            return result(False, 'max_adjustment', start, start_quality)
+        proposed_quality = score(proposed)
+        overlap_improved = (
+            proposed_quality['matched'] >= start_quality['matched']
+            and proposed_quality['overlap_rms'] <= start_quality['overlap_rms'] + 1e-12
+        )
+        if not overlap_improved:
+            return result(False, 'overlap_not_improved', start, start_quality)
+        return result(True, '', proposed, proposed_quality)
 
     @classmethod
     def _auto_registration_payload(cls, stack, base1, base2, tolerance, progress, cancel_event):
@@ -464,6 +463,9 @@ class GapAnalysisMixin:
                 if values.get('reason') == 'max_adjustment' or adjustment > max_adjustment:
                     details.append(
                         f"{label}: 自动精对齐结果偏离当前人工位置过大，已保留人工配准结果")
+                elif values.get('reason') == 'overlap_not_improved':
+                    details.append(
+                        f"{label}: 单片到堆叠的重叠匹配质量未改善，已保留当前人工偏移")
                 else:
                     details.append(f"{label}: 自动结果无效，已保留当前人工偏移")
                 continue
@@ -471,9 +473,13 @@ class GapAnalysisMixin:
             rec['offset_y'] = float(candidate[1])
             rec['registration_mode'] = 'auto'
             applied = True
+            quality_rms = float(values.get('overlap_rms', values['rms']))
+            matched = int(values.get('matched', 0))
+            moving_points = int(values.get('moving_points', rec.get('n', 0)))
             details.append(
                 f"{label}: ΔX {values['offset_x']:+.4f} mm，ΔY {values['offset_y']:+.4f} mm，"
-                f"全点残差 RMS {values['rms'] * 1000:.2f} µm")
+                f"单片→堆叠残差 RMS {quality_rms * 1000:.2f} µm，"
+                f"容差内 {matched:,}/{moving_points:,} 点")
         if applied:
             self._invalidate_gap_result()
         self._update_gap_slot_labels()

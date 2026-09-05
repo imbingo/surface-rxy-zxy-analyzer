@@ -1247,7 +1247,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         hl_tol.addWidget(self.spin_tol)
         ll.addLayout(hl_tol)
 
-        self.btn_auto_match_gap = QPushButton("自动匹配（最小化全点残差）")
+        self.btn_auto_match_gap = QPushButton("自动匹配（局部重叠精修）")
         self.btn_auto_match_gap.setObjectName("accentSoftBtn")
         self.btn_auto_match_gap.setFixedHeight(34)
         self.btn_auto_match_gap.setToolTip(

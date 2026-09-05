@@ -83,6 +83,30 @@ class GapRegistrationTests(unittest.TestCase):
         self.assertEqual(result['offset_y'], 0.0)
         self.assertGreater(result['adjustment'], result['max_adjustment'])
 
+    def test_auto_registration_accepts_partial_layer_when_overlap_improves(self):
+        gx, gy = np.meshgrid(
+            np.arange(-15.0, 15.01, 0.5), np.arange(-15.0, 15.01, 0.5))
+        reference = np.column_stack([gx.ravel(), gy.ravel()])
+        reference = reference[
+            (reference[:, 0] / 15.0) ** 2 + (reference[:, 1] / 15.0) ** 2 <= 1.0]
+        partial = reference[
+            (reference[:, 1] >= -8.0) & (reference[:, 1] <= 4.0)
+            & (reference[:, 0] >= -14.0)]
+        stack = _record(
+            reference[:, 0], reference[:, 1], np.ones(len(reference)), "large-stack")
+        moving = _record(
+            partial[:, 0] + 0.12, partial[:, 1] + 0.03,
+            np.full(len(partial), 0.4), "partial-base")
+
+        result = GapAnalysisMixin._optimize_translation(stack, moving, tolerance=0.05)
+
+        self.assertTrue(result['accepted'])
+        self.assertAlmostEqual(result['offset_x'], -0.12, places=9)
+        self.assertAlmostEqual(result['offset_y'], -0.03, places=9)
+        self.assertEqual(result['matched'], len(partial))
+        self.assertLess(result['overlap_rms'], result['start_overlap_rms'])
+        self.assertGreater(result['rms'], result['start_rms'])
+
     def test_live_tolerance_diagnostic_uses_euclidean_xy_distance(self):
         x = np.arange(12, dtype=float)
         y = np.zeros_like(x)
