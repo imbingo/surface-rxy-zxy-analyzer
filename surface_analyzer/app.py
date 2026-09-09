@@ -502,6 +502,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.btn_roi_mouse, self.btn_del, self.btn_undo_del,
         ]
         for optional_control in (
+                getattr(self, 'adjustment_panel', None),
                 getattr(self, 'btn_auto_match_gap', None),
                 getattr(self, 'btn_export_gap_csv', None),
                 getattr(self, 'btn_export_gap_report', None),
@@ -1402,6 +1403,12 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         btn_copy.clicked.connect(self.copy_parallel_result)
         ll.addWidget(btn_copy)
 
+        ll.addWidget(self._step_header(4, "装调计算"))
+        btn_adjust = QPushButton("打开 N 点装调 / 垫片计算")
+        btn_adjust.setObjectName("accentSoftBtn")
+        btn_adjust.clicked.connect(lambda: self.parallel_pages.setCurrentIndex(1))
+        ll.addWidget(btn_adjust)
+
         warn = QLabel("提示：基准面和测量面需使用同一物料坐标方向；若 X/Y 单位为 µm，需先在主页面选对单位。")
         warn.setWordWrap(True)
         warn.setStyleSheet("color: #9a3412; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; padding: 10px;")
@@ -1554,7 +1561,15 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setWidget(panel)
-        return scroll
+        from .adjustment_panel import AdjustmentPanel
+        self.adjustment_panel = AdjustmentPanel(self)
+        adjustment_scroll = QScrollArea()
+        adjustment_scroll.setWidgetResizable(True)
+        adjustment_scroll.setWidget(self.adjustment_panel)
+        self.parallel_pages = QTabWidget()
+        self.parallel_pages.addTab(scroll, '平行度结果')
+        self.parallel_pages.addTab(adjustment_scroll, '4 装调计算')
+        return self.parallel_pages
 
     def undo_transform(self):
         if self.transform_pipeline:
@@ -1744,6 +1759,11 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
     def update_analysis(self):
         if self.df_raw is None: return
+        if hasattr(self, 'adjustment_panel'):
+            self._parallel_revision = getattr(self, '_parallel_revision', 0) + 1
+            self.parallel_result = None
+            self.adjustment_panel.invalidate('主控处理或 ROI 已更新；面槽保留设置时快照，请重新设置对应面并计算平行度。')
+            self._update_parallel_result_ui()
         total_started = time.perf_counter()
         try:
             tx, ty, tz = self.get_final_transformed_data(self.df_raw)
@@ -1918,8 +1938,14 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             txs, tzs, **params)
         self._temp_selection_overlay_artists['YZ'] = self.canvas.ax_yz.scatter(
             tys, tzs, **params)
-        self._temp_selection_overlay_artists['3D'] = self.canvas.ax3d.scatter(
-            txs, tys, tzs, depthshade=False, **params)
+        # Axes3D recomputes collection zorders during every draw, overriding
+        # scatter's explicit zorder. A marker-only Line3D keeps this selection
+        # aid above the cloud/fit plane while still projecting the true XYZ
+        # coordinates on rotation (no artificial height offset).
+        self._temp_selection_overlay_artists['3D'], = self.canvas.ax3d.plot(
+            txs, tys, tzs, linestyle='None', marker='x', color='red',
+            markersize=np.sqrt(50), markeredgewidth=2, zorder=10,
+            label='_temp_selection_overlay')
 
     def _remember_plot_home_state(self):
         """Remember the unzoomed limits and 3D camera for per-view reset."""

@@ -185,6 +185,32 @@ class V461MatrixRowsAndSelectionOverlayTests(unittest.TestCase):
         self.assertEqual(int(window.temp_selected_mask.sum()), 0)
         self.assertEqual(window._temp_selection_overlay_artists, {})
 
+    def test_3d_selection_drawn_after_cloud_and_plane_at_rotated_views(self):
+        window, x, y, _ = self._selection_window(side=30)
+        self.addCleanup(window.close)
+        window.temp_selected_mask[:] = (x > 6) & (x < 23) & (y > 11) & (y < 18)
+        window.update_plots_only()
+        axis = window.canvas.ax3d
+        overlay = window._temp_selection_overlay_artists['3D']
+        from contextlib import ExitStack
+        for elev, azim in ((30, -60), (15, 120), (70, 45), (-25, -40)):
+            with self.subTest(elev=elev, azim=azim):
+                axis.view_init(elev=elev, azim=azim)
+                order = []
+                with ExitStack() as stack:
+                    for artist in [*axis.collections, overlay]:
+                        original_draw = artist.draw
+                        def record(renderer, artist=artist, original_draw=original_draw):
+                            order.append(artist)
+                            return original_draw(renderer)
+                        stack.enter_context(patch.object(artist, 'draw', side_effect=record))
+                    axis.figure.canvas.draw()
+                self.assertIs(order[-1], overlay)
+                self.assertGreater(len(order), 2)
+                pixels = np.asarray(axis.figure.canvas.buffer_rgba())
+                red = (pixels[:, :, 0] > 220) & (pixels[:, :, 1] < 40) & (pixels[:, :, 2] < 40)
+                self.assertGreater(int(red.sum()), 100)
+
     def test_selection_overlay_sampling_is_display_only_and_3d_uses_plot_z(self):
         window, x, y, z = self._selection_window(side=20)
         self.addCleanup(window.close)
@@ -200,7 +226,7 @@ class V461MatrixRowsAndSelectionOverlayTests(unittest.TestCase):
         display_idx = window._last_temp_selection_display_indices
         self.assertEqual(len(display_idx), 37)
         self.assertEqual(set(window._temp_selection_overlay_artists), {"XY", "XZ", "YZ", "3D"})
-        x3d, y3d, z3d = window._temp_selection_overlay_artists["3D"]._offsets3d
+        x3d, y3d, z3d = window._temp_selection_overlay_artists["3D"].get_data_3d()
         np.testing.assert_allclose(np.asarray(x3d), x[display_idx])
         np.testing.assert_allclose(np.asarray(y3d), y[display_idx])
         np.testing.assert_allclose(np.asarray(z3d), plotted_z[display_idx])

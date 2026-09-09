@@ -24,7 +24,7 @@ if errorlevel 1 (
     echo [ok] Dependencies already available in .venv
 )
 echo [ok] Python: %PY%
-echo [run] Starting Surface Rxy/Zxy Analyzer V4.6.3
+echo [run] Starting Surface Rxy/Zxy Analyzer
 "%PY%" -m surface_analyzer %*
 set "EXITCODE=%ERRORLEVEL%"
 popd >nul

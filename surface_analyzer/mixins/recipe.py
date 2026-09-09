@@ -36,7 +36,8 @@ class RecipeMixin:
         """导出当前界面参数，不包含测量数据本身。"""
         return {
             'recipe_type': 'SurfaceRxyZxyAnalyzerRecipe',
-            'schema_version': 7,
+            'schema_version': 8,
+            'adjustment_config': self.adjustment_panel.fixture(),
             'app_version': self.APP_VERSION,
             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'column_mapping': {
@@ -139,10 +140,15 @@ class RecipeMixin:
             schema_version = int(recipe.get('schema_version', 1) or 1)
         except (TypeError, ValueError, OverflowError):
             schema_version = 1
-        if schema_version > 7:
+        if schema_version > 8:
             raise ValueError(
-                f"该 Recipe schema {schema_version} 高于当前支持的 schema 7，"
+                f"该 Recipe schema {schema_version} 高于当前支持的 schema 8，"
                 "为避免覆盖未知字段，已停止加载。")
+        from ..adjustment_panel import validate_fixture, default_fixture
+        adjustment = validate_fixture(recipe.get('adjustment_config', default_fixture()))
+        self.clear_parallel_surfaces()
+        self.adjustment_panel.load_fixture(adjustment)
+        self.adjustment_recipe_name = path_hint
         self.pending_recipe = recipe
         input_config = recipe.get('input', {}) or {}
         input_layout = str(input_config.get('layout_mode', getattr(self, 'input_layout_mode', 'point_table')))

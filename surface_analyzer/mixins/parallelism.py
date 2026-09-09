@@ -113,6 +113,9 @@ class ParallelismMixin:
                 f"Rx {rec['metrics']['rx']:.2f} µrad | Ry {rec['metrics']['ry']:.2f} µrad")
 
     def _update_parallel_ui(self):
+        self._parallel_revision = getattr(self, '_parallel_revision', 0) + 1
+        if hasattr(self, 'adjustment_panel'):
+            self.adjustment_panel.invalidate('基准 / 测量面已变化，请完成平行度计算后重新计算装调量。')
         if hasattr(self, 'lbl_parallel_base_status'):
             self.lbl_parallel_base_status.setText(self._slot_status_text(self.parallel_base))
             self.lbl_parallel_measure_status.setText(self._slot_status_text(self.parallel_measure))
@@ -146,16 +149,25 @@ class ParallelismMixin:
         return self._compute_parallel_result_from_records(self.parallel_base, self.parallel_measure)
 
     def calculate_parallelism(self):
+        if hasattr(self, 'adjustment_panel'):
+            self.adjustment_panel.invalidate('正在更新平行度结果。')
         if self.parallel_base is None or self.parallel_measure is None:
             QMessageBox.warning(self, "数据不完整", "请先分别设置基准面和测量面。")
             return
         base, measure = self.parallel_base, self.parallel_measure
+        revision = getattr(self, '_parallel_revision', 0)
+        self.parallel_result = None
+        self._update_parallel_result_ui()
+        if hasattr(self, 'adjustment_panel'):
+            self.adjustment_panel.invalidate('正在计算平行度。')
         if str(base.get('pipeline')) != str(measure.get('pipeline')):
             self._show_status("提示：基准面与测量面处理链不同；将按各自快照继续计算。", 8000)
         self._run_background_task(
             "平行度计算",
             lambda progress, cancel: self._parallel_task(base, measure, progress, cancel),
-            self._apply_parallel_result,
+            lambda result: self._apply_parallel_result(result)
+            if revision == getattr(self, '_parallel_revision', 0)
+            and base is self.parallel_base and measure is self.parallel_measure else None,
         )
 
     @classmethod
@@ -170,6 +182,8 @@ class ParallelismMixin:
 
     def _apply_parallel_result(self, result):
         self.parallel_result = result
+        if hasattr(self, 'adjustment_panel'):
+            self.adjustment_panel.invalidate('平行度已计算，可计算装调量。')
         self._update_parallel_result_ui()
         self._show_status(
             f"平行度已计算: ΔRx={self.parallel_result['drx']:.2f} µrad, "
