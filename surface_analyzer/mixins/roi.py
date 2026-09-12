@@ -1320,7 +1320,7 @@ class ROIMixin:
                 self._restore_plot_home_view(view, event)
             return
         if button == 3:
-            if self.temp_selected_mask is not None and np.any(self.temp_selected_mask):
+            if getattr(self, '_task_thread', None) is None:
                 self._show_selection_context_menu()
             return
         if self.selection_mode != 'roi_smart' or self.df_raw is None:
@@ -1444,7 +1444,9 @@ class ROIMixin:
                     progress(5, '正在建立智能抓面拓扑')
                     topology = build_adaptive_topology(
                         finite_x, finite_y, matrix_rc=finite_matrix,
-                        sensitivity=roi['sensitivity'], delaunay_limit=150000)
+                        sensitivity=roi['sensitivity'], delaunay_limit=150000,
+                        progress=lambda value, message: progress(5 + int(value * .49), message),
+                        cancel_event=cancel_event)
                     topology_seconds = time.perf_counter() - topology_started
                     topology_hit = False
                 else:
@@ -1585,18 +1587,29 @@ class ROIMixin:
         self.pending_delete_operation = None
         self._add_roi_shape(roi)
 
-    def _show_selection_context_menu(self):
+    def _build_selection_context_menu(self):
         menu = QMenu(self)
-        delete_action = menu.addAction("删除选中")
-        rect_action = menu.addAction("设为矩形 ROI")
-        cancel_action = menu.addAction("取消选中")
-        chosen = menu.exec(QCursor.pos())
-        if chosen is delete_action:
-            self.apply_manual_deletion()
-        elif chosen is rect_action:
-            self.set_temp_selection_as_roi()
-        elif chosen is cancel_action:
-            self.cancel_temp_selection()
+        if getattr(self, '_task_thread', None) is not None:
+            return menu
+        selected = self.temp_selected_mask is not None and np.any(self.temp_selected_mask)
+        if selected:
+            menu.addAction("删除选中", self.apply_manual_deletion)
+            menu.addAction("设为矩形 ROI", self.set_temp_selection_as_roi)
+            menu.addAction("取消选中", self.cancel_temp_selection)
+        if self.roi_shapes:
+            if selected:
+                menu.addSeparator()
+            action = menu.addAction("清空 ROI", self.clear_rois)
+            action.setToolTip("清空全部 ROI，恢复全范围分析")
+        if not selected and self.manual_delete_operations:
+            menu.addAction("撤销删点", self.undo_manual_deletion)
+        return menu
+
+    def _show_selection_context_menu(self):
+        menu = self._build_selection_context_menu()
+        if menu.actions():
+            menu.exec(QCursor.pos())
+        menu.deleteLater()
 
     def on_select(self, eclick, erelease, view_type):
         if self.df_raw is None or self.active_idx is None: return

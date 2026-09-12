@@ -1,9 +1,46 @@
 """Adaptive topology and continuous-surface region growing for smart ROI v2."""
 
 from collections import deque
+from contextvars import ContextVar
+import time
 
 import numpy as np
 from scipy.spatial import Delaunay, QhullError, cKDTree
+
+
+# Scoped to one build/thread, including matrix fallback paths and helper calls.
+_topology_reporter = ContextVar('topology_reporter', default=None)
+
+
+def _topology_progress(value=0, message='', done=None, total=None):
+    reporter = _topology_reporter.get()
+    if reporter is not None:
+        reporter(value, message, done, total)
+
+
+def build_adaptive_topology(x, y, matrix_rc=None, sensitivity='standard',
+                            delaunay_limit=150000, progress=None, cancel_event=None):
+    started = time.perf_counter()
+    highest = 0
+
+    def report(value, message, done, total):
+        nonlocal highest
+        if cancel_event is not None and cancel_event.is_set():
+            from .workers import TaskCancelled
+            raise TaskCancelled()
+        if progress is not None and message:
+            highest = max(highest, min(100, int(value)))
+            counts = f' {done:,} / {total:,}' if done is not None else ''
+            progress(highest, f'{message}{counts} | 已用时 {time.perf_counter()-started:.1f}s')
+
+    token = _topology_reporter.set(report)
+    try:
+        _topology_progress(0, '正在准备智能抓面邻接关系')
+        result = _build_adaptive_topology(x, y, matrix_rc, sensitivity, delaunay_limit)
+        _topology_progress(100, '智能抓面邻接关系已就绪')
+        return result
+    finally:
+        _topology_reporter.reset(token)
 
 
 SENSITIVITY = {
@@ -23,20 +60,31 @@ SENSITIVITY = {
 
 
 def _edge_pairs_to_adjacency(point_count, edges):
+    _topology_progress(82, '正在生成点邻接表')
     buckets = [[] for _ in range(int(point_count))]
-    for left, right in np.asarray(edges, dtype=np.int64):
+    for index, (left, right) in enumerate(np.asarray(edges, dtype=np.int64)):
+        if index % 20000 == 0:
+            _topology_progress(82 + 5 * index / max(len(edges), 1), '正在生成点邻接表', index, len(edges))
         if left == right:
             continue
         buckets[int(left)].append(int(right))
         buckets[int(right)].append(int(left))
-    return [np.asarray(sorted(set(items)), dtype=np.int32) for items in buckets]
+    adjacency = []
+    for index, items in enumerate(buckets):
+        if index % 20000 == 0:
+            _topology_progress(87 + 3 * index / max(point_count, 1), '正在整理点邻接表', index, point_count)
+        adjacency.append(np.asarray(sorted(set(items)), dtype=np.int32))
+    return adjacency
 
 
 def _matrix_edges(row_values, col_values):
+    _topology_progress(2, '正在建立矩阵索引')
     cells = {(int(row), int(col)): index
              for index, (row, col) in enumerate(zip(row_values, col_values))}
     edges = []
-    for (row, col), index in cells.items():
+    for count, ((row, col), index) in enumerate(cells.items()):
+        if count % 20000 == 0:
+            _topology_progress(5 + 70 * count / max(len(cells), 1), '正在连接矩阵邻点', count, len(cells))
         for dr, dc in ((0, 1), (1, -1), (1, 0), (1, 1)):
             other = cells.get((row + dr, col + dc))
             if other is not None:
@@ -51,6 +99,7 @@ def _edge_lengths(xy, edges):
 
 
 def _topology_health(adjacency):
+    _topology_progress(90, '正在检查邻接关系连通性')
     degrees = np.asarray([len(items) for items in adjacency], dtype=int)
     point_count = int(len(degrees))
     edge_count = int(degrees.sum() // 2)
@@ -58,6 +107,7 @@ def _topology_health(adjacency):
     median_degree = float(np.median(degrees)) if point_count else 0.0
     largest = 0
     visited = np.zeros(point_count, dtype=bool)
+    processed = 0
     for start in range(point_count):
         if visited[start]:
             continue
@@ -65,6 +115,9 @@ def _topology_health(adjacency):
         queue = deque([start]); visited[start] = True
         while queue:
             current = queue.popleft(); size += 1
+            processed += 1
+            if processed % 20000 == 0:
+                _topology_progress(90 + 9 * processed / max(point_count, 1), '正在检查邻接关系连通性', processed, point_count)
             for neighbor in adjacency[current]:
                 neighbor = int(neighbor)
                 if not visited[neighbor]:
@@ -94,6 +147,7 @@ def _constrain_edges_to_raster(edges, rows, cols):
 
 
 def _prune_edges_by_local_scale(xy, edges, edge_factor):
+    _topology_progress(60, '正在计算邻接距离')
     if len(edges) == 0:
         return edges, 0.0
     lengths = _edge_lengths(xy, edges)
@@ -102,6 +156,8 @@ def _prune_edges_by_local_scale(xy, edges, edge_factor):
         return np.empty((0, 2), dtype=np.int64), 0.0
     incident = [[] for _ in range(len(xy))]
     for edge_index, (left, right) in enumerate(edges):
+        if edge_index % 20000 == 0:
+            _topology_progress(62 + 5 * edge_index / max(len(edges), 1), '正在汇总邻接距离', edge_index, len(edges))
         distance = float(lengths[edge_index])
         if np.isfinite(distance) and distance > 0:
             incident[int(left)].append(distance)
@@ -110,6 +166,8 @@ def _prune_edges_by_local_scale(xy, edges, edge_factor):
     global_cap = float(np.percentile(positive, 92)) * float(edge_factor)
     local_scale = np.full(len(xy), global_scale, dtype=float)
     for index, values in enumerate(incident):
+        if index % 2048 == 0:
+            _topology_progress(67 + 13 * index / max(len(xy), 1), '正在计算局部点距并筛选连边', index, len(xy))
         if values:
             local_scale[index] = float(np.percentile(values, 75))
     threshold = np.maximum(local_scale[edges[:, 0]], local_scale[edges[:, 1]]) * float(edge_factor)
@@ -118,6 +176,7 @@ def _prune_edges_by_local_scale(xy, edges, edge_factor):
 
 
 def _delaunay_edges(xy, edge_factor):
+    _topology_progress(5, '正在检查平面点云')
     if len(xy) < 3:
         raise ValueError('点数不足3个')
     if len(np.unique(xy, axis=0)) != len(xy):
@@ -128,10 +187,12 @@ def _delaunay_edges(xy, edge_factor):
     if eigenvalues[-1] <= 0 or eigenvalues[0] / eigenvalues[-1] < 1e-8:
         raise ValueError('点云近共线')
     try:
+        _topology_progress(10, '正在建立三角邻接关系')
         triangles = Delaunay(xy).simplices
     except QhullError as exc:
         raise ValueError(f'Delaunay失败: {exc.__class__.__name__}') from exc
     edges = np.vstack((triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [0, 2]]))
+    _topology_progress(55, '正在合并重复连边')
     edges = np.unique(np.sort(edges, axis=1), axis=0)
     return _prune_edges_by_local_scale(xy, edges, edge_factor)
 
@@ -150,6 +211,8 @@ def _choose_adaptive_knn_k(tree, xy):
         count = min(level + 1, neighbors.shape[1])
         covered = 0
         for sample_row, source_index in enumerate(sample_index):
+            if sample_row % 1024 == 0:
+                _topology_progress(5, '正在估计邻域大小', sample_row, sample_count)
             ids = np.asarray(neighbors[sample_row, 1:count], dtype=int)
             delta = xy[ids] - xy[source_index]
             delta = delta[np.linalg.norm(delta, axis=1) > 0]
@@ -167,12 +230,14 @@ def _choose_adaptive_knn_k(tree, xy):
 def _adaptive_knn_edges(xy, edge_factor):
     if len(xy) < 2:
         return np.empty((0, 2), dtype=np.int64), 0.0, 0
+    _topology_progress(2, '正在建立空间索引')
     tree = cKDTree(xy)
     neighbor_count = _choose_adaptive_knn_k(tree, xy)
     query_k = min(len(xy), neighbor_count + 1)
     edge_chunks = []
     chunk_size = 20000
     for start in range(0, len(xy), chunk_size):
+        _topology_progress(8 + 45 * start / max(len(xy), 1), '正在搜索并连接邻点', start, len(xy))
         end = min(len(xy), start + chunk_size)
         distances, indices = tree.query(xy[start:end], k=query_k)
         if indices.ndim == 1:
@@ -180,6 +245,8 @@ def _adaptive_knn_edges(xy, edge_factor):
             distances = distances[:, None]
         selected = []
         for local_row, source_index in enumerate(range(start, end)):
+            if local_row % 2048 == 0:
+                _topology_progress(8 + 45 * source_index / max(len(xy), 1), '正在搜索并连接邻点', source_index, len(xy))
             ids = np.asarray(indices[local_row, 1:], dtype=int)
             dists = np.asarray(distances[local_row, 1:], dtype=float)
             valid = (ids != source_index) & np.isfinite(dists) & (dists > 0)
@@ -201,12 +268,13 @@ def _adaptive_knn_edges(xy, edge_factor):
             edge_chunks.append(np.asarray(selected, dtype=np.int64))
     edges = (np.vstack(edge_chunks) if edge_chunks else
              np.empty((0, 2), dtype=np.int64))
+    _topology_progress(55, '正在合并重复连边')
     edges = np.unique(np.sort(edges, axis=1), axis=0)
     pruned, spacing = _prune_edges_by_local_scale(xy, edges, edge_factor)
     return pruned, spacing, neighbor_count
 
 
-def build_adaptive_topology(x, y, matrix_rc=None, sensitivity='standard', delaunay_limit=150000):
+def _build_adaptive_topology(x, y, matrix_rc=None, sensitivity='standard', delaunay_limit=150000):
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     xy = np.column_stack([x, y])
@@ -268,6 +336,7 @@ def build_adaptive_topology(x, y, matrix_rc=None, sensitivity='standard', delaun
                         'health': constrained_health,
                     }
             except Exception as exc:
+                _topology_progress()  # Cancellation must never become a fallback.
                 constrained_errors.append(str(exc))
 
         unconstrained_errors = []
@@ -289,6 +358,7 @@ def build_adaptive_topology(x, y, matrix_rc=None, sensitivity='standard', delaun
                         'health': health,
                     }
             except Exception as exc:
+                _topology_progress()
                 unconstrained_errors.append(str(exc))
 
         detail = '；'.join(constrained_errors or ['受约束回退后拓扑仍不连通'])
@@ -316,6 +386,7 @@ def build_adaptive_topology(x, y, matrix_rc=None, sensitivity='standard', delaun
                 'health': health,
             }
         except Exception as exc:
+            _topology_progress()
             fallback_reason = str(exc)
     else:
         fallback_reason = f'点数 {len(xy):,} 超过 Delaunay 上限 {int(delaunay_limit):,}'

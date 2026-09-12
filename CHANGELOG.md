@@ -2,6 +2,8 @@
 
 ## V4.6.6
 
+- Added Smart ROI topology stage/count/elapsed-time progress and cooperative cancellation between processing batches.
+- Added contextual clear-all-ROI and undo-last-deletion actions to the 2D plot menu.
 - Added title-bar focus/restore controls for each 3D, XY, XZ and YZ plot card.
 - Kept the left controls available while a focused plot fills the right workspace.
 - Preserved double-click view reset and added Escape-to-restore behavior.
