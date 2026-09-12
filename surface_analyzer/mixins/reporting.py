@@ -138,7 +138,7 @@ class ReportingMixin:
                 self.n_filtered, pipeline_text, filter_text, self.import_info,
                 getattr(self, 'display_surface_mode', 'raw'),
                 render_config={'xy_mode': self.canvas.xy_mode.currentData(),
-                               'xy_raster_max_side': self.canvas.xy_resolution.currentData()},
+                               'xy_raster_max_side': 1200},
                 roi_info=self._roi_report_info(tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data()),
                 overview_idx=np.flatnonzero(self.manual_mask),
                 roi_mask_all=(getattr(self, '_effective_roi_mask_cache', None)
@@ -270,7 +270,7 @@ class ReportingMixin:
             'filter_text': filter_text,
             'display_surface_mode': getattr(self, 'display_surface_mode', 'raw'),
             'render_config': {'xy_mode': self.canvas.xy_mode.currentData(),
-                              'xy_raster_max_side': self.canvas.xy_resolution.currentData()},
+                              'xy_raster_max_side': 1200},
             'display_detrended': self.display_detrended,
             'roi_enabled': bool(self.roi_enabled),
             'roi_shapes': [dict(r) for r in self.roi_shapes],

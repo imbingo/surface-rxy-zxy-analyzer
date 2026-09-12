@@ -65,7 +65,7 @@ class RecipeMixin:
             },
             'display': {
                 'xy_mode': self.canvas.xy_mode.currentData(),
-                'xy_raster_max_side': self.canvas.xy_resolution.currentData(),
+                'xy_raster_max_side': 1200,
                 'surface_mode': str(getattr(self, 'display_surface_mode', 'raw')),
                 'detrended': bool(self.display_detrended),
             },
@@ -288,12 +288,10 @@ class RecipeMixin:
         self.cb_surface_display.setCurrentIndex(display_index if display_index >= 0 else 0)
         self.cb_surface_display.blockSignals(False)
         self.display_surface_mode = surface_mode
-        for combo, value in ((self.canvas.xy_mode, render_display['xy_mode']),
-                             (self.canvas.xy_resolution, render_display['xy_raster_max_side'])):
-            combo.blockSignals(True)
-            index = combo.findData(value)
-            combo.setCurrentIndex(index if index >= 0 else 0)
-            combo.blockSignals(False)
+        # Legacy XY display options remain valid schema-8 input, but V4.6.6
+        # always uses the automatic height view and its 1200-pixel ceiling.
+        self.canvas.xy_mode.setCurrentIndex(0)
+        self.canvas.xy_resolution.setCurrentIndex(0)
         self.display_detrended = surface_mode != 'raw'
         self._update_surface_display_metrics()
         roi = recipe.get('roi', {}) or {}

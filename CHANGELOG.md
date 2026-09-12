@@ -1,5 +1,12 @@
 # Changelog
 
+## V4.6.6
+
+- Added title-bar focus/restore controls for each 3D, XY, XZ and YZ plot card.
+- Kept the left controls available while a focused plot fills the right workspace.
+- Preserved double-click view reset and added Escape-to-restore behavior.
+- Made XY Raster resolution fully automatic while retaining Recipe schema 8 compatibility.
+
 ## V4.6.5
 
 - Added full-input physical XY height raster rendering with transparent NoData regions.

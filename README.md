@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.6.5
+# Surface Rxy ZXY Analyzer V4.6.6
 
-面型及 Rxy 分析工具当前版本为 **V4.6.5**。本版新增全量 XY Raster、缺测/密度显示、空间 LOD 和数据规模链路；量测定义不变。详见 [V4.6.5 交付说明](docs/V4.6.5_delivery.md)。历史文件见 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
+面型及 Rxy 分析工具当前版本为 **V4.6.6**。本版新增四视图单图聚焦，XY 高度图改为全自动显示；量测定义不变。详见 [V4.6.6 交付说明](docs/V4.6.6_delivery.md)。历史文件见 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.6.5.py`：V4.6.5 Python 启动入口。
-- `start_surface_analyzer_v4_6_5.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.6.6.py`：V4.6.6 Python 启动入口。
+- `start_surface_analyzer_v4_6_6.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,27 +14,34 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_6_5.bat
+start_surface_analyzer_v4_6_6.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_6_5.bat
+.\start_surface_analyzer_v4_6_6.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_6_5.bat --check
+.\start_surface_analyzer_v4_6_6.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.6.5.py
+python .\面型及Rxy分析工具V4.6.6.py
 python -m surface_analyzer
 ```
+
+## V4.6.6 重点
+
+- 3D、XY、XZ、YZ 图卡可通过右上角按钮单独放大到右侧工作区；再次点击或按 Esc 还原。
+- 左侧参数区在聚焦状态下保持可用，双击仍只负责恢复当前视图坐标。
+- XY 高度图分辨率完全自动，放大后自动切换带高度颜色的原始散点。
+- Recipe schema 8 与量测定义保持不变；旧的显示分辨率字段兼容读取但不再控制界面。
 
 ## V4.6.4 重点
 

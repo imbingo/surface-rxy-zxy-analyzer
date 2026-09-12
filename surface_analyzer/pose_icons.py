@@ -1,6 +1,6 @@
 """Font-independent line icons for the eight pose operations."""
 from PyQt6.QtCore import QByteArray, Qt
-from PyQt6.QtGui import QPainter, QPixmap
+from PyQt6.QtGui import QIcon, QPainter, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 
 
@@ -23,3 +23,21 @@ def pose_pixmap(key):
     painter.end()
     pixmap.setDevicePixelRatio(3)
     return pixmap
+
+
+def focus_icon(restore=False):
+    """Return a font-independent focus/restore icon rendered from SVG."""
+    if restore:
+        path = 'M8 7V4h12v12h-3 M4 8h12v12H4z'
+    else:
+        path = 'M9 4H4v5 M15 4h5v5 M9 20H4v-5 M15 20h5v-5'
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+           f'<path d="{path}" fill="none" stroke="#52657a" stroke-width="1.7" '
+           'stroke-linecap="round" stroke-linejoin="round"/></svg>')
+    pixmap = QPixmap(54, 54)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    QSvgRenderer(QByteArray(svg.encode())).render(painter)
+    painter.end()
+    pixmap.setDevicePixelRatio(3)
+    return QIcon(pixmap)

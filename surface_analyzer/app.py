@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.6.3."""
+"""Qt application shell for Surface Analyzer V4.6.6."""
 
 import sys
 import os
@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
     QStackedWidget, QSizeGrip, QProgressBar, QMenu,
 )
-from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSettings, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSettings, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QColor, QPixmap, QPainter, QPen, QFont, QFontDatabase, QShortcut, QKeySequence,
 )
@@ -269,6 +269,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             #plotCard { background: #ffffff; border: 1px solid #e9edf1; border-radius: 12px; }
             #plotDot { background: #2f6db0; border-radius: 4px; }
             #plotTitle { color: #2b333c; font-size: 12px; font-weight: bold; }
+            #plotFocusButton { border: none; border-radius: 5px; background: transparent; padding: 2px; }
+            #plotFocusButton:hover { background: #edf3f9; }
+            #plotFocusButton:pressed { background: #dce8f4; }
             QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right;
                                    width: 20px; border: none; }
             QSpinBox::up-button, QDoubleSpinBox::up-button { subcontrol-origin: border;
@@ -457,7 +460,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.canvas = MultiViewCanvas(self)
         self.xy_raster = XYRasterController(self)
         self.canvas.xy_mode.currentIndexChanged.connect(lambda _: self.update_plots_only())
-        self.canvas.xy_resolution.currentIndexChanged.connect(lambda _: self.update_plots_only())
+        self.canvas.focusChanged.connect(self._on_plot_focus_changed)
         # MultiViewCanvas uses one FigureCanvas per view. Selection/context menus
         # stay 2D-only; 3D receives only the display reset handler.
         self._plot_click_cids = [
@@ -617,6 +620,23 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.shortcut_save.activated.connect(self.save_file)
         self.shortcut_reset = QShortcut(QKeySequence("Ctrl+R"), self)
         self.shortcut_reset.activated.connect(self.reset_all)
+        self.shortcut_plot_restore = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self.shortcut_plot_restore.activated.connect(self._restore_plot_grid)
+
+    def _restore_plot_grid(self):
+        if hasattr(self, 'canvas') and self.canvas.focused_view is not None:
+            self.canvas.set_focused_view(None)
+
+    def _on_plot_focus_changed(self, view):
+        if hasattr(self, '_results_strip'):
+            self._results_strip.setVisible(view is None)
+        if view is None:
+            self._show_status('已还原四视图', 2500)
+        else:
+            self._show_status(f'{view} 视图已放大；点击右上角按钮或按 Esc 还原', 3500)
+        # XY uses its new canvas pixel size to rebuild only the display raster.
+        if view in (None, 'XY') and hasattr(self, 'xy_raster'):
+            QTimer.singleShot(0, self.xy_raster.request)
 
     def _remember_recent_file(self, path):
         path = str(Path(path).resolve())
@@ -1324,6 +1344,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._sync_gap_action_state()
 
     def _on_tab_changed(self, index):
+        if index != 0 and hasattr(self, 'canvas'):
+            self.canvas.set_focused_view(None)
         if hasattr(self, 'right_stack'):
             if index == getattr(self, 'parallel_tab_index', -1):
                 self.right_stack.setCurrentIndex(1)

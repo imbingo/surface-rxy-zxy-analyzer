@@ -118,11 +118,10 @@ class RasterTests(unittest.TestCase):
                 wait_render()
                 np.testing.assert_array_equal(w.xy_raster.scatter.get_sizes(),marker_sizes)
                 self.assertEqual(w.xy_raster.scatter.get_clim(),color_limits)
-                for resolution in (1, 2, 0):
-                    w.canvas.xy_resolution.setCurrentIndex(resolution)
-                    wait_render()
-                    self.assertIs(w.last_metrics, metrics)
-                    np.testing.assert_array_equal(w.active_idx, active)
+                self.assertEqual(w.canvas.xy_resolution.count(),1)
+                self.assertEqual(w.canvas.xy_resolution.currentData(),1200)
+                self.assertIs(w.last_metrics, metrics)
+                np.testing.assert_array_equal(w.active_idx, active)
             w.selection_mode = 'roi_smart'
             index = 4321
             event = SimpleNamespace(button=1, dblclick=False, inaxes=w.canvas.ax_xy,
@@ -148,11 +147,6 @@ class RasterTests(unittest.TestCase):
                     app.processEvents()
                     wait_render()
                     w.grab().save(str(output.with_name(f'{output.stem}_{width}.png')))
-                w.resize(1366,768)
-                for mode in (1, 2):
-                    w.canvas.xy_resolution.setCurrentIndex(mode)
-                    wait_render()
-                    w.grab().save(str(output.with_name(f'{output.stem}_mode{mode}.png')))
             # ROI gray occupancy uses every ROI source point, not its scatter sample.
             w.xy_raster.reset()
             w.xy_raster.bind(x, y, z, x < 0, 'height')
@@ -179,7 +173,8 @@ class RasterTests(unittest.TestCase):
             with mock_patch('surface_analyzer.mixins.recipe.QSettings'), mock_patch('surface_analyzer.mixins.recipe.QMessageBox.information'):
                 w.apply_recipe(recipe,remap_current_data=False)
             self.assertEqual(w.canvas.xy_mode.currentData(),'height')
-            self.assertEqual(w.canvas.xy_resolution.currentData(),600)
+            self.assertEqual(w.canvas.xy_resolution.currentData(),1200)
+            self.assertEqual(w._current_recipe_dict()['display']['xy_raster_max_side'],1200)
         finally:
             w.close()
 

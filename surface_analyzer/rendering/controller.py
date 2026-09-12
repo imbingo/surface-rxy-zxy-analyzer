@@ -69,7 +69,7 @@ class XYRasterController(QObject):
 
     def key(self):
         xs, ys = sorted(self.ax.get_xlim()), sorted(self.ax.get_ylim())
-        side = int(self.owner.canvas.xy_resolution.currentData())
+        side = 1200
         size = (max(1, min(side, round(self.ax.bbox.width))),
                 max(1, min(side, round(self.ax.bbox.height))))
         return (self.source_version, self.mode, tuple(xs+ys), size)
@@ -159,7 +159,7 @@ class XYRasterController(QObject):
         self.owner.canvas.title_xy.setText(f'XY {display}')
         self.owner.canvas.title_xy.setToolTip(
             f'高度通道：{self.z_label}。无有效数据区域透明，不代表零高度或已确认孔洞。'
-            '缩放保持全显示源色标；放大自动显示原始散点，点大小固定，不插值。右键设置分辨率。')
+            '缩放保持全显示源色标；放大自动显示原始散点，点大小固定，不插值。')
         self.owner._xy_raster_status = f'{display} / 全量显示源 {result.source_count:,} / 窗内 {result.visible_count:,}'
         self.owner._update_import_status_label()
         self.ax.figure.canvas.draw_idle()

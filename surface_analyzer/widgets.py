@@ -22,13 +22,14 @@ from PyQt6.QtWidgets import (
     QFileDialog, QLabel, QSplitter, QGroupBox, QGridLayout, QMessageBox,
     QScrollArea, QComboBox, QTabWidget, QDoubleSpinBox, QSpinBox, QCheckBox,
     QDialog, QDialogButtonBox, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
-    QStackedWidget, QSizeGrip, QMenu,
+    QStackedWidget, QSizeGrip, QToolButton,
 )
-from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, pyqtSignal
+from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSize, pyqtSignal
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
 
 from .plotting import set_surface_box_aspect, set_xy_equal_aspect
+from .pose_icons import focus_icon
 
 
 
@@ -53,6 +54,8 @@ class NoWheelComboBox(QComboBox):
 class MultiViewCanvas(QWidget):
     """四视图改为 4 张独立卡片（2×2 网格），每张白底圆角 + 投影 + 顶部「● 标题」，
     模块感更强；标题用 Qt 渲染，蓝点与文字天然对齐。"""
+    focusChanged = pyqtSignal(object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         # YaHei 同时含中文与 µ(U+00B5)，去倾斜显示的 µm 轴标签也不再出现缺字方块
@@ -71,61 +74,96 @@ class MultiViewCanvas(QWidget):
         grid.setSpacing(12)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
-        self.ax3d, c3, card3, self.title_3d = self._make_card("3D 原始高度", '3d')
-        self.ax_xy, cxy, cardxy, self.title_xy = self._make_card("XY 俯视分布", None)
+        self.ax3d, c3, card3, self.title_3d, b3 = self._make_card("3D 原始高度", '3d', '3D')
+        self.ax_xy, cxy, cardxy, self.title_xy, bxy = self._make_card("XY 俯视分布", None, 'XY')
         self.xy_mode = NoWheelComboBox(self)
         self.xy_mode.addItem('高度图', 'height')
         self.xy_mode.setToolTip('高度图；无数据区不插值、不补洞。')
         self.xy_resolution = NoWheelComboBox(self)
-        for side in (1200,800,600):
-            self.xy_resolution.addItem(f'自动 / 最大 {side}px', side)
-        # Retain settings objects for Recipe compatibility, not as a plot toolbar.
+        self.xy_resolution.addItem('自动', 1200)
+        # Retain settings objects only as compatibility shims for Recipe schema 8.
         self.xy_mode.hide()
         self.xy_resolution.hide()
-        cxy.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        cxy.customContextMenuRequested.connect(self._xy_context_menu)
-        self.ax_xz, cxz, cardxz, self.title_xz = self._make_card("X-Z 投影", None)
-        self.ax_yz, cyz, cardyz, self.title_yz = self._make_card("Y-Z 投影", None)
+        self.ax_xz, cxz, cardxz, self.title_xz, bxz = self._make_card("X-Z 投影", None, 'XZ')
+        self.ax_yz, cyz, cardyz, self.title_yz, byz = self._make_card("Y-Z 投影", None, 'YZ')
         self._canvases = [c3, cxy, cxz, cyz]
-        grid.addWidget(card3, 0, 0); grid.addWidget(cardxy, 0, 1)
-        grid.addWidget(cardxz, 1, 0); grid.addWidget(cardyz, 1, 1)
         self._grid = grid
         self._cards = [card3,cardxy,cardxz,cardyz]
+        self._views = ('3D', 'XY', 'XZ', 'YZ')
+        self._card_by_view = dict(zip(self._views, self._cards))
+        self._canvas_by_view = dict(zip(self._views, self._canvases))
+        self.focus_buttons = dict(zip(self._views, (b3,bxy,bxz,byz)))
+        self.focused_view = None
         self._layout_columns = 2
+        self._layout_cards()
 
-    def _xy_context_menu(self, position):
-        menu = QMenu(self)
-        resolution = menu.addMenu('高度图分辨率（自动适配）')
-        for i in range(self.xy_resolution.count()):
-            action = resolution.addAction(self.xy_resolution.itemText(i))
-            action.setCheckable(True)
-            action.setChecked(i == self.xy_resolution.currentIndex())
-            action.setEnabled(self.xy_resolution.isEnabled())
-            action.triggered.connect(lambda checked=False, index=i: self.xy_resolution.setCurrentIndex(index))
-        menu.exec(self.ax_xy.figure.canvas.mapToGlobal(position))
+    def _layout_cards(self):
+        for card in self._cards:
+            self._grid.removeWidget(card)
+        if self.focused_view is not None:
+            self.setMinimumHeight(0)
+            self._grid.addWidget(self._card_by_view[self.focused_view], 0, 0, 1, 2)
+            return
+        columns = 1 if self.width() < 650 else 2
+        self._layout_columns = columns
+        for i, card in enumerate(self._cards):
+            self._grid.addWidget(card, i // columns, i % columns)
+        self._grid.setColumnStretch(1, 1 if columns == 2 else 0)
+        self.setMinimumHeight(1100 if columns == 1 else 0)
+
+    def set_focused_view(self, view=None):
+        if view is not None and view not in self._card_by_view:
+            raise ValueError(f'Unknown plot view: {view}')
+        if view == self.focused_view:
+            return
+        self.focused_view = view
+        for key, card in self._card_by_view.items():
+            card.setVisible(view is None or key == view)
+        for key, button in self.focus_buttons.items():
+            restore = view == key
+            button.setIcon(focus_icon(restore))
+            button.setToolTip('还原四视图（Esc）' if restore else f'放大 {key} 视图')
+            button.setAccessibleName('还原四视图' if restore else f'放大 {key} 视图')
+        self._layout_cards()
+        self.updateGeometry()
+        if view is None:
+            for canvas in self._canvases:
+                canvas.draw_idle()
+        else:
+            self._canvas_by_view[view].draw_idle()
+        self.focusChanged.emit(view)
+
+    def toggle_focused_view(self, view):
+        self.set_focused_view(None if self.focused_view == view else view)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if not hasattr(self,'_cards'):
             return
+        if self.focused_view is not None:
+            return
         columns = 1 if self.width() < 650 else 2
         if columns != self._layout_columns:
-            self._layout_columns = columns
-            for card in self._cards:
-                self._grid.removeWidget(card)
-            for i,card in enumerate(self._cards):
-                self._grid.addWidget(card,i//columns,i%columns)
-            self._grid.setColumnStretch(1,1 if columns == 2 else 0)
-            self.setMinimumHeight(1100 if columns == 1 else 0)
+            self._layout_cards()
 
-    def _make_card(self, title, projection):
+    def _make_card(self, title, projection, view):
         card = QFrame(); card.setObjectName("plotCard")
         v = QVBoxLayout(card)
         v.setContentsMargins(12, 9, 10, 8); v.setSpacing(5)
         head = QHBoxLayout(); head.setSpacing(7)
         dot = QLabel(); dot.setObjectName("plotDot"); dot.setFixedSize(8, 8)
         tlabel = QLabel(title); tlabel.setObjectName("plotTitle")
-        head.addWidget(dot); head.addWidget(tlabel); head.addStretch()
+        focus = QToolButton()
+        focus.setObjectName('plotFocusButton')
+        focus.setAutoRaise(True)
+        focus.setFixedSize(26, 24)
+        focus.setIconSize(QSize(18, 18))
+        focus.setIcon(focus_icon(False))
+        focus.setToolTip(f'放大 {view} 视图')
+        focus.setAccessibleName(f'放大 {view} 视图')
+        focus.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        focus.clicked.connect(lambda checked=False, key=view: self.toggle_focused_view(key))
+        head.addWidget(dot); head.addWidget(tlabel); head.addStretch(); head.addWidget(focus)
         v.addLayout(head)
         if projection == '3d':
             # A manually positioned orthographic axis uses the wide card much
@@ -143,7 +181,7 @@ class MultiViewCanvas(QWidget):
         eff.setBlurRadius(20); eff.setXOffset(0); eff.setYOffset(3)
         eff.setColor(QColor(18, 28, 40, 30))
         card.setGraphicsEffect(eff)
-        return ax, canvas, card, tlabel
+        return ax, canvas, card, tlabel, focus
 
     def set_titles(self, mode='raw'):
         if mode != 'raw':
