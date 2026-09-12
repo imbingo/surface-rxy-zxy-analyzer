@@ -37,6 +37,7 @@ from ..workers import TaskCancelled, sha256_file_dialog
 from ..widgets import NoWheelSpinBox, NoWheelDoubleSpinBox, NoWheelComboBox
 from ..config import MISSING_TEXT_TOKENS as _CONFIG_MISSING_TEXT_TOKENS
 from ..delimited_text import detect_delimiter, tokenize_delimited_line
+from ..data_scale import scale_summary
 
 
 _NORMALIZED_MISSING_TOKENS = frozenset(
@@ -284,17 +285,16 @@ class DataIOMixin:
             header_text = f" | {confidence_label}"
             if header_line:
                 header_text += f"(第{int(header_line)}行)"
-        if info.get('height_matrix') and info.get('matrix_rows') and info.get('matrix_cols'):
-            matrix_rows = int(info.get('matrix_rows', 0))
-            matrix_cols = int(info.get('matrix_cols', 0))
-            original_valid = int(info.get('original_valid_points', info.get('source_valid_rows', import_rows)) or 0)
-            analysis_points = int(info.get('analysis_points', import_rows) or 0)
-            display_points = int(info.get('display_points', shown) or 0)
-            text = (f"导入状态: Z矩阵 {matrix_rows:,}×{matrix_cols:,} | 有效 {original_valid:,} | "
-                    f"分析 {analysis_points:,} | 显示 {display_points:,} | {strategy} | {sampled_text}")
-        else:
-            text = (f"导入状态: {layout_text} | {strategy} | {sampled_text} | 文件 {file_size_mb:.1f} MB | "
-                    f"读入 {int(import_rows):,} 行{valid_text}{issue_text}{header_text} | 显示 {int(shown):,}/{int(display_limit):,} 点")
+        frame = getattr(self, 'df_raw', None)
+        active = getattr(self, 'active_idx', None)
+        final = (len(active) if active is not None and
+                 getattr(self, 'last_metrics', None) is not None else None)
+        text, scale_detail = scale_summary(
+            info, len(frame) if frame is not None else None, final,
+            len(getattr(self, '_last_xy_plot_indices', [])) if frame is not None else None,
+            len(getattr(self, '_last_detail_plot_indices', [])) if frame is not None else None)
+        summary_text = f'导入状态: {text}'
+        text = summary_text
         if quality['estimated']:
             text += f" | 结果质量: {quality['label']}"
         if notes:
@@ -306,7 +306,10 @@ class DataIOMixin:
         if info.get('topology_fallback_reason'):
             text += f" | Fallback: {info['topology_fallback_reason']}"
         if hasattr(self, 'lbl_import_status'):
-            self.lbl_import_status.setText(text)
+            self.lbl_import_status.setText(summary_text)
+            self.lbl_import_status.setToolTip(
+                scale_detail + f'\n{layout_text} | {strategy} | 文件 {file_size_mb:.1f} MB'
+                + issue_text + header_text + '\n' + text)
         if hasattr(self, 'btn_bigfile_settings'):
             self.btn_bigfile_settings.setText(
                 f"导入策略 · {self._input_layout_short_label(layout_mode)}")
@@ -318,7 +321,7 @@ class DataIOMixin:
                    f"触发阈值: {self.large_text_threshold_mb} MB\n"
                    f"导入上限: {self.large_text_import_limit:,} 行\n"
                    f"显示上限: {self.display_point_limit:,} 点\n\n{text}")
-            self.btn_bigfile_settings.setToolTip(cfg)
+            self.btn_bigfile_settings.setToolTip(cfg + '\n' + scale_detail)
         if text and strategy != '--':
             self._show_status(text, 5000)
 
@@ -4060,6 +4063,15 @@ class DataIOMixin:
             for name, col in (("X", xc), ("Y", yc), ("Z", zc)):
                 if col not in self.absolute_raw_df.columns:
                     raise ValueError(f"{name}列 '{col}' 不在文件列中，请重新选择列映射。")
+            if 'count_mapping' not in self.import_info:
+                inferred = self._infer_xyz_column_indices(
+                    list(self.absolute_raw_df.columns), len(self.absolute_raw_df.columns))
+                inferred_names = ([self.absolute_raw_df.columns[i] for i in inferred]
+                                  if inferred is not None else [xc, yc, zc])
+                self.import_info['count_mapping'] = [
+                    self.import_info.get('mapping_x_col', inferred_names[0]),
+                    self.import_info.get('mapping_y_col', inferred_names[1]),
+                    self.import_info.get('mapping_z_col', inferred_names[2])]
             generic_pixel = (
                 getattr(self, 'input_layout_mode', 'point_table') == 'pixel_xy'
                 and self.import_info.get('source_format') != 'Zygo XYZ Data File - Format 1')
@@ -4147,6 +4159,8 @@ class DataIOMixin:
                 temp_df['X'] = temp_df['X'] * unit_m[x_unit]
                 temp_df['Y'] = temp_df['Y'] * unit_m[y_unit]
             temp_df['Z'] = temp_df['Z'] * unit_m[z_unit]
+            self.import_info['mapped_finite_points'] = int(
+                np.isfinite(temp_df[['X', 'Y', 'Z']].to_numpy(dtype=float)).all(axis=1).sum())
 
             self.import_info['mapping_x_col'] = xc
             self.import_info['mapping_y_col'] = yc

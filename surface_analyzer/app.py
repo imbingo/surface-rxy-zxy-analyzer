@@ -414,9 +414,13 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         appbar.installEventFilter(self)
         root.addWidget(appbar)
 
-        # 隐藏状态标签：仅供内部更新/写入按钮 tooltip 与状态栏，不占UI
+        # Persistent provenance strip: transient status messages must not hide
+        # whether metrology is based on sampled input.
         self.lbl_import_status = QLabel("导入状态: --")
-        self.lbl_import_status.setVisible(False)
+        self.lbl_import_status.setWordWrap(True)
+        self.lbl_import_status.setFixedHeight(42)
+        self.lbl_import_status.setContentsMargins(12, 2, 12, 2)
+        root.addWidget(self.lbl_import_status)
 
         # ---------- 主体：左控制面板 | 右（结果条 + 工具条 + 四视图）----------
         body = QWidget()
