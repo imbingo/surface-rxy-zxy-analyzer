@@ -9,6 +9,35 @@ from surface_analyzer.data_scale import Count, source_counts, scale_summary
 
 
 class DataScaleTests(unittest.TestCase):
+    def test_import_status_lives_only_in_bottom_bar_and_restores(self):
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtTest import QTest
+        from surface_analyzer.app import SurfaceAnalyzerPro
+        app = QApplication.instance() or QApplication([])
+        window = SurfaceAnalyzerPro()
+        try:
+            window.resize(900, 700)
+            window.show()
+            bar = window.statusBar()
+            label = window.lbl_import_status
+            bar.clearMessage()
+            app.processEvents()
+            self.assertTrue(bar.isAncestorOf(label))
+            self.assertTrue(label.isVisible())
+            self.assertFalse(label.wordWrap())
+            self.assertLess(label.height(), 42)
+            window._show_status('临时操作提示', 50)
+            app.processEvents()
+            self.assertFalse(label.isVisible())
+            window._update_import_status_label()
+            self.assertEqual(bar.currentMessage(), '临时操作提示')
+            QTest.qWait(100)
+            self.assertEqual(bar.currentMessage(), '')
+            self.assertTrue(label.isVisible())
+            self.assertTrue(label.toolTip())
+        finally:
+            window.close()
+
     def test_unknown_is_not_zero(self):
         self.assertEqual(Count().text(), '未知')
         self.assertEqual(Count(0, 'exact').text(), '0')

@@ -54,6 +54,8 @@ from .workers import FunctionWorker
 from .rendering.raster import XY_RASTER_THRESHOLD
 from .rendering.controller import XYRasterController
 from .rendering.lod import spatial_lod_indices, critical_indices
+from .status_label import ImportStatusLabel
+from .pose_icons import pose_pixmap
 
 
 
@@ -417,13 +419,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         appbar.installEventFilter(self)
         root.addWidget(appbar)
 
-        # Persistent provenance strip: transient status messages must not hide
-        # whether metrology is based on sampled input.
-        self.lbl_import_status = QLabel("导入状态: --")
-        self.lbl_import_status.setWordWrap(True)
-        self.lbl_import_status.setFixedHeight(42)
-        self.lbl_import_status.setContentsMargins(12, 2, 12, 2)
-        root.addWidget(self.lbl_import_status)
+        # Keep import provenance in the bottom bar, without a second top strip.
+        self.lbl_import_status = ImportStatusLabel("导入状态: --")
+        # Normal status widgets return automatically after temporary messages expire.
+        self.statusBar().addWidget(self.lbl_import_status, 1)
 
         # ---------- 主体：左控制面板 | 右（结果条 + 工具条 + 四视图）----------
         body = QWidget()
@@ -852,7 +851,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         v = QVBoxLayout(btn)
         v.setContentsMargins(2, 5, 2, 5)
         v.setSpacing(1)
-        ic = QLabel(icon); ic.setObjectName("poseIcon")
+        ic = QLabel(); ic.setObjectName("poseIcon")
+        ic.setPixmap(pose_pixmap(icon))
         ic.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tx = QLabel(label); tx.setObjectName("poseLabel")
         tx.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2044,9 +2044,6 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._smart_seed_view_indices = {
             'XY': xy_source_idx.copy(),
         }
-        if xy_sampled or detail_sampled:
-            self.statusBar().showMessage(
-                f"数据共 {len(self.active_idx):,} 点；XY显示 {len(xy_plot_idx):,} 点，3D/XZ/YZ显示 {len(detail_plot_idx):,} 点，指标仍按当前分析数据计算。", 5000)
         if roi_plot_idx is not None and len(roi_plot_idx) > display_limit:
             roi_plot_idx = spatial_lod_indices(tx,ty,roi_plot_idx,display_limit)
         self._last_roi_plot_indices = (None if roi_plot_idx is None else

@@ -324,8 +324,6 @@ class DataIOMixin:
                    f"导入上限: {self.large_text_import_limit:,} 行\n"
                    f"显示上限: {self.display_point_limit:,} 点\n\n{text}")
             self.btn_bigfile_settings.setToolTip(cfg + '\n' + scale_detail)
-        if text and strategy != '--':
-            self._show_status(text, 5000)
 
     def _on_display_limit_changed(self):
         self.import_info['display_limit'] = self._display_limit()

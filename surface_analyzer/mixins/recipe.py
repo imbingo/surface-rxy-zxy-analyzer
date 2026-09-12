@@ -291,7 +291,8 @@ class RecipeMixin:
         for combo, value in ((self.canvas.xy_mode, render_display['xy_mode']),
                              (self.canvas.xy_resolution, render_display['xy_raster_max_side'])):
             combo.blockSignals(True)
-            combo.setCurrentIndex(combo.findData(value))
+            index = combo.findData(value)
+            combo.setCurrentIndex(index if index >= 0 else 0)
             combo.blockSignals(False)
         self.display_detrended = surface_mode != 'raw'
         self._update_surface_display_metrics()

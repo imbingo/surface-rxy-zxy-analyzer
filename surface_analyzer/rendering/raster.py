@@ -4,6 +4,7 @@ import numpy as np
 
 XY_RASTER_THRESHOLD = 50_000
 MAX_RASTER_SIDE = 1200
+MAX_DETAIL_POINTS = 50_000
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class Raster:
     source_count: int
     visible_count: int
     z_limits: tuple
+    detail_indices: np.ndarray | None = None
 
 
 def build_xy_raster(x, y, z, extent, size, roi=None):
@@ -46,11 +48,14 @@ def build_xy_raster(x, y, z, extent, size, roi=None):
             raise ValueError('ROI must match input points')
         roi_count = np.bincount(flat[roi[visible]], minlength=nx*ny).reshape(ny, nx)
     limits = (float(zv[finite].min()), float(zv[finite].max())) if finite.any() else (0., 1.)
+    visible_count = int(visible.sum())
+    # Bounded, exact source indices prepared off the GUI thread. No resampling.
+    detail = np.flatnonzero(visible) if visible_count <= MAX_DETAIL_POINTS else None
     return Raster((xmin, xmax, ymin, ymax), count, z_count, mean, roi_count,
-                  len(x), int(visible.sum()), limits)
+                  len(x), visible_count, limits, detail)
 
 
-def raster_rgba(raster, mode='height'):
+def raster_rgba(raster, mode='height', z_limits=None):
     from matplotlib import colormaps
     from matplotlib.colors import Normalize
     if mode == 'density':
@@ -59,7 +64,7 @@ def raster_rgba(raster, mode='height'):
         cmap = colormaps['viridis']
     else:
         values = np.nan_to_num(raster.z_mean)
-        low, high = raster.z_limits
+        low, high = raster.z_limits if z_limits is None else z_limits
         cmap = colormaps['turbo']
     rgba = cmap(Normalize(low, high)(values))
     empty = (raster.count == 0) if mode == 'density' else (raster.z_count == 0)

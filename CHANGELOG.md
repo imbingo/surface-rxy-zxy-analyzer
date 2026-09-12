@@ -2,7 +2,10 @@
 
 ## V4.6.5
 
-- Added full-input physical XY raster rendering with density and NoData views.
+- Added full-input physical XY height raster rendering with transparent NoData regions.
+- Added automatic zoom-to-scatter display with fixed height colors and screen-space markers.
+- Moved import status to the bottom bar and XY resolution to the context menu.
+- Restored font-independent pose arrow icons and prevented ROI outlines from expanding data axes.
 - Added debounced viewport regeneration, bounded display cache and stale-result guards.
 - Replaced file-order detail sampling with spatial LOD and forced PV/TTV extrema retention.
 - Kept Smart ROI seeds on real physical source points, independent of display pixels.

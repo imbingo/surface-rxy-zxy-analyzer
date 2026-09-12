@@ -31,6 +31,16 @@ class RasterTests(unittest.TestCase):
         self.assertEqual(r.count[45:55, 45:55].sum(), 0)
         self.assertEqual(raster_rgba(r, 'density')[50, 50, 3], 0)
 
+    def test_fixed_color_scale_and_bounded_detail_indices(self):
+        x = np.array([0., 1., 2.])
+        full = build_xy_raster(x, x, x, (-1,3,-1,3), (4,4))
+        zoom = build_xy_raster(x, x, x, (.5,1.5,.5,1.5), (1,1))
+        np.testing.assert_allclose(raster_rgba(full,z_limits=(0,2))[2,2],
+                                   raster_rgba(zoom,z_limits=(0,2))[0,0])
+        np.testing.assert_array_equal(zoom.detail_indices,[1])
+        big = np.linspace(0,1,50001)
+        self.assertIsNone(build_xy_raster(big,big,big,(0,1,0,1),(20,20)).detail_indices)
+
     def test_viewport_and_input_unchanged(self):
         x = np.linspace(-1, 1, 1000)
         before = x.copy()
@@ -76,6 +86,8 @@ class RasterTests(unittest.TestCase):
             wait_render()
             self.assertEqual(w.xy_raster.result.source_count, len(x))
             self.assertEqual(w.xy_raster.result.count.sum(), len(x))
+            self.assertFalse(w.xy_raster.detail_mode)
+            color_limits = w.xy_raster.z_limits
             self.assertTrue({12345,23456}.issubset(w._last_detail_plot_indices))
             metrics, active = w.last_metrics, w.active_idx.copy()
             with patch.object(w, 'update_analysis', side_effect=AssertionError('display called analysis')):
@@ -84,8 +96,30 @@ class RasterTests(unittest.TestCase):
                 wait_render()
                 self.assertEqual(w.xy_raster.result.extent, (-5., 5., -5., 5.))
                 self.assertLess(w.xy_raster.result.visible_count, len(x))
-                for mode in (1, 2, 0):
-                    w.canvas.xy_mode.setCurrentIndex(mode)
+                self.assertTrue(w.xy_raster.detail_mode)
+                self.assertFalse(w.xy_raster.image.get_visible())
+                self.assertEqual(w.xy_raster.scatter.get_clim(),color_limits)
+                self.assertEqual(w.xy_raster.scatter.get_cmap().name,'turbo')
+                offsets = np.asarray(w.xy_raster.scatter.get_offsets())
+                self.assertTrue(np.all(np.sum(offsets**2,axis=1) > 9))
+                marker_sizes = w.xy_raster.scatter.get_sizes().copy()
+                w.canvas.ax_xy.set_xlim(-1,1)
+                w.canvas.ax_xy.set_ylim(-1,1)
+                wait_render()
+                self.assertEqual(len(w.xy_raster.scatter.get_offsets()),0)
+                w.canvas.ax_xy.set_xlim(-16,16)
+                w.canvas.ax_xy.set_ylim(-16,16)
+                wait_render()
+                self.assertFalse(w.xy_raster.detail_mode)
+                self.assertTrue(w.xy_raster.image.get_visible())
+                self.assertFalse(w.xy_raster.scatter.get_visible())
+                w.canvas.ax_xy.set_xlim(-5,5)
+                w.canvas.ax_xy.set_ylim(-5,5)
+                wait_render()
+                np.testing.assert_array_equal(w.xy_raster.scatter.get_sizes(),marker_sizes)
+                self.assertEqual(w.xy_raster.scatter.get_clim(),color_limits)
+                for resolution in (1, 2, 0):
+                    w.canvas.xy_resolution.setCurrentIndex(resolution)
                     wait_render()
                     self.assertIs(w.last_metrics, metrics)
                     np.testing.assert_array_equal(w.active_idx, active)
@@ -116,7 +150,7 @@ class RasterTests(unittest.TestCase):
                     w.grab().save(str(output.with_name(f'{output.stem}_{width}.png')))
                 w.resize(1366,768)
                 for mode in (1, 2):
-                    w.canvas.xy_mode.setCurrentIndex(mode)
+                    w.canvas.xy_resolution.setCurrentIndex(mode)
                     wait_render()
                     w.grab().save(str(output.with_name(f'{output.stem}_mode{mode}.png')))
             # ROI gray occupancy uses every ROI source point, not its scatter sample.
@@ -144,7 +178,7 @@ class RasterTests(unittest.TestCase):
             recipe['display'].update(xy_mode='density',xy_raster_max_side=600)
             with mock_patch('surface_analyzer.mixins.recipe.QSettings'), mock_patch('surface_analyzer.mixins.recipe.QMessageBox.information'):
                 w.apply_recipe(recipe,remap_current_data=False)
-            self.assertEqual(w.canvas.xy_mode.currentData(),'density')
+            self.assertEqual(w.canvas.xy_mode.currentData(),'height')
             self.assertEqual(w.canvas.xy_resolution.currentData(),600)
         finally:
             w.close()

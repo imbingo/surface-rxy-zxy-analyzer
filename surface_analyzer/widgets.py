@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QLabel, QSplitter, QGroupBox, QGridLayout, QMessageBox,
     QScrollArea, QComboBox, QTabWidget, QDoubleSpinBox, QSpinBox, QCheckBox,
     QDialog, QDialogButtonBox, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
-    QStackedWidget, QSizeGrip,
+    QStackedWidget, QSizeGrip, QMenu,
 )
 from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, pyqtSignal
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
@@ -73,18 +73,17 @@ class MultiViewCanvas(QWidget):
         grid.setColumnStretch(1, 1)
         self.ax3d, c3, card3, self.title_3d = self._make_card("3D 原始高度", '3d')
         self.ax_xy, cxy, cardxy, self.title_xy = self._make_card("XY 俯视分布", None)
-        self.xy_mode = NoWheelComboBox()
+        self.xy_mode = NoWheelComboBox(self)
         self.xy_mode.addItem('高度图', 'height')
-        self.xy_mode.addItem('点密度', 'density')
-        self.xy_mode.addItem('高度 + 缺测', 'missing')
-        self.xy_mode.setToolTip('仅改变显示。密度为每显示格点数，随缩放改变；缺测不等于孔。导入抽样后无法恢复源文件覆盖率。')
-        self.xy_resolution = NoWheelComboBox()
+        self.xy_mode.setToolTip('高度图；无数据区不插值、不补洞。')
+        self.xy_resolution = NoWheelComboBox(self)
         for side in (1200,800,600):
             self.xy_resolution.addItem(f'自动 / 最大 {side}px', side)
-        row = QHBoxLayout()
-        row.addWidget(self.xy_mode,1)
-        row.addWidget(self.xy_resolution,1)
-        cardxy.layout().insertLayout(1,row)
+        # Retain settings objects for Recipe compatibility, not as a plot toolbar.
+        self.xy_mode.hide()
+        self.xy_resolution.hide()
+        cxy.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        cxy.customContextMenuRequested.connect(self._xy_context_menu)
         self.ax_xz, cxz, cardxz, self.title_xz = self._make_card("X-Z 投影", None)
         self.ax_yz, cyz, cardyz, self.title_yz = self._make_card("Y-Z 投影", None)
         self._canvases = [c3, cxy, cxz, cyz]
@@ -93,6 +92,17 @@ class MultiViewCanvas(QWidget):
         self._grid = grid
         self._cards = [card3,cardxy,cardxz,cardyz]
         self._layout_columns = 2
+
+    def _xy_context_menu(self, position):
+        menu = QMenu(self)
+        resolution = menu.addMenu('高度图分辨率（自动适配）')
+        for i in range(self.xy_resolution.count()):
+            action = resolution.addAction(self.xy_resolution.itemText(i))
+            action.setCheckable(True)
+            action.setChecked(i == self.xy_resolution.currentIndex())
+            action.setEnabled(self.xy_resolution.isEnabled())
+            action.triggered.connect(lambda checked=False, index=i: self.xy_resolution.setCurrentIndex(index))
+        menu.exec(self.ax_xy.figure.canvas.mapToGlobal(position))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

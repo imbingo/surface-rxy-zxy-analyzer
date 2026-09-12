@@ -44,8 +44,16 @@ try {
         throw "Failed to generate Windows version metadata."
     }
 
-    Remove-Item -Recurse -Force $DistDir -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force $BuildDir -ErrorAction SilentlyContinue
+    foreach ($BuildTarget in @($DistDir, $BuildDir)) {
+        $ResolvedTarget = [IO.Path]::GetFullPath($BuildTarget)
+        if ([IO.Path]::GetDirectoryName($ResolvedTarget) -ne [IO.Path]::GetFullPath($Root) -or
+            [IO.Path]::GetFileName($ResolvedTarget) -notin @('dist', 'build')) {
+            throw "Unsafe build cleanup target: $ResolvedTarget"
+        }
+        if (Test-Path -LiteralPath $ResolvedTarget) {
+            Remove-Item -LiteralPath $ResolvedTarget -Recurse -Force
+        }
+    }
     & $Python -m PyInstaller `
         --noconfirm `
         --clean `
@@ -60,7 +68,7 @@ try {
     if (-not (Test-Path $PackagedExe)) {
         throw "Packaged executable was not found: $PackagedExe"
     }
-    $Smoke = Start-Process -FilePath $PackagedExe -ArgumentList "--check" -Wait -PassThru
+    $Smoke = Start-Process -FilePath $PackagedExe -ArgumentList "--check" -WindowStyle Hidden -Wait -PassThru
     if ($Smoke.ExitCode -ne 0) {
         throw "Packaged smoke test failed with exit code $($Smoke.ExitCode)."
     }

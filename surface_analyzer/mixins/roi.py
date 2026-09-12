@@ -953,6 +953,10 @@ class ROIMixin:
         active = self._roi_is_active(roi_enabled, shapes)
         if not active and report:
             return
+        # Selection geometry is an annotation, not measured data. In particular,
+        # a broad XZ/YZ gate must not enlarge the plotted height range.
+        limits = ax.get_xlim(), ax.get_ylim()
+        data_limits = ax.dataLim.frozen()
         for roi in shapes:
             typ = roi.get('type')
             roi_view = 'XY' if typ == 'smart_face' else str(roi.get('view', 'XY')).upper()
@@ -985,6 +989,10 @@ class ROIMixin:
                                      edgecolor=edge, linewidth=1.8, linestyle=style, alpha=alpha)
             patch.set_zorder(3)
             ax.add_patch(patch)
+
+        ax.dataLim.set(data_limits)
+        ax.set_xlim(limits[0])
+        ax.set_ylim(limits[1])
 
     def _draw_smart_gate_overlays(self, ax, view):
         key = f"optional_{str(view).lower()}_gate"
