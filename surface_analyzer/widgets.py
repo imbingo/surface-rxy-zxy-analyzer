@@ -71,6 +71,12 @@ class MultiViewCanvas(QWidget):
         grid.setSpacing(12)
         self.ax3d, c3, card3, self.title_3d = self._make_card("3D 原始高度", '3d')
         self.ax_xy, cxy, cardxy, self.title_xy = self._make_card("XY 俯视分布", None)
+        self.xy_mode = NoWheelComboBox()
+        self.xy_mode.addItem('高度图', 'height')
+        self.xy_mode.addItem('点密度', 'density')
+        self.xy_mode.addItem('高度 + 缺测', 'missing')
+        self.xy_mode.setToolTip('仅改变显示。密度为每显示格点数，随缩放改变；缺测不等于孔。导入抽样后无法恢复源文件覆盖率。')
+        cardxy.layout().insertWidget(1, self.xy_mode)
         self.ax_xz, cxz, cardxz, self.title_xz = self._make_card("X-Z 投影", None)
         self.ax_yz, cyz, cardyz, self.title_yz = self._make_card("Y-Z 投影", None)
         self._canvases = [c3, cxy, cxz, cyz]

@@ -294,6 +294,8 @@ class DataIOMixin:
             len(getattr(self, '_last_xy_plot_indices', [])) if frame is not None else None,
             len(getattr(self, '_last_detail_plot_indices', [])) if frame is not None else None)
         summary_text = f'导入状态: {text}'
+        if getattr(self, '_xy_raster_status', None):
+            summary_text = summary_text.split(' | XY显示')[0] + ' | XY ' + self._xy_raster_status + f' | 3D显示 {len(getattr(self, "_last_detail_plot_indices", [])):,}'
         text = summary_text
         if quality['estimated']:
             text += f" | 结果质量: {quality['label']}"

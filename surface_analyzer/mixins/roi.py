@@ -1329,13 +1329,15 @@ class ROIMixin:
             return
         tx, ty, tz = self.get_final_transformed_data(self.df_raw)
         points = np.column_stack([tx[candidates], ty[candidates]])
-        finite = np.isfinite(points).all(axis=1)
+        finite = np.isfinite(points).all(axis=1) & np.isfinite(tz[candidates])
         if not np.any(finite):
             return
         visible = candidates[finite]
-        screen = event.inaxes.transData.transform(points[finite])
-        click = np.array([float(event.x), float(event.y)])
-        seed_idx = int(visible[int(np.argmin(np.sum((screen - click) ** 2, axis=1)))])
+        # Query physical XY against all undeleted source candidates, never a
+        # raster pixel or file-order display sample. Linear nearest lookup is
+        # vectorized and avoids building a large tree for a single click.
+        click = np.array([float(event.xdata), float(event.ydata)])
+        seed_idx = int(visible[int(np.argmin(np.sum((points[finite] - click) ** 2, axis=1)))])
         self.add_smart_face_roi_from_seed(
             float(tx[seed_idx]), float(ty[seed_idx]), seed_index=seed_idx,
             seed_view=view_type)

@@ -51,6 +51,8 @@ from .mixins.recipe import RecipeMixin
 from .mixins.roi import ROIMixin
 from .mixins.reporting import ReportingMixin
 from .workers import FunctionWorker
+from .rendering.raster import XY_RASTER_THRESHOLD
+from .rendering.controller import XYRasterController
 
 
 
@@ -453,6 +455,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         right_layout.addWidget(self._build_results_strip())
 
         self.canvas = MultiViewCanvas(self)
+        self.xy_raster = XYRasterController(self)
+        self.canvas.xy_mode.currentIndexChanged.connect(lambda _: self.update_plots_only())
         # MultiViewCanvas uses one FigureCanvas per view. Selection/context menus
         # stay 2D-only; 3D receives only the display reset handler.
         self._plot_click_cids = [
@@ -1965,6 +1969,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         }
 
     def draw_plots(self, tx, ty, tz, roi_mask_all=None, preserve_view=False):
+        self.xy_raster.reset()
+        self._xy_raster_status = None
         view_state = None
         if preserve_view:
             view_state = {
@@ -1988,6 +1994,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             roi_plot_idx = all_idx[roi_mask_all[all_idx]]
             detail_plot_idx = self.active_idx
         display_limit = self._display_limit()
+        xy_source_idx = np.asarray(xy_plot_idx, dtype=int)
+        roi_source_idx = roi_plot_idx
+        xy_mode = self.canvas.xy_mode.currentData()
+        raster_enabled = len(xy_source_idx) > XY_RASTER_THRESHOLD or xy_mode != 'height'
 
         def sample_for_display(source_idx):
             if len(source_idx) > display_limit:
@@ -1995,12 +2005,12 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 return source_idx[pick], True
             return source_idx, False
 
-        xy_plot_idx, xy_sampled = sample_for_display(xy_plot_idx)
+        xy_plot_idx, xy_sampled = (xy_source_idx, False) if raster_enabled else sample_for_display(xy_plot_idx)
         detail_plot_idx, detail_sampled = sample_for_display(detail_plot_idx)
         self._last_xy_plot_indices = np.asarray(xy_plot_idx, dtype=int).copy()
         self._last_detail_plot_indices = np.asarray(detail_plot_idx, dtype=int).copy()
         self._smart_seed_view_indices = {
-            'XY': np.asarray(xy_plot_idx, dtype=int).copy(),
+            'XY': xy_source_idx.copy(),
         }
         if xy_sampled or detail_sampled:
             self.statusBar().showMessage(
@@ -2063,8 +2073,14 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             return
 
         sc_params = {'cmap': 'turbo', 's': 14, 'alpha': 0.85, 'edgecolors': 'none'}
-        if len(xy_x) > 0:
+        if len(xy_x) > 0 and not raster_enabled:
             self.canvas.ax_xy.scatter(xy_x, xy_y, c=xy_z, **sc_params, zorder=2)
+        elif len(xy_x) > 0:
+            xmin, xmax = np.nanmin(xy_x), np.nanmax(xy_x)
+            ymin, ymax = np.nanmin(xy_y), np.nanmax(xy_y)
+            padx, pady = max((xmax-xmin)*.05, 1e-6), max((ymax-ymin)*.05, 1e-6)
+            self.canvas.ax_xy.set_xlim(xmin-padx, xmax+padx)
+            self.canvas.ax_xy.set_ylim(ymin-pady, ymax+pady)
         set_xy_equal_aspect(self.canvas.ax_xy)
         self._draw_roi_overlays(self.canvas.ax_xy, view='XY')
         if len(detail_x) > 0:
@@ -2074,7 +2090,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._draw_roi_overlays(self.canvas.ax_xz, view='XZ')
         self._draw_roi_overlays(self.canvas.ax_yz, view='YZ')
 
-        if roi_x is not None and len(roi_x) > 0:
+        if roi_x is not None and len(roi_x) > 0 and not raster_enabled:
             roi_params = {
                 'c': '#6b7280', 's': 24, 'alpha': 0.72,
                 'edgecolors': '#f8fafc', 'linewidths': 0.25, 'rasterized': True
@@ -2105,6 +2121,19 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         if view_state is not None:
             self._restore_plot_view_state(view_state)
         self.canvas.draw()
+
+        if raster_enabled and len(xy_x):
+            roi_membership = (np.isin(xy_source_idx, roi_source_idx)
+                              if roi_source_idx is not None else None)
+            self.xy_raster.z_label = z_axis_label
+            self.xy_raster.bind(xy_x, xy_y, xy_z, roi_membership, xy_mode)
+            self._xy_raster_status = f'Raster 构建中 / 全量显示源 {len(xy_source_idx):,}'
+            self._update_import_status_label()
+
+    def closeEvent(self, event):
+        if hasattr(self, 'xy_raster'):
+            self.xy_raster.shutdown()
+        super().closeEvent(event)
 
     def _restore_plot_view_state(self, state):
         self.canvas.ax_xy.set_xlim(state['XY'][0]); self.canvas.ax_xy.set_ylim(state['XY'][1])
