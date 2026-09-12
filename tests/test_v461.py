@@ -224,7 +224,10 @@ class V461MatrixRowsAndSelectionOverlayTests(unittest.TestCase):
         np.testing.assert_array_equal(window.temp_selected_mask, original_mask)
         self.assertEqual(int(window.temp_selected_mask.sum()), len(x))
         display_idx = window._last_temp_selection_display_indices
-        self.assertEqual(len(display_idx), 37)
+        # Spatial LOD returns occupied-cell representatives, not a forced
+        # file-order sample of exactly the configured upper bound.
+        self.assertGreater(len(display_idx), 0)
+        self.assertLessEqual(len(display_idx), 37)
         self.assertEqual(set(window._temp_selection_overlay_artists), {"XY", "XZ", "YZ", "3D"})
         x3d, y3d, z3d = window._temp_selection_overlay_artists["3D"].get_data_3d()
         np.testing.assert_allclose(np.asarray(x3d), x[display_idx])

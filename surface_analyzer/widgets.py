@@ -69,6 +69,8 @@ class MultiViewCanvas(QWidget):
         grid = QGridLayout(self)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(12)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
         self.ax3d, c3, card3, self.title_3d = self._make_card("3D 原始高度", '3d')
         self.ax_xy, cxy, cardxy, self.title_xy = self._make_card("XY 俯视分布", None)
         self.xy_mode = NoWheelComboBox()
@@ -76,12 +78,35 @@ class MultiViewCanvas(QWidget):
         self.xy_mode.addItem('点密度', 'density')
         self.xy_mode.addItem('高度 + 缺测', 'missing')
         self.xy_mode.setToolTip('仅改变显示。密度为每显示格点数，随缩放改变；缺测不等于孔。导入抽样后无法恢复源文件覆盖率。')
-        cardxy.layout().insertWidget(1, self.xy_mode)
+        self.xy_resolution = NoWheelComboBox()
+        for side in (1200,800,600):
+            self.xy_resolution.addItem(f'自动 / 最大 {side}px', side)
+        row = QHBoxLayout()
+        row.addWidget(self.xy_mode,1)
+        row.addWidget(self.xy_resolution,1)
+        cardxy.layout().insertLayout(1,row)
         self.ax_xz, cxz, cardxz, self.title_xz = self._make_card("X-Z 投影", None)
         self.ax_yz, cyz, cardyz, self.title_yz = self._make_card("Y-Z 投影", None)
         self._canvases = [c3, cxy, cxz, cyz]
         grid.addWidget(card3, 0, 0); grid.addWidget(cardxy, 0, 1)
         grid.addWidget(cardxz, 1, 0); grid.addWidget(cardyz, 1, 1)
+        self._grid = grid
+        self._cards = [card3,cardxy,cardxz,cardyz]
+        self._layout_columns = 2
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not hasattr(self,'_cards'):
+            return
+        columns = 1 if self.width() < 650 else 2
+        if columns != self._layout_columns:
+            self._layout_columns = columns
+            for card in self._cards:
+                self._grid.removeWidget(card)
+            for i,card in enumerate(self._cards):
+                self._grid.addWidget(card,i//columns,i%columns)
+            self._grid.setColumnStretch(1,1 if columns == 2 else 0)
+            self.setMinimumHeight(1100 if columns == 1 else 0)
 
     def _make_card(self, title, projection):
         card = QFrame(); card.setObjectName("plotCard")

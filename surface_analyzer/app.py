@@ -53,6 +53,7 @@ from .mixins.reporting import ReportingMixin
 from .workers import FunctionWorker
 from .rendering.raster import XY_RASTER_THRESHOLD
 from .rendering.controller import XYRasterController
+from .rendering.lod import spatial_lod_indices, critical_indices
 
 
 
@@ -457,6 +458,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.canvas = MultiViewCanvas(self)
         self.xy_raster = XYRasterController(self)
         self.canvas.xy_mode.currentIndexChanged.connect(lambda _: self.update_plots_only())
+        self.canvas.xy_resolution.currentIndexChanged.connect(lambda _: self.update_plots_only())
         # MultiViewCanvas uses one FigureCanvas per view. Selection/context menus
         # stay 2D-only; 3D receives only the display reset handler.
         self._plot_click_cids = [
@@ -476,7 +478,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         right_layout.addWidget(self.canvas, 1)
 
         self.right_stack = QStackedWidget()
-        self.right_stack.addWidget(right_main_panel)
+        main_scroll = QScrollArea()
+        main_scroll.setWidgetResizable(True)
+        main_scroll.setWidget(right_main_panel)
+        self.right_stack.addWidget(main_scroll)
         self.right_stack.addWidget(self._build_parallel_right_panel())
         self.right_stack.addWidget(self._build_gap_right_panel())
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -505,6 +510,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         for button in (self.btn_win_min, self.btn_win_max, self.btn_win_close):
             button.setVisible(not self.use_system_frame)
         self._task_controls = [
+            self.canvas.xy_mode, self.canvas.xy_resolution,
             self.btn_open, self.btn_reset_all, self.btn_batch, self.btn_apply_map, self.btn_save,
             self.btn_calc_gap, self.btn_calc_parallel, self.btn_import_recipe, self.btn_export_recipe,
             self.btn_roi_mouse, self.btn_del, self.btn_undo_del,
@@ -693,6 +699,19 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
     def eventFilter(self, obj, event):
         """应用栏兼任标题栏：左键拖动移动窗口、双击最大化/还原；
         主体外缘 6px 作为缩放边，左键按下触发系统缩放（无边框窗口的边缘拉伸）。"""
+        if obj is getattr(self, '_results_strip', None) and event.type() == QEvent.Type.Resize:
+            width = obj.width()
+            columns = 5 if width >= 900 else 3 if width >= 450 else 2
+            if columns != getattr(self, '_metric_columns', None):
+                self._metric_columns = columns
+                for card in self._metric_cards:
+                    self._metric_grid.removeWidget(card)
+                for i, card in enumerate(self._metric_cards):
+                    self._metric_grid.addWidget(card, i//columns, i%columns)
+                for i in range(5):
+                    self._metric_grid.setColumnStretch(i, 1 if i < columns else 0)
+            self.lbl_eqn.setVisible(width >= 900)
+            self.lbl_surface_residual_metrics.setVisible(width >= 900)
         if obj is getattr(self, '_appbar', None) and not self.use_system_frame:
             et = event.type()
             if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
@@ -766,7 +785,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         head.addWidget(self.lbl_surface_residual_metrics)
         outer.addLayout(head)
 
-        cards = QHBoxLayout()
+        cards = QGridLayout()
         cards.setSpacing(13)
         cards.setContentsMargins(4, 2, 4, 4)
         self.lbl_z = QLabel("--")
@@ -774,13 +793,18 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.lbl_ttv = QLabel("--")
         self.lbl_rx = QLabel("--")
         self.lbl_ry = QLabel("--")
-        cards.addWidget(self._make_metric_card("平均厚度 Z (mm)", self.lbl_z), 1)
+        self._metric_cards = [self._make_metric_card("平均厚度 Z (mm)", self.lbl_z)]
         pv_card = self._make_metric_card("平面残差 PV (µm)", self.lbl_pv, accent=True)
         pv_card.setToolTip("相对最佳拟合平面的法向残差极差：仅去除整体高度和一阶倾斜，未去除二阶及以上曲率。")
-        cards.addWidget(pv_card, 1)
-        cards.addWidget(self._make_metric_card("TTV·Z极差 (µm)", self.lbl_ttv), 1)
-        cards.addWidget(self._make_metric_card("物料 Rx (µrad)", self.lbl_rx), 1)
-        cards.addWidget(self._make_metric_card("物料 Ry (µrad)", self.lbl_ry), 1)
+        self._metric_cards += [pv_card,
+            self._make_metric_card("TTV·Z极差 (µm)", self.lbl_ttv),
+            self._make_metric_card("物料 Rx (µrad)", self.lbl_rx),
+            self._make_metric_card("物料 Ry (µrad)", self.lbl_ry)]
+        for i, card in enumerate(self._metric_cards):
+            cards.addWidget(card,0,i)
+        self._metric_grid = cards
+        self._results_strip = strip
+        strip.installEventFilter(self)
         outer.addLayout(cards)
         return strip
 
@@ -927,12 +951,12 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         grid_trans.setSpacing(6)
         # (图标, 文字, 槽, 是否高亮, tooltip) —— 4列磁贴
         tiles = [
-            ("↻", "顺时针90°", self.add_cw90, False, "物料顺时针旋转90°：顶部点转到右侧"),
-            ("↺", "逆时针90°", self.add_ccw90, False, "物料逆时针旋转90°：顶部点转到左侧"),
-            ("⟳", "旋转180°", self.add_rot180, False, "物料旋转180°"),
-            ("⇄", "X-Y对调", self.add_swap, False, "X、Y 轴对调"),
-            ("↕", "前后翻转", self.add_flipx, False, "X轴翻转(前后) = Y 镜像"),
-            ("↔", "左右翻转", self.add_flipy, False, "Y轴翻转(左右) = X 镜像"),
+            ("CW", "顺时针90°", self.add_cw90, False, "物料顺时针旋转90°：顶部点转到右侧"),
+            ("CCW", "逆时针90°", self.add_ccw90, False, "物料逆时针旋转90°：顶部点转到左侧"),
+            ("180", "旋转180°", self.add_rot180, False, "物料旋转180°"),
+            ("X/Y", "X-Y对调", self.add_swap, False, "X、Y 轴对调"),
+            ("Y", "前后翻转", self.add_flipx, False, "X轴翻转(前后) = Y 镜像"),
+            ("X", "左右翻转", self.add_flipy, False, "Y轴翻转(左右) = X 镜像"),
             ("⊕", "平移归零", self.add_origin, False, "平移归零(0,0)：X,Y 包围盒原点对齐"),
             ("↶", "撤销", self.undo_transform, False, "撤销上一步姿态变换"),
         ]
@@ -1929,8 +1953,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         selected_idx = np.flatnonzero(mask)
         overlay_limit = max(1, min(int(display_limit), 25_000))
         if len(selected_idx) > overlay_limit:
-            pick = np.linspace(0, len(selected_idx) - 1, overlay_limit, dtype=int)
-            selected_idx = selected_idx[pick]
+            selected_idx = spatial_lod_indices(tx,ty,selected_idx,overlay_limit)
         self._last_temp_selection_display_indices = selected_idx.copy()
 
         txs = tx[selected_idx]
@@ -2001,12 +2024,21 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
         def sample_for_display(source_idx):
             if len(source_idx) > display_limit:
-                pick = np.linspace(0, len(source_idx) - 1, display_limit, dtype=int)
-                return source_idx[pick], True
+                return spatial_lod_indices(tx, ty, source_idx, display_limit), True
             return source_idx, False
 
         xy_plot_idx, xy_sampled = (xy_source_idx, False) if raster_enabled else sample_for_display(xy_plot_idx)
-        detail_plot_idx, detail_sampled = sample_for_display(detail_plot_idx)
+        detail_sampled = len(detail_plot_idx) > display_limit
+        lod_inputs = (tx,ty,tz,detail_plot_idx)
+        lod_options = (display_limit,tuple(self.current_coeffs) if self.current_coeffs is not None else None)
+        cached = getattr(self,'_detail_lod_cache',None)
+        if cached is not None and all(a is b for a,b in zip(lod_inputs,cached[0])) and lod_options == cached[1]:
+            required,detail_plot_idx = cached[2:]
+        else:
+            required = critical_indices(tx,ty,tz,detail_plot_idx,self.current_coeffs)
+            detail_plot_idx = spatial_lod_indices(tx,ty,detail_plot_idx,display_limit,required)
+            self._detail_lod_cache = (lod_inputs,lod_options,required,detail_plot_idx)
+        self._last_critical_plot_indices = required
         self._last_xy_plot_indices = np.asarray(xy_plot_idx, dtype=int).copy()
         self._last_detail_plot_indices = np.asarray(detail_plot_idx, dtype=int).copy()
         self._smart_seed_view_indices = {
@@ -2016,8 +2048,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.statusBar().showMessage(
                 f"数据共 {len(self.active_idx):,} 点；XY显示 {len(xy_plot_idx):,} 点，3D/XZ/YZ显示 {len(detail_plot_idx):,} 点，指标仍按当前分析数据计算。", 5000)
         if roi_plot_idx is not None and len(roi_plot_idx) > display_limit:
-            pick = np.linspace(0, len(roi_plot_idx) - 1, display_limit, dtype=int)
-            roi_plot_idx = roi_plot_idx[pick]
+            roi_plot_idx = spatial_lod_indices(tx,ty,roi_plot_idx,display_limit)
         self._last_roi_plot_indices = (None if roi_plot_idx is None else
                                        np.asarray(roi_plot_idx, dtype=int).copy())
 
@@ -2087,6 +2118,11 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.canvas.ax3d.scatter(detail_x, detail_y, detail_z, c=detail_z, **sc_params)
             self.canvas.ax_xz.scatter(detail_x, detail_z, c=detail_z, **sc_params)
             self.canvas.ax_yz.scatter(detail_y, detail_z, c=detail_z, **sc_params)
+            # Marker-only Line3D stays visible above the fitted-plane collection.
+            if len(required):
+                self.canvas.ax3d.plot(tx[required], ty[required], plot_z_all[required],
+                                     linestyle='None', marker='o', markerfacecolor='none',
+                                     markeredgecolor='#c2410c', markersize=7, zorder=9)
         self._draw_roi_overlays(self.canvas.ax_xz, view='XZ')
         self._draw_roi_overlays(self.canvas.ax_yz, view='YZ')
 

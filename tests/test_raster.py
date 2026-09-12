@@ -52,7 +52,14 @@ class RasterTests(unittest.TestCase):
             keep = x*x+y*y > 9
             x, y = x[keep], y[keep]
             z = .45 + 1e-5*x - 2e-5*y + .0001*np.sin(x)
+            z[12345] += .02
+            z[23456] -= .015
             w.df_raw = pd.DataFrame(dict(X=x, Y=y, Z=z))
+            w.current_source_name = 'Synthetic missing-region XYZ'
+            w.lbl_source.setText('当前数据: Synthetic missing-region XYZ（测试）')
+            for combo,label in ((w.cb_x_col,'X'),(w.cb_y_col,'Y'),(w.cb_z_col,'Z')):
+                combo.addItem(label)
+            w.cb_z_unit.setCurrentText('mm')
             w._df_version += 1
             w.manual_mask = np.ones(len(x), dtype=bool)
             w.temp_selected_mask = np.zeros(len(x), dtype=bool)
@@ -69,6 +76,7 @@ class RasterTests(unittest.TestCase):
             wait_render()
             self.assertEqual(w.xy_raster.result.source_count, len(x))
             self.assertEqual(w.xy_raster.result.count.sum(), len(x))
+            self.assertTrue({12345,23456}.issubset(w._last_detail_plot_indices))
             metrics, active = w.last_metrics, w.active_idx.copy()
             with patch.object(w, 'update_analysis', side_effect=AssertionError('display called analysis')):
                 w.canvas.ax_xy.set_xlim(-5, 5)
@@ -119,6 +127,25 @@ class RasterTests(unittest.TestCase):
             visible = (x >= r.extent[0]) & (x <= r.extent[1]) & (y >= r.extent[2]) & (y <= r.extent[3])
             self.assertEqual(r.roi_count.sum(), np.sum(visible & (x < 0)))
             self.assertEqual(np.count_nonzero(w.xy_raster.overlay.get_array()[...,3]), np.count_nonzero(r.roi_count))
+            # Reports use the same full-input raster and spatial LOD, and do
+            # not mutate the existing authoritative metric dictionary.
+            fig = w._render_report_figure('Synthetic XYZ / missing region', x,y,z,
+                    w.active_idx,w.compute_plane_metrics(x[w.active_idx],y[w.active_idx],z[w.active_idx]),0,'原始状态','关闭',w.import_info,
+                    overview_idx=np.arange(len(x)),render_config={'xy_mode':'height'})
+            self.assertTrue(any(len(ax.images) == 2 for ax in fig.axes))
+            self.assertIs(w.last_metrics,metrics)
+            if os.environ.get('SURFACE_RASTER_SCREENSHOT'):
+                fig.savefig(str(output.with_name(f'{output.stem}_report.png')),dpi=110)
+            import matplotlib.pyplot as plt
+            plt.close(fig)
+            from unittest.mock import patch as mock_patch
+            recipe = w._current_recipe_dict()
+            self.assertNotIn('cache',recipe['display'])
+            recipe['display'].update(xy_mode='density',xy_raster_max_side=600)
+            with mock_patch('surface_analyzer.mixins.recipe.QSettings'), mock_patch('surface_analyzer.mixins.recipe.QMessageBox.information'):
+                w.apply_recipe(recipe,remap_current_data=False)
+            self.assertEqual(w.canvas.xy_mode.currentData(),'density')
+            self.assertEqual(w.canvas.xy_resolution.currentData(),600)
         finally:
             w.close()
 

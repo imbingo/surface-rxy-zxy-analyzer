@@ -49,7 +49,8 @@ class ReportingMixin:
     def _import_trace_text(import_info):
         info = import_info or {}
         source_format = str(info.get('source_format') or '--')
-        valid = int(info.get('source_valid_rows', info.get('valid_rows', 0)) or 0)
+        from ..data_scale import source_counts
+        valid = source_counts(info)[1].text()
         missing = int(info.get('missing_points', 0) or 0)
         bad = int(info.get('bad_rows', 0) or 0)
         rows = info.get('matrix_rows'); cols = info.get('matrix_cols')
@@ -61,7 +62,7 @@ class ReportingMixin:
             topology = (f" | 预期/实际 {int(expected):,}/"
                         f"{int(info.get('source_record_rows', 0) or 0):,}")
         lines = [f"识别格式: {source_format}",
-                 f"源数据统计: 有效 {valid:,} | 缺测 {missing:,} | 坏行 {bad:,}{topology}"]
+                 f"源数据统计: 有效 {valid} | 缺测 {missing:,} | 坏行 {bad:,}{topology}"]
         header_confidence = str(info.get('header_confidence') or '')
         if header_confidence:
             header_label = {'semantic': 'semantic', 'candidate': 'candidate',
@@ -136,6 +137,8 @@ class ReportingMixin:
                 self.current_source_name, tx, ty, tz, self.active_idx, metrics,
                 self.n_filtered, pipeline_text, filter_text, self.import_info,
                 getattr(self, 'display_surface_mode', 'raw'),
+                render_config={'xy_mode': self.canvas.xy_mode.currentData(),
+                               'xy_raster_max_side': self.canvas.xy_resolution.currentData()},
                 roi_info=self._roi_report_info(tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data()),
                 overview_idx=np.flatnonzero(self.manual_mask),
                 roi_mask_all=(getattr(self, '_effective_roi_mask_cache', None)
@@ -266,6 +269,8 @@ class ReportingMixin:
             'sigma_iters': self.spin_sigma_iter.value(),
             'filter_text': filter_text,
             'display_surface_mode': getattr(self, 'display_surface_mode', 'raw'),
+            'render_config': {'xy_mode': self.canvas.xy_mode.currentData(),
+                              'xy_raster_max_side': self.canvas.xy_resolution.currentData()},
             'display_detrended': self.display_detrended,
             'roi_enabled': bool(self.roi_enabled),
             'roi_shapes': [dict(r) for r in self.roi_shapes],
@@ -507,6 +512,7 @@ class ReportingMixin:
                         name, x, y, z, active_idx, metrics, n_filtered,
                         params['pipeline_text'], params['filter_text'],
                         import_info_snap, params['display_surface_mode'], roi_info=roi_info,
+                        render_config=params.get('render_config'),
                         overview_idx=np.arange(n_total),
                         roi_mask_all=(roi_mask if roi_info.get('enabled') else None))
                     out_png = self._unique_batch_report_path(out, path, reserved_outputs)
@@ -575,7 +581,7 @@ class ReportingMixin:
     def _render_report_figure(self, source_name, tx, ty, tz, active_idx, metrics,
                               n_filtered, pipeline_text, filter_text,
                               import_info, display_surface_mode='raw', roi_info=None,
-                              overview_idx=None, roi_mask_all=None):
+                              overview_idx=None, roi_mask_all=None, render_config=None):
         """生成包含主页面全部信息(指标文本 + 四视图)的报告图，返回 Figure(Agg后端)。"""
         # YaHei 同时含中文与 µ(U+00B5)，避免报告图里 µm/µrad 出现缺字方块；其余字体兜底
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
@@ -594,6 +600,9 @@ class ReportingMixin:
         ax_yz = fig.add_subplot(gs[1, 2])
 
         coeffs = metrics['coeffs']
+        from ..rendering.settings import validate_display
+        render_config = validate_display(render_config or {})
+        xy_mode = render_config['xy_mode']
         if isinstance(display_surface_mode, bool):
             display_surface_mode = 'residual_1' if display_surface_mode else 'raw'
         display_surface_mode = str(display_surface_mode or 'raw')
@@ -606,15 +615,14 @@ class ReportingMixin:
         # 绘图抽样（与主界面口径一致）；指标仍按全部参与拟合点
         plot_idx = np.asarray(active_idx, dtype=int)
         limit = self._display_limit()
-        if len(plot_idx) > limit:
-            pick = np.linspace(0, len(plot_idx) - 1, limit, dtype=int)
-            plot_idx = plot_idx[pick]
+        from ..rendering.lod import spatial_lod_indices, critical_indices
+        from ..rendering.raster import build_xy_raster, raster_rgba, XY_RASTER_THRESHOLD
+        required = critical_indices(tx, ty, tz, plot_idx, coeffs)
+        plot_idx = spatial_lod_indices(tx, ty, plot_idx, limit, required)
         detail_idx = plot_idx
         overview_idx = np.asarray(
             active_idx if overview_idx is None else overview_idx, dtype=int)
-        if len(overview_idx) > limit:
-            pick = np.linspace(0, len(overview_idx) - 1, limit, dtype=int)
-            overview_idx = overview_idx[pick]
+        raster_enabled = len(overview_idx) > XY_RASTER_THRESHOLD or xy_mode != 'height'
         display_model = None
         display_order = None
         if display_surface_mode != 'raw':
@@ -638,15 +646,36 @@ class ReportingMixin:
 
         sc = {'c': dz, 'cmap': 'turbo', 's': 14, 'alpha': 0.85, 'edgecolors': 'none'}
         ax3d.scatter(dx, dy, dz, **sc)
+        ax3d.plot(tx[required],ty[required],plot_z_all[required],linestyle='None',
+                  marker='o',markerfacecolor='none',markeredgecolor='#c2410c',markersize=7,zorder=9)
         ax3d.set_title(ttl3d); ax3d.set_xlabel("X (mm)"); ax3d.set_ylabel("Y (mm)"); ax3d.set_zlabel(zlab)
-        m_xy = ax_xy.scatter(ox, oy, c=oz, cmap='turbo', s=14, alpha=0.85,
-                             edgecolors='none')
-        if (roi_info.get('enabled') and roi_mask_all is not None
+        if raster_enabled:
+            from matplotlib.cm import ScalarMappable
+            from matplotlib.colors import Normalize
+            xmin, xmax, ymin, ymax = float(ox.min()), float(ox.max()), float(oy.min()), float(oy.max())
+            padx, pady = max((xmax-xmin)*.05, 1e-6), max((ymax-ymin)*.05, 1e-6)
+            membership = (np.asarray(roi_mask_all,dtype=bool)[overview_idx]
+                          if roi_info.get('enabled') and roi_mask_all is not None else None)
+            side = min(800,render_config['xy_raster_max_side'])
+            aspect = (xmax-xmin+2*padx)/(ymax-ymin+2*pady)
+            width, height = ax_xy.bbox.width, ax_xy.bbox.height
+            size = (min(side,max(1,int(min(width,height*aspect)))),
+                    min(side,max(1,int(min(height,width/aspect)))))
+            r = build_xy_raster(ox,oy,oz,(xmin-padx,xmax+padx,ymin-pady,ymax+pady),size,membership)
+            ax_xy.imshow(raster_rgba(r,xy_mode),origin='lower',extent=r.extent,interpolation='nearest')
+            overlay = np.zeros((*r.count.shape,4))
+            overlay[r.roi_count > 0] = [.42,.45,.50,.72]
+            ax_xy.imshow(overlay,origin='lower',extent=r.extent,interpolation='nearest')
+            m_xy = (ScalarMappable(norm=Normalize(0,max(1,float(np.log1p(r.count).max()))),cmap='viridis')
+                    if xy_mode == 'density' else ScalarMappable(norm=Normalize(*r.z_limits),cmap='turbo'))
+        else:
+            m_xy = ax_xy.scatter(ox, oy, c=oz, cmap='turbo', s=14, alpha=0.85,
+                                 edgecolors='none')
+        if (not raster_enabled and roi_info.get('enabled') and roi_mask_all is not None
                 and len(roi_mask_all) == len(tx)):
             roi_overview = overview_idx[np.asarray(roi_mask_all, dtype=bool)[overview_idx]]
             if len(roi_overview) > limit:
-                pick = np.linspace(0, len(roi_overview) - 1, limit, dtype=int)
-                roi_overview = roi_overview[pick]
+                roi_overview = spatial_lod_indices(tx,ty,roi_overview,limit)
             if len(roi_overview):
                 ax_xy.scatter(tx[roi_overview], ty[roi_overview], c='#80868b',
                               s=16, alpha=0.72, edgecolors='none')
@@ -666,7 +695,7 @@ class ReportingMixin:
             # 颜色条：标明散点配色对应的高度/残差量级
             cbar = fig.colorbar(m_xy, ax=[ax_xz, ax_yz], location='bottom',
                                 shrink=0.65, aspect=40, pad=0.12)
-            cbar.set_label(zlab, fontsize=10)
+            cbar.set_label('XY点密度 log(1+每格点数)，仅显示' if xy_mode == 'density' else zlab, fontsize=10)
             cbar.ax.tick_params(labelsize=8)
 
         # 顶部：元信息（较小字号）
@@ -682,7 +711,11 @@ class ReportingMixin:
                 continue
             if condition > 1e8:
                 high_order_warnings.append(f"{order}阶拟合病态(condition={condition:.2e})")
+        from ..data_scale import source_counts
+        source_records, source_valid, source_positions = source_counts(import_info)
         meta_lines = [
+            f'源有效点: {source_valid.text()} | 最终计算: {len(active_idx):,}',
+            f'XY: {"Raster / 完整显示源" if raster_enabled else "Scatter"} {len(overview_idx):,} | 3D/剖面 LOD: {len(detail_idx):,}',
             f"报告时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
             f"数据来源: {source_name}",
             f"输入布局: {import_info.get('input_layout_mode', 'point_table')} | "

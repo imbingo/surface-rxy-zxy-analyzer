@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 
-APP_VERSION = "V4.6.4"
+APP_VERSION = "V4.6.5"
 SOURCE_BASE_VERSION = "V3.9.3"
 
 
@@ -19,7 +19,10 @@ def _packaged_source_commit() -> str:
         if not path.exists():
             continue
         try:
-            value = str(json.loads(path.read_text(encoding="utf-8")).get("source_commit", "")).strip()
+            metadata = json.loads(path.read_text(encoding="utf-8"))
+            if str(metadata.get('version','')).lstrip('Vv') != APP_VERSION.lstrip('Vv'):
+                continue
+            value = str(metadata.get("source_commit", "")).strip()
         except (OSError, ValueError, TypeError):
             continue
         if value:

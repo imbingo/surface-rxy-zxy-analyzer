@@ -60,8 +60,9 @@ class XYRasterController(QObject):
 
     def key(self):
         xs, ys = sorted(self.ax.get_xlim()), sorted(self.ax.get_ylim())
-        size = (max(1, min(1200, round(self.ax.bbox.width))),
-                max(1, min(1200, round(self.ax.bbox.height))))
+        side = int(self.owner.canvas.xy_resolution.currentData())
+        size = (max(1, min(side, round(self.ax.bbox.width))),
+                max(1, min(side, round(self.ax.bbox.height))))
         return (self.source_version, self.mode, tuple(xs+ys), size)
 
     def start(self):

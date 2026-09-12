@@ -449,7 +449,7 @@ class DataIOMixin:
             "Z矩阵有效点数超过该值时，即使文件未达到MB阈值也会先抽样再生成XYZ。")
         grid.addWidget(spin_matrix_threshold, 12, 1)
 
-        grid.addWidget(QLabel("显示上限(点):"), 7, 0)
+        grid.addWidget(QLabel("3D/剖面上限(点):"), 7, 0)
         spin_display = NoWheelSpinBox()
         spin_display.setRange(5000, 1000000)
         spin_display.setSingleStep(5000)

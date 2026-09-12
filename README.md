@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.6.4
+# Surface Rxy ZXY Analyzer V4.6.5
 
-面型及 Rxy 分析工具当前版本为 **V4.6.4**。本版新增平行度装调补偿 / N 点垫片计算。历史文件见 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
+面型及 Rxy 分析工具当前版本为 **V4.6.5**。本版新增全量 XY Raster、缺测/密度显示、空间 LOD 和数据规模链路；量测定义不变。详见 [V4.6.5 交付说明](docs/V4.6.5_delivery.md)。历史文件见 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.6.4.py`：V4.6.4 Python 启动入口。
-- `start_surface_analyzer_v4_6_4.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.6.5.py`：V4.6.5 Python 启动入口。
+- `start_surface_analyzer_v4_6_5.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,25 +14,25 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_6_4.bat
+start_surface_analyzer_v4_6_5.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_6_4.bat
+.\start_surface_analyzer_v4_6_5.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_6_4.bat --check
+.\start_surface_analyzer_v4_6_5.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.6.4.py
+python .\面型及Rxy分析工具V4.6.5.py
 python -m surface_analyzer
 ```
 

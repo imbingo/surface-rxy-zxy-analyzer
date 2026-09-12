@@ -64,6 +64,8 @@ class RecipeMixin:
                 'pitch_source': str(getattr(self, 'pitch_source', 'manual')),
             },
             'display': {
+                'xy_mode': self.canvas.xy_mode.currentData(),
+                'xy_raster_max_side': self.canvas.xy_resolution.currentData(),
                 'surface_mode': str(getattr(self, 'display_surface_mode', 'raw')),
                 'detrended': bool(self.display_detrended),
             },
@@ -145,6 +147,8 @@ class RecipeMixin:
                 f"该 Recipe schema {schema_version} 高于当前支持的 schema 8，"
                 "为避免覆盖未知字段，已停止加载。")
         from ..adjustment_panel import validate_fixture, default_fixture
+        from ..rendering.settings import validate_display
+        render_display = validate_display(recipe.get('display', {}) or {})
         adjustment = validate_fixture(recipe.get('adjustment_config', default_fixture()))
         self.clear_parallel_surfaces()
         self.adjustment_panel.load_fixture(adjustment)
@@ -284,6 +288,11 @@ class RecipeMixin:
         self.cb_surface_display.setCurrentIndex(display_index if display_index >= 0 else 0)
         self.cb_surface_display.blockSignals(False)
         self.display_surface_mode = surface_mode
+        for combo, value in ((self.canvas.xy_mode, render_display['xy_mode']),
+                             (self.canvas.xy_resolution, render_display['xy_raster_max_side'])):
+            combo.blockSignals(True)
+            combo.setCurrentIndex(combo.findData(value))
+            combo.blockSignals(False)
         self.display_detrended = surface_mode != 'raw'
         self._update_surface_display_metrics()
         roi = recipe.get('roi', {}) or {}

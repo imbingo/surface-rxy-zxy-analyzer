@@ -1388,7 +1388,7 @@ class ROIMixin:
         if len(seed_candidates) < 3 or len(finite_idx) < 3:
             self.statusBar().showMessage("有效点不足，无法智能抓面。", 6000)
             return
-        if seed_index is None or int(seed_index) not in set(seed_candidates.tolist()):
+        if seed_index is None or not np.any(seed_candidates == int(seed_index)):
             dist2 = (tx[seed_candidates] - px) ** 2 + (ty[seed_candidates] - py) ** 2
             seed_idx = int(seed_candidates[int(np.argmin(dist2))])
         else:
