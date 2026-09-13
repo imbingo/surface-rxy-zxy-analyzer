@@ -57,7 +57,7 @@ def aligned_grid(extent, size, grid):
     return tuple(output), tuple(counts)
 
 
-def build_xy_display(x, y, z, extent, size, roi=None, mode='height', grid=None):
+def build_xy_display(x, y, z, extent, size, roi=None, mode='height', grid=None, detail=False):
     if mode not in ('height', 'points'):
         raise ValueError('Unknown XY display mode')
     x, y, z = map(np.asarray, (x, y, z))
@@ -71,7 +71,10 @@ def build_xy_display(x, y, z, extent, size, roi=None, mode='height', grid=None):
                                       critical_indices(x, y, z, indices))
         return replace(result, detail_indices=indices, scan_grid=grid)
     grid = estimate_scan_grid(x, y) if grid is None else grid
-    bounds, bins = aligned_grid(extent, size, grid)
+    # Keep 8% tolerance even in detail mode: exact median pitch creates false
+    # seams where small nonlinear axis errors cross bin boundaries.
+    display_grid = (grid[0]*1.08/1.25, grid[1]*1.08/1.25, *grid[2:]) if detail else grid
+    bounds, bins = aligned_grid(extent, size, display_grid)
     result = build_xy_raster(x, y, z, bounds, bins, roi)
     visible = (np.isfinite(x) & np.isfinite(y) & (x >= extent[0]) &
                (x <= extent[1]) & (y >= extent[2]) & (y <= extent[3]))

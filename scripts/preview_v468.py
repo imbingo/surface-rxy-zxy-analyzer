@@ -34,6 +34,7 @@ try:
     x += .015*np.sin(x/5)+rng.normal(0,.001,len(x))
     y += .015*np.sin(y/4)+rng.normal(0,.001,len(y))
     keep = (x*x+y*y > 2.5**2) & ~((y>5)&(y<6))
+    keep &= ((x+8)**2+(y+6)**2 > .16**2) & ((x-8)**2+(y+6)**2 > .3**2)
     x,y = x[keep],y[keep]
     z = .45 + .0001*x-.00006*y+.0003*np.sin(x/4)*np.cos(y/3)
     w.df_raw = pd.DataFrame(dict(X=x,Y=y,Z=z))
@@ -59,6 +60,16 @@ try:
             w.grab().save(str(out/f'v468_{width}_{mode}.png'))
     w.resize(1600,900)
     w.canvas.set_focused_view('XY')
+    w.canvas.xy_mode.setCurrentIndex(0)
+    ready()
+    w.statusBar().clearMessage()
+    app.processEvents()
+    w.grab().save(str(out/'v468_focused_smallholes.png'))
+    from types import SimpleNamespace
+    w.on_select(SimpleNamespace(xdata=-12,ydata=-12),SimpleNamespace(xdata=-4,ydata=-9),'XY')
+    app.processEvents()
+    w.grab().save(str(out/'v468_selection_stable.png'))
+    w.cancel_temp_selection()
     for mode in (0,1):
         w.canvas.xy_mode.setCurrentIndex(mode)
         w.canvas.ax_xy.set_xlim(-5,5)

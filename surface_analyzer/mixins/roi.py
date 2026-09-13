@@ -838,7 +838,7 @@ class ROIMixin:
         self.btn_roi_mouse.setText("退出智能抓面" if self.selection_mode == 'roi_smart' else "退出框选 ROI")
         if self.temp_selected_mask is not None:
             self.temp_selected_mask.fill(False)
-            self.update_plots_only()
+            self.update_selection_overlay_only()
         if self.selection_mode == 'roi_smart':
             self.statusBar().showMessage("智能抓面模式已开启：请在 XY 视图点击种子点，可连续添加多个 ROI。", 8000)
         else:
@@ -1604,7 +1604,7 @@ class ROIMixin:
         if self.temp_selected_mask is not None:
             self.temp_selected_mask.fill(False)
         self.pending_delete_operation = None
-        self.update_plots_only()
+        self.update_selection_overlay_only()
 
     def set_temp_selection_as_roi(self):
         if (self.temp_selected_mask is None or not np.any(self.temp_selected_mask)
@@ -1689,7 +1689,7 @@ class ROIMixin:
                 roi_inside_count = int(np.sum(self.temp_selected_mask & active_mask))
         self.statusBar().showMessage(
             f"已选择 {selected_count:,} 点，其中当前 ROI 内 {roi_inside_count:,} 点", 8000)
-        self.update_plots_only()
+        self.update_selection_overlay_only()
 
     def setup_selectors(self):
         # 断开旧选择器回调，避免重复触发/内存累积

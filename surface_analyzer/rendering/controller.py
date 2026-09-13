@@ -87,7 +87,8 @@ class XYRasterController(QObject):
         side = 1200
         size = (max(1, min(side, round(self.ax.bbox.width))),
                 max(1, min(side, round(self.ax.bbox.height))))
-        return (self.source_version, self.mode, tuple(xs+ys), size)
+        return (self.source_version, self.mode, tuple(xs+ys), size,
+                self.owner.canvas.focused_view == 'XY')
 
     def start(self):
         if self.source is None:
@@ -104,7 +105,7 @@ class XYRasterController(QObject):
         self.job_generation = self.generation
         self.job_key = key
         self.future = self.executor.submit(build_xy_display, x, y, z, key[2], key[3],
-                                           roi, self.mode, self.scan_grid)
+                                           roi, self.mode, self.scan_grid, key[4])
         self.poll.start()
 
     def finish(self):
@@ -172,7 +173,8 @@ class XYRasterController(QObject):
             sampled = shown < int(result.z_count.sum())
             display = f'原始点图 {shown:,} 点' + ('（显示抽样）' if sampled else '（窗内全部有效点）')
         else:
-            display = f'面型图 Raster {nx}×{ny} · 高度均值'
+            detail = ' · 细节' if self.owner.canvas.focused_view == 'XY' else ''
+            display = f'面型图 Raster {nx}×{ny}{detail} · 高度均值'
         self.owner.canvas.title_xy.setText('XY 俯视图')
         self.owner.canvas.title_xy.setToolTip(
             f'{display}。高度通道：{self.z_label}。无有效数据区域透明，不代表零高度或已确认孔洞。'

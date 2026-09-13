@@ -63,3 +63,17 @@ class XYDisplayTests(unittest.TestCase):
         self.assertEqual(validate_display({'xy_mode':'points'})['xy_mode'],'points')
         with self.assertRaises(ValueError):
             validate_display({'xy_mode':'invalid'})
+
+    def test_focused_detail_resolves_small_hole_without_washing_out(self):
+        x,y = self.scan()
+        keep = (x-.1)**2+(y-.1)**2 > .16**2
+        x,y = x[keep],y[keep]
+        grid = estimate_scan_grid(x,y)
+        r = build_xy_display(x,y,x+y,(-15.1,15.1,-15.1,15.1),(1000,900),grid=grid,detail=True)
+        dx = (r.extent[1]-r.extent[0])/r.count.shape[1]
+        dy = (r.extent[3]-r.extent[2])/r.count.shape[0]
+        self.assertLess(dx,.112)
+        ix = int((.1-r.extent[0])/dx)
+        iy = int((.1-r.extent[2])/dy)
+        self.assertEqual(r.count[iy,ix],0)
+        self.assertGreater(np.count_nonzero(r.count[3:-3,3:-3])/r.count[3:-3,3:-3].size,.999)

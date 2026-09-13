@@ -1982,6 +1982,12 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
     def _draw_temp_selection_overlay(self, tx, ty, plot_z_all, display_limit):
         """Draw one display-only sample of the current selection in all views."""
+        for artist in getattr(self, '_temp_selection_overlay_artists', {}).values():
+            if artist.axes is not None:
+                try:
+                    artist.remove()
+                except ValueError:
+                    pass  # A full redraw may already have cleared this artist.
         self._temp_selection_overlay_artists = {}
         self._last_temp_selection_display_indices = np.array([], dtype=int)
         mask = self.temp_selected_mask
@@ -2015,6 +2021,22 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             txs, tys, tzs, linestyle='None', marker='x', color='red',
             markersize=np.sqrt(50), markeredgewidth=2, zorder=10,
             label='_temp_selection_overlay')
+
+    def update_selection_overlay_only(self):
+        """Selection is a foreground aid: never invalidate the XY source/cache."""
+        data = getattr(self, '_selection_plot_data', None)
+        if self.df_raw is None or self.active_idx is None or data is None:
+            return
+        axes = [self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz, self.canvas.ax3d]
+        limits = [(ax.get_xlim(), ax.get_ylim()) for ax in axes]
+        zlim = self.canvas.ax3d.get_zlim3d()
+        self._draw_temp_selection_overlay(*data, self._display_limit())
+        for ax, (xlim, ylim) in zip(axes, limits):
+            ax.set_xlim(xlim, emit=False)
+            ax.set_ylim(ylim, emit=False)
+        self.canvas.ax3d.set_zlim3d(zlim, emit=False)
+        for ax in axes:
+            ax.figure.canvas.draw_idle()
 
     def _remember_plot_home_state(self):
         """Remember the unzoomed limits and 3D camera for per-view reset."""
@@ -2091,6 +2113,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._update_import_status_label()
 
         plot_z_all, z_axis_label, z_short_label = self._get_plot_z(tx, ty, tz)
+        self._selection_plot_data = (tx, ty, plot_z_all)
         actual_display_mode = (getattr(self, 'display_surface_mode', 'raw')
                                if z_short_label != 'Z' else 'raw')
         xy_x, xy_y, xy_z = tx[xy_plot_idx], ty[xy_plot_idx], plot_z_all[xy_plot_idx]

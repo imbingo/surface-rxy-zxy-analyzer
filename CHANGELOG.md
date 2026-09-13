@@ -2,6 +2,9 @@
 
 ## V4.6.8
 
+- Fixed selection/cancel flicker by updating foreground selection aids without resetting the XY source, cache or base image.
+- Focused XY surface view now uses 1.08-pitch detail bins rather than the overview's 1.25-pitch footprint; still bounded by pixel budget and never fills empty cells.
+
 - Added Surface / Source points XY modes in the existing card title row.
 - Replaced pixel-only surface binning with source-anchored, estimated-pitch-aware bins to avoid washout when zooming.
 - Bounded source-point mode to 50,000 spatially selected real points with extrema preserved; zoom restores local full detail.
