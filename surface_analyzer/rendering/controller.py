@@ -3,7 +3,8 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from PyQt6.QtCore import QObject, QTimer
-from .raster import build_xy_raster, raster_rgba
+from .raster import raster_rgba
+from .xy_display import build_xy_display
 
 
 class XYRasterController(QObject):
@@ -23,6 +24,7 @@ class XYRasterController(QObject):
         self.detail_mode = False
         self.result = None
         self.mode = 'height'
+        self.scan_grid = None
         self.z_label = 'Z (mm)'
         self.applying = False
         self.timer = QTimer(self)
@@ -40,6 +42,7 @@ class XYRasterController(QObject):
         self.source_version += 1
         self.source = None
         self.result = None
+        self.scan_grid = None
         self.cache.clear()
         self.timer.stop()
         for artist in (self.image, self.overlay, self.scatter, self.scatter_roi):
@@ -67,6 +70,18 @@ class XYRasterController(QObject):
         self.generation += 1
         self.timer.start()
 
+    def set_mode(self, mode):
+        if mode not in ('height', 'points'):
+            raise ValueError('Unknown XY display mode')
+        self.mode = mode
+        # Hide the previous mode while a new display is prepared, not the ROI aids.
+        for artist in (self.image, self.overlay, self.scatter, self.scatter_roi):
+            if artist is not None:
+                artist.set_visible(False)
+        self.owner.canvas.title_xy.setText('XY 俯视图')
+        self.ax.figure.canvas.draw_idle()
+        self.request()
+
     def key(self):
         xs, ys = sorted(self.ax.get_xlim()), sorted(self.ax.get_ylim())
         side = 1200
@@ -88,7 +103,8 @@ class XYRasterController(QObject):
         x, y, z, roi = self.source
         self.job_generation = self.generation
         self.job_key = key
-        self.future = self.executor.submit(build_xy_raster, x, y, z, key[2], key[3], roi)
+        self.future = self.executor.submit(build_xy_display, x, y, z, key[2], key[3],
+                                           roi, self.mode, self.scan_grid)
         self.poll.start()
 
     def finish(self):
@@ -112,8 +128,10 @@ class XYRasterController(QObject):
     def apply(self, result):
         self.applying = True
         self.result = result
+        if result.scan_grid is not None:
+            self.scan_grid = result.scan_grid
         limits = self.ax.get_xlim(), self.ax.get_ylim()
-        rgba = raster_rgba(result, self.mode, self.z_limits)
+        rgba = raster_rgba(result, 'height', self.z_limits)
         overlay = np.zeros((*result.count.shape, 4))
         overlay[result.roi_count > 0] = [.42, .45, .50, .72]
         if self.image is None:
@@ -124,12 +142,7 @@ class XYRasterController(QObject):
             self.image.set_extent(result.extent)
             self.overlay.set_data(overlay)
             self.overlay.set_extent(result.extent)
-        # Switch before isolated one-pixel bins wash out against the background.
-        # Use measured occupancy, not bounding-box density (holes are empty too).
-        occupied = np.count_nonzero(result.count)
-        points_per_cell = result.visible_count / max(1, occupied)
-        self.detail_mode = (self.mode == 'height' and result.detail_indices is not None
-                            and points_per_cell <= (1.8 if self.detail_mode else 1.4))
+        self.detail_mode = self.mode == 'points'
         self.image.set_visible(not self.detail_mode)
         self.overlay.set_visible(not self.detail_mode)
         if self.detail_mode:
@@ -154,12 +167,17 @@ class XYRasterController(QObject):
         self.ax.set_xlim(limits[0], emit=False)
         self.ax.set_ylim(limits[1], emit=False)
         ny, nx = result.count.shape
-        suffix = '点密度' if self.mode == 'density' else '高度均值'
-        display = f'原始散点 {result.visible_count:,} 点' if self.detail_mode else f'Raster {nx}×{ny} · {suffix}'
-        self.owner.canvas.title_xy.setText(f'XY {display}')
+        if self.detail_mode:
+            shown = len(result.detail_indices)
+            sampled = shown < int(result.z_count.sum())
+            display = f'原始点图 {shown:,} 点' + ('（显示抽样）' if sampled else '（窗内全部有效点）')
+        else:
+            display = f'面型图 Raster {nx}×{ny} · 高度均值'
+        self.owner.canvas.title_xy.setText('XY 俯视图')
         self.owner.canvas.title_xy.setToolTip(
-            f'高度通道：{self.z_label}。无有效数据区域透明，不代表零高度或已确认孔洞。'
-            '缩放保持全显示源色标；放大自动显示原始散点，点大小固定，不插值。')
+            f'{display}。高度通道：{self.z_label}。无有效数据区域透明，不代表零高度或已确认孔洞。'
+            '面型图按估计步距聚合，小于栅格的孔缝可能无法分辨；原始点图抽样时不能据空白判缺测。'
+            '缩放和切换保持全显示源色标，不改变测量结果。')
         self.owner._xy_raster_status = f'{display} / 全量显示源 {result.source_count:,} / 窗内 {result.visible_count:,}'
         self.owner._update_import_status_label()
         self.ax.figure.canvas.draw_idle()

@@ -3,7 +3,9 @@ def validate_display(data):
     if not isinstance(data, dict):
         raise ValueError('显示配置必须为对象')
     mode = data.get('xy_mode', 'height')
-    if mode not in ('height', 'density', 'missing'):
+    if mode in ('density', 'missing'):
+        mode = 'height'  # Retired schema-8 options migrate to surface view.
+    if mode not in ('height', 'points'):
         raise ValueError('未知XY显示模式')
     side = int(data.get('xy_raster_max_side', 1200))
     if side not in (600, 800, 1200):

@@ -19,7 +19,6 @@ class RasterTests(unittest.TestCase):
         self.assertEqual(r.roi_count.sum(), 1)
         self.assertTrue(np.isnan(r.z_mean[0, 1]))
         self.assertEqual(raster_rgba(r)[0, 1, 3], 0)
-        self.assertEqual(raster_rgba(r, 'missing')[0, 1, 3], 1)
 
     def test_hole_and_irregular_density(self):
         rng = np.random.default_rng(42)
@@ -29,7 +28,7 @@ class RasterTests(unittest.TestCase):
         r = build_xy_raster(x, y, x+y, (-1, 1, -1, 1), (100, 100))
         self.assertEqual(r.count.sum(), len(x))
         self.assertEqual(r.count[45:55, 45:55].sum(), 0)
-        self.assertEqual(raster_rgba(r, 'density')[50, 50, 3], 0)
+        self.assertEqual(raster_rgba(r)[50, 50, 3], 0)
 
     def test_fixed_color_scale_and_bounded_detail_indices(self):
         x = np.array([0., 1., 2.])
@@ -94,8 +93,16 @@ class RasterTests(unittest.TestCase):
                 w.canvas.ax_xy.set_xlim(-5, 5)
                 w.canvas.ax_xy.set_ylim(-5, 5)
                 wait_render()
-                self.assertEqual(w.xy_raster.result.extent, (-5., 5., -5., 5.))
+                np.testing.assert_allclose(w.canvas.ax_xy.get_xlim(), (-5., 5.))
                 self.assertLess(w.xy_raster.result.visible_count, len(x))
+                self.assertFalse(w.xy_raster.detail_mode)
+                w.temp_selected_mask[12345] = True
+                selection_before = w.temp_selected_mask.copy()
+                w.canvas.xy_mode.setCurrentIndex(1)
+                wait_render()
+                np.testing.assert_array_equal(w.temp_selected_mask, selection_before)
+                np.testing.assert_allclose(w.canvas.ax_xy.get_xlim(), (-5., 5.))
+                np.testing.assert_allclose(w.canvas.ax_xy.get_ylim(), (-5., 5.))
                 self.assertTrue(w.xy_raster.detail_mode)
                 self.assertFalse(w.xy_raster.image.get_visible())
                 self.assertEqual(w.xy_raster.scatter.get_clim(),color_limits)
@@ -110,9 +117,9 @@ class RasterTests(unittest.TestCase):
                 w.canvas.ax_xy.set_xlim(-16,16)
                 w.canvas.ax_xy.set_ylim(-16,16)
                 wait_render()
-                self.assertFalse(w.xy_raster.detail_mode)
-                self.assertTrue(w.xy_raster.image.get_visible())
-                self.assertFalse(w.xy_raster.scatter.get_visible())
+                self.assertTrue(w.xy_raster.detail_mode)
+                self.assertLessEqual(len(w.xy_raster.scatter.get_offsets()), 50000)
+                self.assertIn('显示抽样', w._xy_raster_status)
                 w.canvas.ax_xy.set_xlim(-5,5)
                 w.canvas.ax_xy.set_ylim(-5,5)
                 wait_render()
@@ -122,6 +129,8 @@ class RasterTests(unittest.TestCase):
                 self.assertEqual(w.canvas.xy_resolution.currentData(),1200)
                 self.assertIs(w.last_metrics, metrics)
                 np.testing.assert_array_equal(w.active_idx, active)
+                w.canvas.xy_mode.setCurrentIndex(0)
+                wait_render()
             w.selection_mode = 'roi_smart'
             index = 4321
             event = SimpleNamespace(button=1, dblclick=False, inaxes=w.canvas.ax_xy,
@@ -166,6 +175,15 @@ class RasterTests(unittest.TestCase):
                 fig.savefig(str(output.with_name(f'{output.stem}_report.png')),dpi=110)
             import matplotlib.pyplot as plt
             plt.close(fig)
+            fig = w._render_report_figure('Synthetic source points', x,y,z,
+                    w.active_idx,w.compute_plane_metrics(x[w.active_idx],y[w.active_idx],z[w.active_idx]),
+                    0,'原始状态','关闭',w.import_info,
+                    overview_idx=np.arange(len(x)),render_config={'xy_mode':'points'})
+            xy = next(ax for ax in fig.axes if ax.get_title().startswith('XY 原始点图'))
+            self.assertIn('显示抽样',xy.get_title())
+            self.assertLessEqual(len(xy.collections[0].get_offsets()),50000)
+            np.testing.assert_allclose(xy.collections[0].get_clim(),color_limits)
+            plt.close(fig)
             from unittest.mock import patch as mock_patch
             recipe = w._current_recipe_dict()
             self.assertNotIn('cache',recipe['display'])
@@ -175,6 +193,11 @@ class RasterTests(unittest.TestCase):
             self.assertEqual(w.canvas.xy_mode.currentData(),'height')
             self.assertEqual(w.canvas.xy_resolution.currentData(),1200)
             self.assertEqual(w._current_recipe_dict()['display']['xy_raster_max_side'],1200)
+            recipe['display']['xy_mode'] = 'points'
+            with mock_patch('surface_analyzer.mixins.recipe.QSettings'), mock_patch('surface_analyzer.mixins.recipe.QMessageBox.information'):
+                w.apply_recipe(recipe,remap_current_data=False)
+            self.assertEqual(w.canvas.xy_mode.currentData(),'points')
+            self.assertEqual(w._current_recipe_dict()['display']['xy_mode'],'points')
         finally:
             w.close()
 

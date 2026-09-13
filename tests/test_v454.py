@@ -129,8 +129,9 @@ class V454BatchAndViewportTests(unittest.TestCase):
             'demo.csv', x, y, z, idx, metrics, 0, '原始状态', '关闭', {},
             roi_info={'enabled': False, 'summary': '关闭', 'shapes': [], 'roi_enabled': False},
             overview_idx=idx, roi_mask_all=np.ones(len(frame), dtype=bool))
-        xy = next(ax for ax in fig.axes if ax.get_title() == 'XY 俯视分布')
-        self.assertEqual(len(xy.collections), 1)
+        xy = next(ax for ax in fig.axes if ax.get_title() == 'XY 面型图')
+        self.assertEqual(len(xy.images), 2)
+        self.assertFalse(np.asarray(xy.images[1].get_array())[...,3].any())
         window.close()
 
     def test_cancelled_result_is_delivered_and_finish_shows_partial_counts(self):

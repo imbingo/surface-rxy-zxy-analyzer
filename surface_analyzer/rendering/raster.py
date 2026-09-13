@@ -18,6 +18,7 @@ class Raster:
     visible_count: int
     z_limits: tuple
     detail_indices: np.ndarray | None = None
+    scan_grid: tuple | None = None
 
 
 def build_xy_raster(x, y, z, extent, size, roi=None):
@@ -58,17 +59,10 @@ def build_xy_raster(x, y, z, extent, size, roi=None):
 def raster_rgba(raster, mode='height', z_limits=None):
     from matplotlib import colormaps
     from matplotlib.colors import Normalize
-    if mode == 'density':
-        values = np.log1p(raster.count)
-        low, high = 0., max(1., float(values.max()))
-        cmap = colormaps['viridis']
-    else:
-        values = np.nan_to_num(raster.z_mean)
-        low, high = raster.z_limits if z_limits is None else z_limits
-        cmap = colormaps['turbo']
+    values = np.nan_to_num(raster.z_mean)
+    low, high = raster.z_limits if z_limits is None else z_limits
+    cmap = colormaps['turbo']
     rgba = cmap(Normalize(low, high)(values))
-    empty = (raster.count == 0) if mode == 'density' else (raster.z_count == 0)
+    empty = raster.z_count == 0
     rgba[empty, 3] = 0.
-    if mode == 'missing':
-        rgba[empty] = [.82, .84, .86, 1.]
     return rgba

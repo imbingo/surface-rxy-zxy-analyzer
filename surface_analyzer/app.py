@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.6.7."""
+"""Qt application shell for Surface Analyzer V4.6.8."""
 
 import sys
 import os
@@ -462,7 +462,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
         self.canvas = MultiViewCanvas(self)
         self.xy_raster = XYRasterController(self)
-        self.canvas.xy_mode.currentIndexChanged.connect(lambda _: self.update_plots_only())
+        self.canvas.xy_mode.currentIndexChanged.connect(
+            lambda _: self.xy_raster.set_mode(self.canvas.xy_mode.currentData()))
         self.canvas.focusChanged.connect(self._on_plot_focus_changed)
         # MultiViewCanvas uses one FigureCanvas per view. Selection/context menus
         # stay 2D-only; 3D receives only the display reset handler.
@@ -2057,7 +2058,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         xy_source_idx = np.asarray(xy_plot_idx, dtype=int)
         roi_source_idx = roi_plot_idx
         xy_mode = self.canvas.xy_mode.currentData()
-        raster_enabled = len(xy_source_idx) > XY_RASTER_THRESHOLD or xy_mode != 'height'
+        raster_enabled = True  # Both XY modes use the viewport-aware controller.
 
         def sample_for_display(source_idx):
             if len(source_idx) > display_limit:

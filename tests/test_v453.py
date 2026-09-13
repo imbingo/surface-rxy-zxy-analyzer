@@ -235,9 +235,9 @@ class V453InteractionAndBatchTests(unittest.TestCase):
         metrics = window.compute_plane_metrics(x[active], y[active], z[active])
         fig = window._render_report_figure(
             'demo.csv', x, y, z, active, metrics, 0, '原始状态', '关闭', {},
-            overview_idx=np.arange(6), roi_mask_all=roi_mask)
+            overview_idx=np.arange(6), roi_mask_all=roi_mask, render_config={'xy_mode':'points'})
         by_title = {ax.get_title(): ax for ax in fig.axes if ax.get_title()}
-        xy_ax = by_title['XY 俯视分布']
+        xy_ax = by_title['XY 原始点图（全部点）']
         self.assertEqual(len(xy_ax.collections[0].get_offsets()), 6)
         self.assertEqual(len(xy_ax.collections[1].get_offsets()), 3)
         self.assertEqual(len(by_title['X-Z投影'].collections[0].get_offsets()), 4)

@@ -339,9 +339,9 @@ class RecipeMixin:
         self.cb_surface_display.setCurrentIndex(display_index if display_index >= 0 else 0)
         self.cb_surface_display.blockSignals(False)
         self.display_surface_mode = surface_mode
-        # Legacy XY display options remain valid schema-8 input, but V4.6.6
-        # always uses the automatic height view and its 1200-pixel ceiling.
-        self.canvas.xy_mode.setCurrentIndex(0)
+        self.canvas.xy_mode.blockSignals(True)
+        self.canvas.xy_mode.setCurrentIndex(self.canvas.xy_mode.findData(render_display['xy_mode']))
+        self.canvas.xy_mode.blockSignals(False)
         self.canvas.xy_resolution.setCurrentIndex(0)
         self.display_detrended = surface_mode != 'raw'
         self._update_surface_display_metrics()

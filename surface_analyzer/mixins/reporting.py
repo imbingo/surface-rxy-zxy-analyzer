@@ -616,13 +616,14 @@ class ReportingMixin:
         plot_idx = np.asarray(active_idx, dtype=int)
         limit = self._display_limit()
         from ..rendering.lod import spatial_lod_indices, critical_indices
-        from ..rendering.raster import build_xy_raster, raster_rgba, XY_RASTER_THRESHOLD
+        from ..rendering.raster import raster_rgba, MAX_DETAIL_POINTS
+        from ..rendering.xy_display import build_xy_display
         required = critical_indices(tx, ty, tz, plot_idx, coeffs)
         plot_idx = spatial_lod_indices(tx, ty, plot_idx, limit, required)
         detail_idx = plot_idx
         overview_idx = np.asarray(
             active_idx if overview_idx is None else overview_idx, dtype=int)
-        raster_enabled = len(overview_idx) > XY_RASTER_THRESHOLD or xy_mode != 'height'
+        raster_enabled = xy_mode == 'height'
         display_model = None
         display_order = None
         if display_surface_mode != 'raw':
@@ -661,25 +662,29 @@ class ReportingMixin:
             width, height = ax_xy.bbox.width, ax_xy.bbox.height
             size = (min(side,max(1,int(min(width,height*aspect)))),
                     min(side,max(1,int(min(height,width/aspect)))))
-            r = build_xy_raster(ox,oy,oz,(xmin-padx,xmax+padx,ymin-pady,ymax+pady),size,membership)
+            r = build_xy_display(ox,oy,oz,(xmin-padx,xmax+padx,ymin-pady,ymax+pady),size,membership)
             ax_xy.imshow(raster_rgba(r,xy_mode),origin='lower',extent=r.extent,interpolation='nearest')
             overlay = np.zeros((*r.count.shape,4))
             overlay[r.roi_count > 0] = [.42,.45,.50,.72]
             ax_xy.imshow(overlay,origin='lower',extent=r.extent,interpolation='nearest')
-            m_xy = (ScalarMappable(norm=Normalize(0,max(1,float(np.log1p(r.count).max()))),cmap='viridis')
-                    if xy_mode == 'density' else ScalarMappable(norm=Normalize(*r.z_limits),cmap='turbo'))
+            m_xy = ScalarMappable(norm=Normalize(*r.z_limits),cmap='turbo')
         else:
-            m_xy = ax_xy.scatter(ox, oy, c=oz, cmap='turbo', s=14, alpha=0.85,
+            finite_z = oz[np.isfinite(oz)]
+            color_limits = (finite_z.min(), finite_z.max()) if len(finite_z) else (0., 1.)
+            xy_indices = spatial_lod_indices(tx,ty,overview_idx,MAX_DETAIL_POINTS,
+                                             critical_indices(tx,ty,plot_z_all,overview_idx))
+            m_xy = ax_xy.scatter(tx[xy_indices], ty[xy_indices], c=plot_z_all[xy_indices],
+                                 vmin=color_limits[0], vmax=color_limits[1], cmap='turbo', s=9, alpha=1.,
                                  edgecolors='none')
         if (not raster_enabled and roi_info.get('enabled') and roi_mask_all is not None
                 and len(roi_mask_all) == len(tx)):
-            roi_overview = overview_idx[np.asarray(roi_mask_all, dtype=bool)[overview_idx]]
-            if len(roi_overview) > limit:
-                roi_overview = spatial_lod_indices(tx,ty,roi_overview,limit)
+            roi_overview = xy_indices[np.asarray(roi_mask_all, dtype=bool)[xy_indices]]
             if len(roi_overview):
                 ax_xy.scatter(tx[roi_overview], ty[roi_overview], c='#80868b',
                               s=16, alpha=0.72, edgecolors='none')
-        ax_xy.set_title("XY 俯视分布"); ax_xy.set_xlabel("X (mm)"); ax_xy.set_ylabel("Y (mm)")
+        xy_title = 'XY 面型图' if raster_enabled else ('XY 原始点图' +
+                    ('（显示抽样）' if len(xy_indices) < len(overview_idx) else '（全部点）'))
+        ax_xy.set_title(xy_title); ax_xy.set_xlabel("X (mm)"); ax_xy.set_ylabel("Y (mm)")
         set_xy_equal_aspect(ax_xy)
         self._draw_roi_overlays(ax_xy, roi_info.get('shapes'), roi_info.get('roi_enabled'), report=True)
         ax_xz.scatter(dx, dz, **sc); ax_xz.set_title(txt); ax_xz.set_xlabel("X (mm)"); ax_xz.set_ylabel(zlab)
@@ -695,7 +700,7 @@ class ReportingMixin:
             # 颜色条：标明散点配色对应的高度/残差量级
             cbar = fig.colorbar(m_xy, ax=[ax_xz, ax_yz], location='bottom',
                                 shrink=0.65, aspect=40, pad=0.12)
-            cbar.set_label('XY点密度 log(1+每格点数)，仅显示' if xy_mode == 'density' else zlab, fontsize=10)
+            cbar.set_label(zlab, fontsize=10)
             cbar.ax.tick_params(labelsize=8)
 
         # 顶部：元信息（较小字号）

@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.6.7
+# Surface Rxy ZXY Analyzer V4.6.8
 
-面型及 Rxy 分析工具当前版本为 **V4.6.7**。本版增加智能抓面内联预览、Rx/Ry 高亮、分阶段导入进度弹窗和本机 Recipe 管理。详见 [V4.6.7 交付说明](docs/V4.6.7_delivery.md)。历史文件见 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
+面型及 Rxy 分析工具当前版本为 **V4.6.8**。XY 图题行提供“面型图 / 原始点图”切换；面型图使用步距自适应栅格，原始点图保留真实坐标并明确显示抽样状态。详见 [V4.6.8 交付说明](docs/V4.6.8_delivery.md)。历史文件见 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.6.7.py`：V4.6.7 Python 启动入口。
-- `start_surface_analyzer_v4_6_7.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.6.8.py`：V4.6.8 Python 启动入口。
+- `start_surface_analyzer_v4_6_8.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,27 +14,34 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_6_7.bat
+start_surface_analyzer_v4_6_8.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_6_7.bat
+.\start_surface_analyzer_v4_6_8.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_6_7.bat --check
+.\start_surface_analyzer_v4_6_8.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.6.7.py
+python .\面型及Rxy分析工具V4.6.8.py
 python -m surface_analyzer
 ```
+
+## V4.6.8 重点
+
+- XY 图题同一行切换面型图和原始点图，不增加绘图区工具行，不提供点密度模式。
+- 面型图使用源坐标锚定、按估计 X/Y 步距自适应的栅格，放大不再无限细分成孤立像素；空栅格仍透明，不插值补洞。
+- 原始点图最多绘制 50,000 个真实源点，超限采用空间显示抽样并保留高度极值；放大后显示窗内全部有效点。
+- 切换保留缩放、色标和选区，不重新计算指标；Recipe 与报告同步支持两种模式。
 
 ## V4.6.7 重点
 

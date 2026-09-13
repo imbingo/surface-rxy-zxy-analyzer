@@ -31,8 +31,11 @@ class CompactPlotTests(unittest.TestCase):
             self.assertLess(np.ptp(w.canvas.ax_xz.get_ylim()), .02)
             self.assertLess(np.ptp(w.canvas.ax_xz.get_xlim()), 35)
             self.assertEqual(len(w.active_idx),len(x))
-            self.assertEqual(w.canvas.xy_mode.count(),1)
-            self.assertTrue(w.canvas.xy_mode.isHidden())
+            self.assertEqual(w.canvas.xy_mode.count(),2)
+            self.assertFalse(w.canvas.xy_mode.isHidden())
+            header = w.canvas._card_by_view['XY'].layout().itemAt(0).layout()
+            self.assertGreaterEqual(header.indexOf(w.canvas.xy_mode),0)
+            self.assertGreaterEqual(header.indexOf(w.canvas.title_xy),0)
             self.assertTrue(w.canvas.xy_resolution.isHidden())
             icons = [l for l in w.findChildren(QLabel) if l.objectName() == 'poseIcon']
             self.assertEqual(len(icons),8)

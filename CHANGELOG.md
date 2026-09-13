@@ -1,5 +1,13 @@
 # Changelog
 
+## V4.6.8
+
+- Added Surface / Source points XY modes in the existing card title row.
+- Replaced pixel-only surface binning with source-anchored, estimated-pitch-aware bins to avoid washout when zooming.
+- Bounded source-point mode to 50,000 spatially selected real points with extrema preserved; zoom restores local full detail.
+- Removed density/missing display modes; legacy Recipe values migrate to surface view. Reports honor the selected mode.
+- Retained viewport, global color scale, selection and measurement definitions across mode changes.
+
 ## V4.6.7
 
 - Show Smart ROI growth directly as a gray overlay on the existing XY plot, with compact inline progress/cancel controls and cached-background updates.
