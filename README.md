@@ -1,6 +1,6 @@
 # Surface Rxy ZXY Analyzer V4.6.7
 
-面型及 Rxy 分析工具当前版本为 **V4.6.7**。本版增加 Rx/Ry 高亮、分阶段导入进度弹窗和本机 Recipe 管理。详见 [V4.6.7 交付说明](docs/V4.6.7_delivery.md)。历史文件见 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
+面型及 Rxy 分析工具当前版本为 **V4.6.7**。本版增加智能抓面内联预览、Rx/Ry 高亮、分阶段导入进度弹窗和本机 Recipe 管理。详见 [V4.6.7 交付说明](docs/V4.6.7_delivery.md)。历史文件见 [`archive/legacy_versions`](archive/legacy_versions/README.md)。
 
 ## 当前版本入口
 
@@ -26,15 +26,22 @@ start_surface_analyzer_v4_6_7.bat
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_6_6.bat --check
+.\start_surface_analyzer_v4_6_7.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.6.6.py
+python .\面型及Rxy分析工具V4.6.7.py
 python -m surface_analyzer
 ```
+
+## V4.6.7 重点
+
+- 智能抓面腐蚀过程直接复用主控 XY 俯视图：已纳入区域逐渐覆盖灰色，图内浮层显示阶段、百分比、点数、用时与取消，不再额外弹出第二张点云图。
+- 实时分析结果 Rx/Ry 卡片采用与 PV 一致的蓝色高亮。
+- 大文件导入改为结构化弹窗，按识别、读取、映射、首次分析展示环形百分比、状态和用时。
+- 新增本机 Recipe 管理：搜索、收藏、最近使用、批量导入、双击加载、保存当前参数和导出所选。
 
 ## V4.6.6 重点
 

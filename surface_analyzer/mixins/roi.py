@@ -1440,10 +1440,11 @@ class ROIMixin:
             cached_topology = topology_entry['topology'] if topology_entry is not None else None
             seed_matches = np.flatnonzero(finite_idx_snapshot == seed_idx)
             local_seed_index = int(seed_matches[0]) if len(seed_matches) else None
-            from ..smart_preview import PreviewMailbox, SmartProgressDialog
-            mailbox = PreviewMailbox(finite_x, finite_y)
-            dialog = SmartProgressDialog(mailbox, (roi['seed_x'], roi['seed_y']), self)
-            self._smart_dialog = dialog
+            from ..smart_preview import PreviewMailbox
+            from ..smart_xy_progress import SmartXYProgress
+            mailbox = PreviewMailbox(finite_x, finite_y, visible_mask=base_mask[finite_idx_snapshot])
+            dialog = SmartXYProgress(mailbox, (roi['seed_x'], roi['seed_y']), self)
+            self._smart_progress = dialog
             dialog.cancelRequested.connect(self._cancel_background_task)
             dialog.open()
             def work(progress, cancel_event):
@@ -1528,16 +1529,14 @@ class ROIMixin:
 
             def finish(success, message=''):
                 dialog.finish(success, message)
-                if getattr(self, '_smart_dialog', None) is dialog:
-                    self._smart_dialog = None
-                if success:
-                    dialog.deleteLater()
+                if getattr(self, '_smart_progress', None) is dialog:
+                    self._smart_progress = None
 
             def complete(result):
                 dialog.begin_commit()
                 try:
                     ok = apply_result(result)
-                    finish(ok, '本次结果未应用：有效点不足或数据已变化，请重新选择种子点。')
+                    finish(ok, '' if ok else '本次结果未应用：有效点不足或数据已变化，请重新选择种子点。')
                 except Exception as exc:
                     finish(False, f'应用 ROI 失败：{exc}')
 

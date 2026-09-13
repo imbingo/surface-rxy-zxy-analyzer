@@ -21,7 +21,7 @@ class ProgressRing(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = QRectF(5, 5, 48, 48)
+        rect = QRectF(5, 5, self.width()-10, self.height()-10)
         painter.setPen(QPen(QColor('#e6ebf1'), 4))
         painter.drawEllipse(rect)
         color = QColor('#25855a' if self.value == 100 else '#2f6db0')

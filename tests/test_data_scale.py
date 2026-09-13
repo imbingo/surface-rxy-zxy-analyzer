@@ -26,12 +26,14 @@ class DataScaleTests(unittest.TestCase):
             self.assertTrue(label.isVisible())
             self.assertFalse(label.wordWrap())
             self.assertLess(label.height(), 42)
-            window._show_status('临时操作提示', 50)
+            # Use a long-enough timeout so a busy full-suite event loop cannot
+            # expire the message before we observe the temporary "hidden" state.
+            window._show_status('临时操作提示', 500)
             app.processEvents()
             self.assertFalse(label.isVisible())
             window._update_import_status_label()
             self.assertEqual(bar.currentMessage(), '临时操作提示')
-            QTest.qWait(100)
+            QTest.qWait(600)
             self.assertEqual(bar.currentMessage(), '')
             self.assertTrue(label.isVisible())
             self.assertTrue(label.toolTip())

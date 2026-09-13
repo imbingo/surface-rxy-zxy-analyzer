@@ -13,7 +13,8 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtTest import QTest
 from PyQt6.QtCore import QEventLoop, QTimer
 from surface_analyzer.app import SurfaceAnalyzerPro
-from surface_analyzer.smart_preview import SmartProgressDialog, PreviewMailbox
+from surface_analyzer.smart_preview import PreviewMailbox
+from surface_analyzer.smart_xy_progress import SmartXYProgress as SmartProgressDialog
 from surface_analyzer.smart_roi import grow_surface_roi
 
 app = QApplication.instance() or QApplication([])
@@ -23,9 +24,9 @@ captured = []
 consume = SmartProgressDialog.consume
 def capture(d):
     consume(d)
-    selected = int(d.preview.selected.sum())
-    if selected > 100 and len(d.preview.frontier) and not captured:
-        d.grab().save(str(out/'v467_smart_growth.png'))
+    selected = len(d.artist.get_offsets())
+    if 100 < selected < len(d.mailbox.xy) and not captured:
+        d.owner.grab().save(str(out/'v467_smart_growth.png'))
         captured.append(selected)
 try:
     row, col = np.mgrid[:401, :501]
@@ -73,9 +74,9 @@ try:
         d.set_progress(92,'曲面跟踪已完成，正在整理 ROI')
         mailbox.publish(results[-1],[],len(x))
         d.consume()
-        d.show()
+        d.open()
         QTest.qWait(80)
-        d.grab().save(str(out/f'v467_smart_dialog_{width}.png'))
+        w.grab().save(str(out/f'v467_smart_inline_{width}.png'))
         d.finish(True)
 finally:
     w.close()

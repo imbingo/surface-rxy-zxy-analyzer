@@ -2,7 +2,7 @@
 
 ## V4.6.7
 
-- Added Smart ROI stage rings and throttled XY region-growth previews with seed, accepted points and queued frontier; preview sampling never changes the computed ROI.
+- Show Smart ROI growth directly as a gray overlay on the existing XY plot, with compact inline progress/cancel controls and cached-background updates.
 - Highlighted Rx/Ry metric cards with the same accent as PV.
 - Added structured window-modal import progress with per-stage percentage rings, elapsed time and cancellation.
 - Added a searchable local Recipe library with favorites, recent usage, batch import, double-click loading and atomic saves/exports.
