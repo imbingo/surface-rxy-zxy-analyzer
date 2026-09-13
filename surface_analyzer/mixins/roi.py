@@ -1387,6 +1387,8 @@ class ROIMixin:
         event.canvas.draw_idle()
 
     def add_smart_face_roi_from_seed(self, px, py, seed_index=None, seed_view='XY'):
+        if getattr(self, '_task_thread', None) is not None:
+            return
         if self.df_raw is None:
             return
         tx, ty, tz = self.get_final_transformed_data(self.df_raw)
@@ -1438,7 +1440,17 @@ class ROIMixin:
             cached_topology = topology_entry['topology'] if topology_entry is not None else None
             seed_matches = np.flatnonzero(finite_idx_snapshot == seed_idx)
             local_seed_index = int(seed_matches[0]) if len(seed_matches) else None
+            from ..smart_preview import PreviewMailbox, SmartProgressDialog
+            mailbox = PreviewMailbox(finite_x, finite_y)
+            dialog = SmartProgressDialog(mailbox, (roi['seed_x'], roi['seed_y']), self)
+            self._smart_dialog = dialog
+            dialog.cancelRequested.connect(self._cancel_background_task)
+            dialog.open()
             def work(progress, cancel_event):
+                emit = progress
+                def progress(value, message):
+                    mailbox.report_progress(value, message)
+                    emit(value, message)
                 topology_started = time.perf_counter()
                 if cached_topology is None:
                     progress(5, '正在建立智能抓面拓扑')
@@ -1469,10 +1481,10 @@ class ROIMixin:
                     roi['z_tolerance_mm'], topology, mode=roi['smart_mode'],
                     sensitivity=roi['sensitivity'], progress=grow_progress,
                     cancel_event=cancel_event, stats=growth_stats,
-                    seed_index=local_seed_index)
+                    seed_index=local_seed_index, preview=mailbox.publish)
                 if cancel_event.is_set():
                     raise TaskCancelled()
-                progress(100, '智能抓面完成')
+                progress(92, '曲面跟踪完成，正在整理 ROI')
                 return {'local_keep': local_keep, 'topology': topology,
                         'df_version': snapshot_version, 'pipeline': snapshot_pipeline,
                         'topology_hit': topology_hit,
@@ -1481,12 +1493,12 @@ class ROIMixin:
                         'finite_idx': finite_idx_snapshot,
                         'growth_stats': growth_stats}
 
-            def complete(result):
+            def apply_result(result):
                 if (int(getattr(self, '_df_version', 0)) != result['df_version']
                         or tuple(self.transform_pipeline) != result['pipeline']
                         or self.df_raw is None or len(self.df_raw) != len(tx)):
                     self._show_status('数据或姿态在抓面期间发生变化，本次结果已丢弃，请重新点击种子。', 8000)
-                    return
+                    return False
                 topology = result['topology']
                 if not result['topology_hit']:
                     self._store_smart_topology(
@@ -1512,8 +1524,32 @@ class ROIMixin:
                 self._complete_smart_face_roi(
                     roi, keep, tx, ty, tz, matrix_rc,
                     topology_key=topology_key, performance=performance)
+                return int(keep.sum()) >= 3
 
-            self._run_background_task('智能抓面', work, complete)
+            def finish(success, message=''):
+                dialog.finish(success, message)
+                if getattr(self, '_smart_dialog', None) is dialog:
+                    self._smart_dialog = None
+                if success:
+                    dialog.deleteLater()
+
+            def complete(result):
+                dialog.begin_commit()
+                try:
+                    ok = apply_result(result)
+                    finish(ok, '本次结果未应用：有效点不足或数据已变化，请重新选择种子点。')
+                except Exception as exc:
+                    finish(False, f'应用 ROI 失败：{exc}')
+
+            started = self._run_background_task(
+                '智能抓面', work, complete,
+                on_error=lambda message: finish(False, f'智能抓面失败：{message}'),
+                on_cancel=lambda: finish(False, '已取消抓面，当前 ROI 保持不变。'))
+            if started:
+                self.task_progress.hide()
+                self.btn_cancel_task.hide()
+            else:
+                finish(False, '任务未启动，请等待当前任务结束后重试。')
             return
         keep = self._smart_face_keep_mask_for_arrays(
             tx, ty, tz, roi, matrix_rc=matrix_rc, update_radius=True)

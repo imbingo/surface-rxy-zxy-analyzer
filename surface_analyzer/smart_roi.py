@@ -513,7 +513,7 @@ def grow_surface_roi_v2(x, y, z, seed_x, seed_y, tolerance_mm, topology,
 def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
                      mode='surface_following', sensitivity='standard',
                      candidate_mask=None, progress=None, cancel_event=None, stats=None,
-                     seed_index=None):
+                     seed_index=None, preview=None):
     """Grow one connected surface with a fast interior path and precise boundary path.
 
     ``candidate_mask`` is a hard gate only; it never changes topology. ``stats`` is
@@ -522,6 +522,16 @@ def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
     x = np.asarray(x, dtype=float); y = np.asarray(y, dtype=float); z = np.asarray(z, dtype=float)
     adjacency = topology['adjacency']
     metrics = stats if stats is not None else {}
+    last_preview = 0.0
+
+    def emit_preview(mask, frontier, force=False):
+        nonlocal last_preview
+        if preview is None:
+            return
+        now = time.monotonic()
+        if force or now-last_preview >= .3:
+            preview(mask, frontier, int(metrics.get('processed', 0)))
+            last_preview = now
     metrics.clear()
     metrics.update({
         'points': int(len(x)), 'fast_accept': 0, 'fast_reject': 0,
@@ -565,9 +575,15 @@ def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
             candidate[seed] = True
         visited[seed] = True
         queue = deque([seed])
+        emit_preview(visited, queue, True)
         while queue:
             current = queue.popleft()
             metrics['processed'] += 1
+            if metrics['processed'] % 1024 == 0:
+                emit_preview(visited, queue)
+                if progress is not None:
+                    progress(min(99, int(100 * metrics['processed']/max(len(x), 1))),
+                             int(metrics['processed']), int(len(x)))
             if cancel_event is not None and metrics['processed'] % 1024 == 0 and cancel_event.is_set():
                 from .workers import TaskCancelled
                 raise TaskCancelled()
@@ -577,6 +593,7 @@ def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
                     visited[neighbor] = True
                     queue.append(neighbor)
         metrics['slow_path'] = int(visited.sum())
+        emit_preview(visited, queue, True)
         if progress is not None:
             progress(100, int(metrics['processed']), int(len(x)))
         return visited
@@ -610,9 +627,12 @@ def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
     accepted[seed] = True
     # queue items carry the reusable local trend and its propagation age.
     queue = deque([(seed, seed_plane, seed_normal, 0)])
+    emit_preview(accepted, queue, True)
     while queue:
         current, current_plane, current_normal, plane_age = queue.popleft()
         metrics['processed'] += 1
+        if metrics['processed'] % 1024 == 0:
+            emit_preview(accepted, queue)
         if cancel_event is not None and metrics['processed'] % 1024 == 0 and cancel_event.is_set():
             from .workers import TaskCancelled
             raise TaskCancelled()
@@ -655,6 +675,7 @@ def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
             queue.append((neighbor, neighbor_plane, neighbor_normal, 0))
     if progress is not None:
         progress(100, int(metrics['processed']), int(len(x)))
+    emit_preview(accepted, queue, True)
     metrics['selected'] = int(accepted.sum())
     metrics['fast_accept_ratio'] = float(metrics['fast_accept'] / max(metrics['selected'] - 1, 1))
     return accepted

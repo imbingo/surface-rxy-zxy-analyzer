@@ -2,6 +2,7 @@
 
 ## V4.6.7
 
+- Added Smart ROI stage rings and throttled XY region-growth previews with seed, accepted points and queued frontier; preview sampling never changes the computed ROI.
 - Highlighted Rx/Ry metric cards with the same accent as PV.
 - Added structured window-modal import progress with per-stage percentage rings, elapsed time and cancellation.
 - Added a searchable local Recipe library with favorites, recent usage, batch import, double-click loading and atomic saves/exports.

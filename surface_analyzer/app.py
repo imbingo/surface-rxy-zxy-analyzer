@@ -587,6 +587,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
     def _on_task_progress(self, value, message):
         self.task_progress.setValue(max(0, min(100, int(value))))
+        smart_dialog = getattr(self, '_smart_dialog', None)
+        if smart_dialog is not None and not smart_dialog.finished_state:
+            smart_dialog.set_progress(value, message)
         dialog = getattr(self, '_import_dialog', None)
         if dialog is not None and not dialog.finished_state:
             dialog.set_progress(value, message)
