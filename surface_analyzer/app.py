@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.6.6."""
+"""Qt application shell for Surface Analyzer V4.6.7."""
 
 import sys
 import os
@@ -374,12 +374,15 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         ab.addWidget(dot); ab.addWidget(app_title); ab.addWidget(ver_pill)
         ab.addStretch()
 
-        self.btn_import_recipe = QPushButton("导入 Recipe")
-        self.btn_import_recipe.setToolTip("读取Recipe并自动写入当前UI参数；若尚未载入数据，列映射会在下次载入后自动应用。")
-        self.btn_import_recipe.clicked.connect(self.import_recipe)
-        self.btn_export_recipe = QPushButton("导出 Recipe")
+        self.btn_import_recipe = QPushButton("Recipe 管理")
+        self.btn_import_recipe.setToolTip("搜索、收藏及快速加载 Recipe；支持从文件导入到本机配方库。")
+        self.btn_import_recipe.clicked.connect(self.open_recipe_manager)
+        self.btn_export_recipe = QPushButton("保存 Recipe")
         self.btn_export_recipe.setToolTip("保存当前单位、列映射、物料旋转组合、滤波、ROI、大文件显示和Gap参数。")
-        self.btn_export_recipe.clicked.connect(self.export_recipe)
+        recipe_save_menu = QMenu(self.btn_export_recipe)
+        recipe_save_menu.addAction('保存当前参数到 Recipe 库', self.save_recipe_to_library)
+        recipe_save_menu.addAction('导出当前参数到文件…', self.export_recipe)
+        self.btn_export_recipe.setMenu(recipe_save_menu)
         layout_short = {
             'point_table': 'XYZ', 'pixel_xy': 'Pixel XY',
             'height_matrix': 'Z矩阵', 'zygo_xyz': 'Zygo'
@@ -584,6 +587,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
     def _on_task_progress(self, value, message):
         self.task_progress.setValue(max(0, min(100, int(value))))
+        dialog = getattr(self, '_import_dialog', None)
+        if dialog is not None and not dialog.finished_state:
+            dialog.set_progress(value, message)
         if message:
             self._show_status(message)
 
@@ -718,6 +724,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
     def eventFilter(self, obj, event):
         """应用栏兼任标题栏：左键拖动移动窗口、双击最大化/还原；
         主体外缘 6px 作为缩放边，左键按下触发系统缩放（无边框窗口的边缘拉伸）。"""
+        if (obj is getattr(self, '_appbar', None) and event.type() == QEvent.Type.Resize
+                and hasattr(self, 'current_recipe_name')):
+            self._set_recipe_identity(self.current_recipe_name)
         if obj is getattr(self, '_results_strip', None) and event.type() == QEvent.Type.Resize:
             width = obj.width()
             columns = 5 if width >= 900 else 3 if width >= 450 else 2
@@ -817,8 +826,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         pv_card.setToolTip("相对最佳拟合平面的法向残差极差：仅去除整体高度和一阶倾斜，未去除二阶及以上曲率。")
         self._metric_cards += [pv_card,
             self._make_metric_card("TTV·Z极差 (µm)", self.lbl_ttv),
-            self._make_metric_card("物料 Rx (µrad)", self.lbl_rx),
-            self._make_metric_card("物料 Ry (µrad)", self.lbl_ry)]
+            self._make_metric_card("物料 Rx (µrad)", self.lbl_rx, accent=True),
+            self._make_metric_card("物料 Ry (µrad)", self.lbl_ry, accent=True)]
         for i, card in enumerate(self._metric_cards):
             cards.addWidget(card,0,i)
         self._metric_grid = cards
@@ -1868,6 +1877,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             xb, yb, zb = tx[idx], ty[idx], tz[idx]
 
             # 1. 滤波（主界面与批量共用同一分发 filter_keep_mask）
+            self._import_ui_stage(95, '正在按当前参数执行异常点滤波')
             mode = self.cb_filter.currentIndex()
             self.n_filtered = 0
             keep = self.filter_keep_mask(
@@ -1892,6 +1902,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
 
             # 2. 最终拟合与指标（与批量处理共用 compute_plane_metrics）
+            self._import_ui_stage(96, '正在计算平面、PV、Rx/Ry 和高阶残差')
             m = self.compute_plane_metrics(fx, fy, fz)
             c = m['coeffs']
             self.current_coeffs = c
@@ -1936,6 +1947,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 self._show_status(f"{quality['label']}：{quality['warning']}", 12000)
             analysis_seconds = time.perf_counter() - analysis_started
             plot_started = time.perf_counter()
+            self._import_ui_stage(99, '正在准备四视图与显示数据')
             self.draw_plots(tx, ty, tz, roi_mask_all=roi_mask_all)
             plot_seconds = time.perf_counter() - plot_started
             self.setup_selectors()

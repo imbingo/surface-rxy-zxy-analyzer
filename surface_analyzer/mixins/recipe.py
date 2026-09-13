@@ -32,6 +32,57 @@ from scipy.spatial import cKDTree
 
 
 class RecipeMixin:
+    def _recipe_library(self):
+        from ..recipe_library import RecipeLibrary
+        if not hasattr(self, '_local_recipe_library'):
+            self._local_recipe_library = RecipeLibrary()
+        return self._local_recipe_library
+
+    def open_recipe_manager(self):
+        from ..recipe_dialog import RecipeLibraryDialog
+        if getattr(self, '_task_thread', None) is None:
+            RecipeLibraryDialog(self).exec()
+
+    def _set_recipe_identity(self, name):
+        self.current_recipe_name = str(name)
+        short = str(name) if len(str(name)) <= 14 else str(name)[:13] + '…'
+        self.btn_import_recipe.setText('Recipe 管理' if self.width() < 1200 else 'Recipe · ' + short)
+        self.btn_import_recipe.setToolTip(f'参数来源：{name}\n打开 Recipe 管理；修改参数后请保存为新的 Recipe。')
+
+    def save_recipe_to_library(self):
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, '保存当前参数到 Recipe 库',
+                                       'Recipe 名称（同名会保留为新文件）：',
+                                       text=getattr(self, 'current_recipe_name', ''))
+        if not ok or not name.strip():
+            return
+        try:
+            library = self._recipe_library()
+            path = library.save(self._current_recipe_dict(), name)
+            library.mark_used(path)
+            self._set_recipe_identity(name)
+            self._show_status(f'Recipe 已保存到本机库：{path.name}', 6000)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, 'Recipe 保存失败', str(exc))
+
+    def load_library_recipe(self, path):
+        from ..recipe_library import read_recipe
+        if getattr(self, '_task_thread', None) is not None:
+            return False
+        try:
+            data = read_recipe(path)
+            name = str(data.get('library_metadata', {}).get('name') or Path(path).stem)
+            self.apply_recipe(data, path_hint=name, show_message=False)
+            self._set_recipe_identity(name)
+            try:
+                self._recipe_library().mark_used(path)
+            except (OSError, ValueError) as exc:
+                self._show_status(f'Recipe 已加载，但最近使用记录未保存：{exc}', 8000)
+            return True
+        except Exception as exc:
+            QMessageBox.critical(self, 'Recipe 加载失败', str(exc))
+            return False
+
     def _current_recipe_dict(self):
         """导出当前界面参数，不包含测量数据本身。"""
         return {
@@ -111,8 +162,8 @@ class RecipeMixin:
         if not path:
             return
         try:
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(self._current_recipe_dict(), f, ensure_ascii=False, indent=2)
+            from ..recipe_library import atomic_json
+            atomic_json(path, self._current_recipe_dict())
             self.statusBar().showMessage(f"Recipe已导出: {path}", 5000)
             QMessageBox.information(
                 self, "Recipe导出成功",
@@ -136,7 +187,7 @@ class RecipeMixin:
         except Exception as e:
             QMessageBox.critical(self, "Recipe导入失败", str(e))
 
-    def apply_recipe(self, recipe, path_hint='', remap_current_data=True):
+    def apply_recipe(self, recipe, path_hint='', remap_current_data=True, show_message=True):
         """将Recipe写入UI；若尚未载入数据，列映射名称会暂存，下一次载入文件后自动匹配。"""
         try:
             schema_version = int(recipe.get('schema_version', 1) or 1)
@@ -328,4 +379,5 @@ class RecipeMixin:
             msg += (f" 含 {legacy_smart_count} 个旧版智能ROI，已按 legacy 算法重放以保持历史点数；"
                     "删除后重新抓面才会使用V3粗到细连续曲面算法。")
         self.statusBar().showMessage(msg, 8000)
-        QMessageBox.information(self, "Recipe导入完成", msg)
+        if show_message:
+            QMessageBox.information(self, "Recipe导入完成", msg)

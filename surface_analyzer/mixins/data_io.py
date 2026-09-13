@@ -3896,6 +3896,12 @@ class DataIOMixin:
                 and self.isVisible() and self._task_thread is None):
             previous_info = copy.deepcopy(getattr(self, 'import_info', {}))
             previous_note = str(getattr(self, 'last_import_note', ''))
+            from ..import_progress import ImportProgressDialog
+            dialog = ImportProgressDialog(Path(path).name, self)
+            self._import_dialog = dialog
+            self._import_mapping_ready = False
+            dialog.cancelRequested.connect(self._cancel_background_task)
+            dialog.open()
 
             def restore_previous():
                 self.import_info = previous_info
@@ -3911,19 +3917,36 @@ class DataIOMixin:
                 }
 
             def success(payload):
-                self.load_path(path, _parsed_payload=payload)
-                self._on_task_progress(100, "文件导入、标准化与首次分析完成")
+                dialog.begin_commit()
+                self._import_ui_stage(88, '正在应用列映射与单位')
+                ok = self.load_path(path, _parsed_payload=payload)
+                completed = bool(ok and self._import_mapping_ready)
+                if completed:
+                    self._on_task_progress(100, "文件导入、标准化与首次分析完成")
+                dialog.finish(completed, '读取已结束，分析尚未完成。请检查列映射、有效点数与导入提示。')
+                self._import_dialog = None
+                if completed:
+                    self.statusBar().clearMessage()
+                    self._update_import_status_label()
+                    dialog.deleteLater()
 
             def failure(message):
                 restore_previous()
-                QMessageBox.critical(self, "导入失败", message)
+                dialog.finish(False, f'导入失败：{message}')
+                self._import_dialog = None
 
             def cancelled():
                 restore_previous()
+                dialog.finish(False, '已取消导入，保留此前有效数据。')
+                self._import_dialog = None
                 self._show_status("文件导入已取消，已保留此前有效数据。", 5000)
 
-            return self._run_background_task(
+            started = self._run_background_task(
                 "文件导入", task, success, failure, on_cancel=cancelled)
+            if started:
+                self.task_progress.hide()
+                self.btn_cancel_task.hide()
+            return started
         try:
             if _parsed_payload is None:
                 self.absolute_raw_df = self._read_table(path)
@@ -4054,6 +4077,12 @@ class DataIOMixin:
             QMessageBox.critical(self, "导入失败", str(e))
             return False
 
+    def _import_ui_stage(self, value, message):
+        if getattr(self, '_import_dialog', None) is not None:
+            self._on_task_progress(value, message)
+            from PyQt6.QtCore import QEventLoop
+            QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+
     def apply_mapping(self, preserve_analysis_settings=False):
         if self.absolute_raw_df is None:
             self._show_status("当前无原始文件可映射（Gap 结果状态下映射已锁定）", 5000)
@@ -4105,6 +4134,7 @@ class DataIOMixin:
                         'source_matrix_positions': matrix_cols * matrix_rows,
                     })
             temp_df = temp_df.dropna(subset=['X', 'Y', 'Z'])
+            self._import_ui_stage(91, '正在校验有效坐标并转换物理单位')
 
             if len(temp_df) < 3:
                 raise ValueError("有效数据点少于 3 个，请检查列映射与单位选择。")
@@ -4187,6 +4217,7 @@ class DataIOMixin:
             self.import_info['display_limit'] = self._display_limit()
             self._update_import_status_label()
             self._df_version += 1
+            self._import_ui_stage(94, '正在执行滤波、ROI、平面拟合并准备视图')
             self._invalidate_smart_roi_runtime_cache(
                 topology=True, masks=True, reason='数据或列映射已更新')
             if preserve_analysis_settings:
@@ -4201,5 +4232,7 @@ class DataIOMixin:
                 self.update_analysis()
             else:
                 self.reset_all(confirm=False)
+            if getattr(self, '_import_dialog', None) is not None:
+                self._import_mapping_ready = self.last_metrics is not None
         except Exception as e:
             QMessageBox.critical(self, "解析失败", str(e))

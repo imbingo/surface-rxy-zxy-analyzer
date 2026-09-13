@@ -1,5 +1,12 @@
 # Changelog
 
+## V4.6.7
+
+- Highlighted Rx/Ry metric cards with the same accent as PV.
+- Added structured window-modal import progress with per-stage percentage rings, elapsed time and cancellation.
+- Added a searchable local Recipe library with favorites, recent usage, batch import, double-click loading and atomic saves/exports.
+- Kept Recipe schema 8 and retained existing measurement definitions.
+
 ## V4.6.6
 
 - Added Smart ROI topology stage/count/elapsed-time progress and cooperative cancellation between processing batches.
