@@ -20,12 +20,39 @@ from surface_analyzer.rendering.lod import (
 
 class _Reader(DataIOMixin):
     input_layout_mode = 'point_table'
+    LARGE_TEXT_IMPORT_LIMIT = 100_000
+    LARGE_TEXT_FILE_BYTES = 64 * 1024 * 1024
+    DISPLAY_POINT_LIMIT = 30_000
+    BIGFILE_MODE_PRESETS = {
+        'fast': {'label': '快速'},
+    }
 
     def __init__(self):
         self.import_info = {}
+        self.auto_sample_large_text = True
+        self.large_text_import_limit = 60_000
+        self.large_file_mode = 'fast'
+        self.large_file_sample_method = 'file_position'
+        self.large_text_grid_count = 0
 
 
 class PerformanceEngineV470Tests(unittest.TestCase):
+    def test_row_limit_applies_below_file_size_threshold(self):
+        reader = _Reader()
+        reader.large_text_import_limit = 12
+        source = pd.DataFrame({
+            'X': np.arange(100).astype(str),
+            'Y': np.arange(100).astype(str),
+            'Z': np.arange(100).astype(str),
+        })
+        sampled = reader._enforce_full_text_row_limit(
+            source, 'unused.csv', 'utf-8', ',', 3,
+            list(source.columns), 0, 'point_table')
+        self.assertEqual(len(sampled), 12)
+        self.assertTrue(reader.import_info['sampled'])
+        self.assertEqual(reader.import_info['sampling_trigger'], 'record_limit')
+        self.assertEqual(reader.import_info['source_total_rows'], 100)
+
     def test_empty_transform_pipeline_returns_shared_arrays(self):
         x = np.arange(12.0); y = x + 1; z = x - 1
         tx, ty, tz = AnalysisMixin._apply_transform_pipeline(x, y, z, [])

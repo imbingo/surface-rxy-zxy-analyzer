@@ -640,7 +640,10 @@ class DataIOMixin:
         update_grid_enabled()
         update_layout_controls()
 
-        note = QLabel("说明：文件位置采样优先保证导入和交互流畅；空间网格采样会先扫描全文件确定 X/Y 范围，再按网格保留代表点、Z最小点和Z最大点。导入抽样会影响参与分析的数据量，显示上限只影响绘图。")
+        note = QLabel(
+            "说明：启用自动抽样后，文件大小达到触发阈值，或识别记录数超过导入上限，"
+            "任一条件成立都会抽样。文件位置采样优先保证流畅；空间网格采样会保留代表点和"
+            "Z极值。导入上限影响参与分析的数据量，显示上限只影响绘图。策略修改从下一次导入生效。")
         note.setWordWrap(True)
         note.setStyleSheet("color: #7f8c8d; font-size: 11px;")
         grid.addWidget(note, 15, 0, 1, 2)
@@ -2559,6 +2562,7 @@ class DataIOMixin:
             perf_event('Parse', time.perf_counter()-started,
                        engine='robust_line_parser', rows=len(frame))
             return frame
+
         try:
             # Our robust parser supports one physical record per line. Quoted
             # rows may use the C engine only when quotes balance on every
@@ -2603,6 +2607,50 @@ class DataIOMixin:
                        engine='robust_fallback', rows=len(frame),
                        reason=type(exc).__name__)
             return frame
+
+    def _enforce_full_text_row_limit(self, frame, path, enc, sep, ncols,
+                                     column_names, data_line_no, layout_mode,
+                                     progress=None, cancel_event=None):
+        """Apply the user-visible import cap even when the file is below its MB trigger."""
+        limit = self._large_text_import_limit()
+        if (not getattr(self, 'auto_sample_large_text', True) or
+                len(frame) <= limit):
+            return frame
+        source_rows = int(len(frame))
+        if layout_mode == 'pixel_xy':
+            sampled = self._sample_large_pixel_text(
+                path, enc, sep, ncols, column_names, data_line_no,
+                progress, cancel_event)
+        elif str(getattr(self, 'large_file_sample_method', 'file_position')) != 'file_position':
+            sampled = self._sample_large_text(
+                path, enc, sep, ncols, column_names, data_line_no,
+                progress, cancel_event)
+        else:
+            positions = np.linspace(0, source_rows-1, limit, dtype=np.int64)
+            sampled = frame.iloc[positions].reset_index(drop=True)
+            self.import_info.update({
+                'strategy': '记录数触发文件位置均匀采样',
+                'sampled': True,
+                'sample_method_key': 'file_position',
+                'extrema_preserved': False,
+                'import_rows': len(sampled),
+                'source_record_rows': source_rows,
+                'source_total_rows': source_rows,
+                'source_total_rows_estimated': False,
+                'large_file_mode': self._bigfile_mode_label(),
+                'sample_method': self._sample_method_label('file_position'),
+                'grid_count': 0,
+                'notes': (f'{self._bigfile_mode_label()}模式 | 记录数 {source_rows:,} '
+                          f'超过导入上限 {limit:,} | 文件位置均匀采样'),
+            })
+            self.last_import_note = (
+                f'源文件共读取 {source_rows:,} 条记录，超过导入上限 {limit:,}；'
+                f'已按文件位置均匀保留 {len(sampled):,} 条用于分析。')
+        self.import_info['sampling_trigger'] = 'record_limit'
+        self.import_info['source_record_rows'] = source_rows
+        self.import_info['source_total_rows'] = source_rows
+        self.import_info['source_total_rows_estimated'] = False
+        return sampled
 
     def _sample_large_pixel_text(self, path, enc, sep, ncols, column_names,
                                  data_line_no, progress=None, cancel_event=None):
@@ -3868,17 +3916,27 @@ class DataIOMixin:
                     df = self._read_full_delimited_text(
                         path, enc, sep, ncols, col_names, layout['data_line_no'],
                         progress=progress, cancel_event=cancel_event)
-                    self.import_info.update({
-                        'strategy': '文本全量读取',
-                        'source_format': ('通用文本Pixel XY点表'
-                                          if layout_mode == 'pixel_xy'
-                                          else '通用文本XYZ点表'),
-                        'sampled': False,
-                        'sample_method_key': 'full',
-                        'extrema_preserved': True,
-                        'import_rows': len(df),
-                        'notes': f"编码 {enc}"
-                    })
+                    df = self._enforce_full_text_row_limit(
+                        df, path, enc, sep, ncols, col_names,
+                        layout['data_line_no'], layout_mode,
+                        progress, cancel_event)
+                    if not self.import_info.get('sampled'):
+                        self.import_info.update({
+                            'strategy': '文本全量读取',
+                            'source_format': ('通用文本Pixel XY点表'
+                                              if layout_mode == 'pixel_xy'
+                                              else '通用文本XYZ点表'),
+                            'sampled': False,
+                            'sample_method_key': 'full',
+                            'extrema_preserved': True,
+                            'import_rows': len(df),
+                            'notes': f"编码 {enc}"
+                        })
+                    else:
+                        self.import_info.setdefault(
+                            'source_format',
+                            '通用文本Pixel XY点表' if layout_mode == 'pixel_xy'
+                            else '通用文本XYZ点表')
                 self.import_info['metadata'] = text_metadata
                 self.import_info['preamble_rows_skipped'] = int(layout['data_line_no'])
                 self.import_info['header_source_line'] = (
