@@ -1,9 +1,5 @@
 @echo off
 setlocal
-cd /d "%~dp0"
-if exist ".venv\Scripts\python.exe" (
-  ".venv\Scripts\python.exe" "面型及Rxy分析工具V4.7.0.py" %*
-) else (
-  py -3 "面型及Rxy分析工具V4.7.0.py" %*
-)
-endlocal
+chcp 65001 >nul
+call "%~dp0start_surface_analyzer_v4_6_3.bat" %*
+exit /b %ERRORLEVEL%
