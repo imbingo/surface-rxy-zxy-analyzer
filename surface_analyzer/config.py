@@ -1,5 +1,12 @@
 """Application defaults shared by the GUI and integration layer."""
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+import os
+import json
+import logging
+
 from .version import APP_VERSION
 
 
@@ -11,6 +18,38 @@ MISSING_TEXT_TOKENS = {
     "***", "--", "NA", "N/A", "NaN", "nan", "NAN", "null", "NULL",
     "NoData", "Nodata", "NO DATA", "No Data",
 }
+
+
+def _physical_core_count() -> int:
+    """Return a conservative cross-platform core estimate without dependencies."""
+    logical = os.cpu_count() or 1
+    # Most supported operator PCs expose SMT. A conservative half-logical
+    # estimate avoids oversubscribing OpenBLAS, Qt and worker threads together.
+    return max(1, logical // 2) if logical >= 4 else logical
+
+
+@dataclass(frozen=True)
+class PerformancePolicy:
+    perf_debug: bool = False
+    thread_budget: int = max(1, _physical_core_count() - 1)
+    parser_fast_path_enabled: bool = True
+    matrix_fast_component_enabled: bool = True
+    lod_cache_enabled: bool = True
+
+
+PERFORMANCE_POLICY = PerformancePolicy(
+    perf_debug=os.environ.get('SURFACE_PERF_DEBUG', '').strip().casefold()
+               in {'1', 'true', 'yes', 'on'},
+)
+
+
+def perf_event(stage: str, seconds: float, **details) -> None:
+    """Emit structured timing only when SURFACE_PERF_DEBUG is enabled."""
+    if not PERFORMANCE_POLICY.perf_debug:
+        return
+    payload = {'stage': str(stage), 'seconds': round(float(seconds), 6), **details}
+    logging.getLogger('surface_analyzer.performance').info(
+        'PERF %s', json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 BIGFILE_MODE_PRESETS = {
     "fast": {

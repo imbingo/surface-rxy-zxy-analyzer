@@ -114,7 +114,7 @@ class MultiViewCanvas(QWidget):
         for i, card in enumerate(self._cards):
             self._grid.addWidget(card, i // columns, i % columns)
         self._grid.setColumnStretch(1, 1 if columns == 2 else 0)
-        self.setMinimumHeight(1100 if columns == 1 else 0)
+        self.setMinimumHeight(1320 if columns == 1 else 660)
 
     def set_focused_view(self, view=None):
         if view is not None and view not in self._card_by_view:
@@ -175,7 +175,7 @@ class MultiViewCanvas(QWidget):
             # better than constrained_layout, which tends to shrink 3D axes to
             # a small square when Z is much smaller than X/Y.
             fig = Figure(constrained_layout=False)
-            ax = fig.add_axes([0.01, 0.01, 0.96, 0.96], projection=projection)
+            ax = fig.add_axes([0.04, 0.12, 0.84, 0.80], projection=projection)
             ax.set_proj_type('ortho')
         else:
             fig = Figure(constrained_layout=True)

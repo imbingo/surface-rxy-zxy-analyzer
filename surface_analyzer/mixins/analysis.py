@@ -178,9 +178,13 @@ class AnalysisMixin:
         闭合性：CW90×4=恒等、CW90×2=ROT180、FLIPX+FLIPY=ROT180。
         用法注意：①选对变换要对准实际装夹/翻面动作（|tilt| 幅值恒定，抓不出选错按钮的 90° 偏差）；
                   ②Rx/Ry 绝对正负号需用已知楔形方向的标准件实测标定一次。"""
-        x = np.asarray(x, dtype=float).copy()
-        y = np.asarray(y, dtype=float).copy()
-        z = np.asarray(z, dtype=float).copy()
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        z = np.asarray(z, dtype=float)
+        if not pipeline:
+            return x, y, z
+        # Transform expressions create their own outputs; z is immutable for
+        # every supported pose operation and can remain a shared view.
         for action in pipeline:
             xmin, xmax = np.min(x), np.max(x)
             ymin, ymax = np.min(y), np.max(y)

@@ -124,6 +124,7 @@ class ReportingMixin:
         if not path:
             return
         try:
+            self._ensure_all_high_order_models()
             tx, ty, tz = self.get_final_transformed_data(self.df_raw)
             fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
             metrics = self.compute_plane_metrics(fx, fy, fz)
@@ -158,6 +159,7 @@ class ReportingMixin:
         path, _ = QFileDialog.getSaveFileName(self, "导出", "Result_Data.csv", "CSV (*.csv)")
         if not path: return
         try:
+            self._ensure_all_high_order_models()
             tx, ty, tz = self.get_final_transformed_data(self.df_raw)
             fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
 
@@ -696,10 +698,10 @@ class ReportingMixin:
             xx, yy = np.meshgrid(np.linspace(dx.min(), dx.max(), 10), np.linspace(dy.min(), dy.max(), 10))
             zz = np.zeros_like(xx) if display_surface_mode != 'raw' else coeffs[0] * xx + coeffs[1] * yy + coeffs[2]
             ax3d.plot_surface(xx, yy, zz, color='#3498db', alpha=0.3, edgecolor='none')
-            set_surface_box_aspect(ax3d, dx, dy, dz, zoom=1.02, z_tick_count=3)
+            set_surface_box_aspect(ax3d, dx, dy, dz, zoom=0.82, z_tick_count=3)
             # 颜色条：标明散点配色对应的高度/残差量级
             cbar = fig.colorbar(m_xy, ax=[ax_xz, ax_yz], location='bottom',
-                                shrink=0.65, aspect=40, pad=0.12)
+                                shrink=0.65, aspect=40, pad=0.20)
             cbar.set_label(zlab, fontsize=10)
             cbar.ax.tick_params(labelsize=8)
 
@@ -780,5 +782,41 @@ class ReportingMixin:
                      color='#b42318' if quality['warning'] or high_order_warnings else '#7f8c8d',
                      transform=ax_foot.transAxes)
 
-        fig.suptitle(f"面型及Rxy分析报告 ({self.APP_VERSION}) — {source_name}", fontsize=16, fontweight='bold')
+        fig.suptitle(f"面型及Rxy分析报告 ({self.APP_VERSION})", fontsize=16, fontweight='bold')
+        self._layout_report_text(fig, gs, (ax_meta, ax_res, ax_foot))
         return fig
+
+    @staticmethod
+    def _layout_report_text(fig, grid, axes):
+        """Measure wrapped CJK text before allocating report sections in inches."""
+        fig.set_layout_engine(None)
+        grid.update(left=0.035, right=0.96, bottom=0.07, top=0.91,
+                    wspace=0.48, hspace=0.38)
+        renderer = fig.canvas.get_renderer()
+        width = 4.75 * fig.dpi
+        heights = []
+        for ax in axes:
+            label = ax.texts[0]
+            wrapped = []
+            for paragraph in label.get_text().split('\n'):
+                line = ''
+                for char in paragraph:
+                    candidate = line + char
+                    measured = renderer.get_text_width_height_descent(
+                        candidate, label.get_fontproperties(), ismath=False)[0]
+                    if line and measured > width:
+                        wrapped.append(line)
+                        line = char
+                    else:
+                        line = candidate
+                wrapped.append(line)
+            label.set_text('\n'.join(wrapped))
+            heights.append(label.get_window_extent(renderer).height / fig.dpi + 0.36)
+        height = max(9.0, sum(heights) + 1.25)
+        fig.set_size_inches(17, height)
+        top = height - 0.8
+        for ax, section_height in zip(axes, heights):
+            ax.set_position([0.035, (top-section_height)/height,
+                             4.9/17, section_height/height])
+            ax.texts[0].set_position((0.02, 1-0.14/section_height))
+            top -= section_height

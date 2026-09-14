@@ -1,5 +1,15 @@
 # Changelog
 
+## V4.7.0 — Performance Engine Phase 1
+
+- Added format-aware C-parser paths with automatic robust fallback.
+- Reduced repeated Z Matrix and Keyence body scans.
+- Added compact implicit matrix topology and an equivalent connected-component path for matrix plane-residual Smart ROI.
+- Added revision-keyed LOD caching, bounded-memory chunked LOD, and zero-copy empty transforms.
+- Moved order-2/order-3 diagnostics to on-demand background work with late-result guards.
+- Added `PerformancePolicy`, `SURFACE_PERF_DEBUG`, golden parity tests, and isolated before/after benchmarks.
+- Preserved all metrology formulas, ROI Boolean semantics, missing-cell holes, and critical display extrema.
+
 ## V4.6.8
 
 - Fixed selection/cancel flicker by updating foreground selection aids without resetting the XY source, cache or base image.

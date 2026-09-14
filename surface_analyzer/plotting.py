@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from matplotlib.ticker import LinearLocator
+from matplotlib.ticker import LinearLocator, MaxNLocator
 
 
 def _finite_extent(values) -> float:
@@ -57,6 +57,10 @@ def set_surface_box_aspect(
 ):
     """Apply the shared 3D aspect policy and tolerate older Matplotlib APIs."""
     aspect = surface_box_aspect(x, y, z, min_z_ratio=min_z_ratio)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=3))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
+    ax.tick_params(axis='both', labelsize=8, pad=2)
+    ax.zaxis.labelpad = 12
     if zoom is not None:
         try:
             ax.set_box_aspect(aspect, zoom=zoom)

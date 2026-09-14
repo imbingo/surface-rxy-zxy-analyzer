@@ -1,0 +1,45 @@
+﻿test,format,points,old_ms,new_ms,speedup,old_peak_rss_mb,new_peak_rss_mb,memory_reduction_pct,result_equal,notes
+Physical CSV import,csv,100000,526.373,51.633,10.195,31.46,17.5,44.37,True,Same deterministic synthetic fixture
+Physical CSV import,csv,500000,2715.851,200.854,13.521,155.11,46.49,70.03,True,Same deterministic synthetic fixture
+Physical CSV import,csv,1000000,5683.007,352.194,16.136,308.26,63.38,79.44,True,Same deterministic synthetic fixture
+Physical CSV import,csv,2000000,12114.516,670.502,18.068,616.72,96.37,84.37,True,Same deterministic synthetic fixture
+Physical CSV import,csv,5000000,29504.007,1649.292,17.889,1536.39,207.33,86.51,True,Same deterministic synthetic fixture
+Pixel CSV import,pixel,100000,565.554,54.432,10.39,30.91,17.11,44.65,True,Same deterministic synthetic fixture
+Pixel CSV import,pixel,2000000,11985.315,725.772,16.514,616.75,97.25,84.23,True,Same deterministic synthetic fixture
+Quoted CSV import,quoted,2000000,12058.675,1256.8,9.595,616.34,96.46,84.35,True,Same deterministic synthetic fixture
+TSV import,tab,2000000,12068.781,745.914,16.18,616.27,96.49,84.34,True,Same deterministic synthetic fixture
+Whitespace import,space,2000000,10781.178,1547.103,6.969,616.79,96.16,84.41,True,Same deterministic synthetic fixture
+Z Matrix import,matrix,100000,237.799,98.251,2.42,8.2,9.04,-10.24,True,Same deterministic synthetic fixture
+Z Matrix import,matrix,500000,1114.75,396.295,2.813,42.0,44.36,-5.62,True,Same deterministic synthetic fixture
+Z Matrix import,matrix,1000000,2112.778,752.982,2.806,61.19,71.16,-16.29,True,Same deterministic synthetic fixture
+Z Matrix import,matrix,2000000,4239.819,1434.671,2.955,184.64,162.91,11.77,True,Same deterministic synthetic fixture
+Z Matrix import,matrix,5000000,9479.168,3420.098,2.772,650.76,640.28,1.61,True,Same deterministic synthetic fixture
+Keyence synthetic import,keyence,100000,244.58,127.652,1.916,7.0,7.79,-11.29,True,Same deterministic synthetic fixture
+Keyence synthetic import,keyence,2000000,4384.185,1739.346,2.521,183.92,254.17,-38.2,True,Same deterministic synthetic fixture
+Zygo import,zygo,100000,313.075,377.303,0.83,42.93,42.11,1.91,True,Same deterministic synthetic fixture
+Zygo import,zygo,2000000,8303.514,9658.833,0.86,866.32,866.4,-0.01,True,Same deterministic synthetic fixture
+Matrix topology,matrix,100000,812.659,54.278,14.972,61.09,14.66,76.0,True,Same deterministic synthetic fixture
+Matrix topology,matrix,500000,3868.274,367.175,10.535,312.73,97.89,68.7,True,Same deterministic synthetic fixture
+Matrix topology,matrix,1000000,7819.507,809.73,9.657,628.52,191.39,69.55,True,Same deterministic synthetic fixture
+Matrix topology,matrix,2000000,15557.883,1676.821,9.278,1255.05,383.01,69.48,True,Same deterministic synthetic fixture
+Matrix topology,matrix,5000000,40339.951,4561.817,8.843,3136.3,955.52,69.53,True,Same deterministic synthetic fixture
+Matrix plane residual,matrix,100000,137.442,5.184,26.513,1.12,2.77,-147.32,True,Golden parity test
+Matrix plane residual,matrix,500000,769.85,25.402,30.307,4.84,6.25,-29.13,True,Golden parity test
+Matrix plane residual,matrix,1000000,1594.73,46.652,34.184,10.52,14.05,-33.56,True,Golden parity test
+Matrix plane residual,matrix,2000000,3298.123,92.385,35.7,33.7,42.9,-27.3,True,Golden parity test
+Matrix plane residual,matrix,5000000,7594.638,265.309,28.626,101.33,109.92,-8.48,True,Golden parity test
+Matrix surface following,matrix,100000,1340.817,2331.772,0.575,0.28,2.8,-900.0,True,Same deterministic synthetic fixture
+Matrix surface following,matrix,500000,7041.22,13707.504,0.514,18.12,22.98,-26.82,True,Same deterministic synthetic fixture
+Matrix surface following,matrix,1000000,13625.325,26910.645,0.506,41.07,46.21,-12.52,True,Same deterministic synthetic fixture
+Matrix surface following,matrix,2000000,27346.817,54019.2,0.506,91.73,97.47,-6.26,True,Same deterministic synthetic fixture
+Matrix surface following,matrix,5000000,74892.832,131757.853,0.568,233.5,240.28,-2.9,True,Same deterministic synthetic fixture
+LOD 30k cold,matrix,100000,25.219,45.033,0.56,9.14,9.12,0.22,True,Golden parity test
+LOD 30k cold,matrix,500000,194.74,217.707,0.895,38.73,27.98,27.76,True,Golden parity test
+LOD 30k cold,matrix,1000000,454.718,486.344,0.935,76.92,58.28,24.23,True,Golden parity test
+LOD 30k cold,matrix,2000000,819.751,1028.266,0.797,140.66,118.29,15.9,True,Golden parity test
+LOD 30k cold,matrix,5000000,2953.932,3131.009,0.943,411.5,347.32,15.6,True,Golden parity test
+Empty transform,matrix,100000,0.505,0.007,71.141,0.79,0.02,97.47,True,Same deterministic synthetic fixture
+Empty transform,matrix,500000,2.076,0.01,214.021,11.47,0.02,99.83,True,Same deterministic synthetic fixture
+Empty transform,matrix,1000000,4.591,0.013,345.188,22.92,0.02,99.91,True,Same deterministic synthetic fixture
+Empty transform,matrix,2000000,7.737,0.01,797.68,45.81,0.02,99.96,True,Same deterministic synthetic fixture
+Empty transform,matrix,5000000,21.236,0.014,1506.106,114.47,0.02,99.98,True,Same deterministic synthetic fixture

@@ -5,7 +5,103 @@ from contextvars import ContextVar
 import time
 
 import numpy as np
+from scipy import ndimage
 from scipy.spatial import Delaunay, QhullError, cKDTree
+
+from .config import PERFORMANCE_POLICY, perf_event
+
+
+class Matrix8Adjacency:
+    """Implicit 8-neighbour lattice without one Python adjacency object per point."""
+    __slots__ = ('grid', 'point_rows', 'point_cols', 'health')
+
+    def __init__(self, grid, point_rows, point_cols, health):
+        self.grid = grid
+        self.point_rows = point_rows
+        self.point_cols = point_cols
+        self.health = health
+
+    def __len__(self):
+        return len(self.point_rows)
+
+    def __getitem__(self, index):
+        row = int(self.point_rows[index]); col = int(self.point_cols[index])
+        values = []
+        for dr in (-1, 0, 1):
+            rr = row + dr
+            if rr < 0 or rr >= self.grid.shape[0]:
+                continue
+            for dc in (-1, 0, 1):
+                cc = col + dc
+                if (dr == 0 and dc == 0) or cc < 0 or cc >= self.grid.shape[1]:
+                    continue
+                value = int(self.grid[rr, cc])
+                if value >= 0:
+                    values.append(value)
+        return tuple(sorted(values))
+
+
+def _implicit_matrix_topology(x, y, rows, cols):
+    _topology_progress(5, '正在验证矩阵坐标')
+    rows = np.asarray(rows, dtype=np.int64)
+    cols = np.asarray(cols, dtype=np.int64)
+    if len(rows) != len(x) or len(cols) != len(x) or not len(rows):
+        raise ValueError('矩阵拓扑坐标长度不一致')
+    row0, col0 = int(rows.min()), int(cols.min())
+    rr, cc = rows-row0, cols-col0
+    height, width = int(rr.max())+1, int(cc.max())+1
+    cell_count = height*width
+    # Avoid allocating a huge mostly-empty bounding box for irregular inputs.
+    if cell_count > max(len(rows)*4, len(rows)+1_000_000):
+        raise ValueError('矩阵坐标过于稀疏，不能使用隐式规则拓扑')
+    flat = rr*width+cc
+    if len(np.unique(flat)) != len(flat):
+        raise ValueError('矩阵拓扑存在重复坐标')
+    grid = np.full(cell_count, -1, dtype=np.int32)
+    grid[flat] = np.arange(len(rows), dtype=np.int32)
+    grid = grid.reshape(height, width)
+    _topology_progress(25, '正在建立隐式矩阵索引')
+    occupancy = grid >= 0
+    labels, component_count = ndimage.label(occupancy, structure=np.ones((3, 3), dtype=np.uint8))
+    _topology_progress(45, '正在检查矩阵连通域')
+    sizes = np.bincount(labels.ravel())[1:] if component_count else np.empty(0, dtype=int)
+    degrees = np.zeros(len(rows), dtype=np.uint8)
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            if dr == dc == 0:
+                continue
+            target_r, target_c = rr+dr, cc+dc
+            valid = ((target_r >= 0) & (target_r < height) &
+                     (target_c >= 0) & (target_c < width))
+            hit = np.zeros(len(rows), dtype=bool)
+            hit[valid] = grid[target_r[valid], target_c[valid]] >= 0
+            degrees += hit
+    _topology_progress(70, '正在统计矩阵邻接关系')
+    health = {
+        'point_count': int(len(rows)),
+        'edge_count': int(degrees.sum()//2),
+        'isolated_ratio': float(np.mean(degrees == 0)),
+        'median_degree': float(np.median(degrees)),
+        'largest_component_ratio': float(sizes.max()/len(rows)) if len(sizes) else 0.0,
+    }
+    adjacency = Matrix8Adjacency(grid, rr.astype(np.int32), cc.astype(np.int32), health)
+    # Match the historical matrix-edge median exactly, including diagonals.
+    distances = []
+    for dr, dc in ((0, 1), (1, -1), (1, 0), (1, 1)):
+        tr, tc = rr+dr, cc+dc
+        valid = (tr < height) & (tc < width)
+        source = np.flatnonzero(valid)
+        target = grid[tr[valid], tc[valid]]
+        hit = target >= 0
+        if np.any(hit):
+            source, target = source[hit], target[hit]
+            distances.append(np.hypot(np.asarray(x)[source]-np.asarray(x)[target],
+                                      np.asarray(y)[source]-np.asarray(y)[target]))
+    positive = np.concatenate(distances) if distances else np.empty(0)
+    positive = positive[np.isfinite(positive) & (positive > 0)]
+    spacing = float(np.median(positive)) if len(positive) else 0.0
+    _topology_progress(90, '隐式矩阵拓扑已生成')
+    return adjacency, spacing, health
 
 
 # Scoped to one build/thread, including matrix fallback paths and helper calls.
@@ -37,6 +133,8 @@ def build_adaptive_topology(x, y, matrix_rc=None, sensitivity='standard',
     try:
         _topology_progress(0, '正在准备智能抓面邻接关系')
         result = _build_adaptive_topology(x, y, matrix_rc, sensitivity, delaunay_limit)
+        perf_event('Topology', time.perf_counter()-started,
+                   method=result.get('method'), points=len(x))
         _topology_progress(100, '智能抓面邻接关系已就绪')
         return result
     finally:
@@ -100,6 +198,8 @@ def _edge_lengths(xy, edges):
 
 def _topology_health(adjacency):
     _topology_progress(90, '正在检查邻接关系连通性')
+    if isinstance(adjacency, Matrix8Adjacency):
+        return dict(adjacency.health)
     degrees = np.asarray([len(items) for items in adjacency], dtype=int)
     point_count = int(len(degrees))
     edge_count = int(degrees.sum() // 2)
@@ -284,20 +384,36 @@ def _build_adaptive_topology(x, y, matrix_rc=None, sensitivity='standard', delau
     fallback_reason = ''
     if matrix_rc is not None:
         rows, cols = matrix_rc
-        edges = _matrix_edges(np.asarray(rows), np.asarray(cols))
-        adjacency = _edge_pairs_to_adjacency(len(xy), edges)
-        health = _topology_health(adjacency)
+        if PERFORMANCE_POLICY.matrix_fast_component_enabled:
+            try:
+                adjacency, spacing, health = _implicit_matrix_topology(
+                    x, y, np.asarray(rows), np.asarray(cols))
+            except ValueError:
+                adjacency = None
+                health = {'point_count': len(xy), 'edge_count': 0, 'isolated_ratio': 1.0,
+                          'median_degree': 0.0, 'largest_component_ratio': 0.0}
+        else:
+            matrix_edges = _matrix_edges(np.asarray(rows), np.asarray(cols))
+            adjacency = _edge_pairs_to_adjacency(len(xy), matrix_edges)
+            matrix_lengths = _edge_lengths(xy, matrix_edges)
+            positive_lengths = matrix_lengths[matrix_lengths > 0]
+            spacing = (float(np.median(positive_lengths))
+                       if len(positive_lengths) else 0.0)
+            health = _topology_health(adjacency)
         if _health_is_usable(health):
-            lengths = _edge_lengths(xy, edges)
-            positive = lengths[np.isfinite(lengths) & (lengths > 0)]
-            spacing = float(np.median(positive)) if positive.size else 0.0
             return {
                 'adjacency': adjacency,
                 'method': 'matrix8',
-                'topology': '矩阵8邻域',
+                'topology': ('矩阵8邻域（隐式拓扑）'
+                             if isinstance(adjacency, Matrix8Adjacency)
+                             else '矩阵8邻域'),
                 'local_spacing_mm': spacing,
                 'fallback_reason': '',
                 'health': health,
+                **({'matrix_grid': adjacency.grid,
+                    'matrix_point_rows': adjacency.point_rows,
+                    'matrix_point_cols': adjacency.point_cols}
+                   if isinstance(adjacency, Matrix8Adjacency) else {}),
             }
         fallback_reason = (
             '矩阵拓扑不健康: '
@@ -573,6 +689,31 @@ def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
         visited = np.zeros(len(x), dtype=bool)
         if not candidate[seed]:
             candidate[seed] = True
+        matrix_grid = topology.get('matrix_grid')
+        if (PERFORMANCE_POLICY.matrix_fast_component_enabled and
+                matrix_grid is not None):
+            if cancel_event is not None and cancel_event.is_set():
+                from .workers import TaskCancelled
+                raise TaskCancelled()
+            candidate_grid = np.zeros(matrix_grid.shape, dtype=bool)
+            point_rows = topology['matrix_point_rows']
+            point_cols = topology['matrix_point_cols']
+            candidate_grid[point_rows, point_cols] = candidate
+            labels, _ = ndimage.label(
+                candidate_grid, structure=np.ones((3, 3), dtype=np.uint8))
+            if cancel_event is not None and cancel_event.is_set():
+                from .workers import TaskCancelled
+                raise TaskCancelled()
+            seed_label = int(labels[int(point_rows[seed]), int(point_cols[seed])])
+            if seed_label:
+                visited = labels[point_rows, point_cols] == seed_label
+            metrics['processed'] = int(visited.sum())
+            metrics['slow_path'] = int(visited.sum())
+            metrics['algorithm'] = 'matrix8_component'
+            if progress is not None:
+                progress(100, int(metrics['processed']), int(len(x)))
+            emit_preview(visited, deque(), True)
+            return visited
         visited[seed] = True
         queue = deque([seed])
         emit_preview(visited, queue, True)

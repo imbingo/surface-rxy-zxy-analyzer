@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.6.8."""
+"""Qt application shell for Surface Analyzer V4.7.0."""
 
 import sys
 import os
@@ -36,6 +36,7 @@ from scipy.spatial import cKDTree
 from .config import (
     ACCENT, APP_VERSION, BIGFILE_MODE_PRESETS, DISPLAY_POINT_LIMIT,
     LARGE_TEXT_FILE_BYTES, LARGE_TEXT_IMPORT_LIMIT, MISSING_TEXT_TOKENS,
+    PERFORMANCE_POLICY,
 )
 from .widgets import (
     NoWheelSpinBox, NoWheelDoubleSpinBox, NoWheelComboBox,
@@ -53,7 +54,7 @@ from .mixins.reporting import ReportingMixin
 from .workers import FunctionWorker
 from .rendering.raster import XY_RASTER_THRESHOLD
 from .rendering.controller import XYRasterController
-from .rendering.lod import spatial_lod_indices, critical_indices
+from .rendering.lod import spatial_lod_indices, critical_indices, LODCache
 from .status_label import ImportStatusLabel
 from .pose_icons import pose_pixmap
 
@@ -105,6 +106,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.display_surface_mode = 'raw' # raw / residual_1 / residual_2 / residual_3
         self.display_detrended = False    # 兼容旧Recipe；任意残差显示模式下为 True
         self.high_order_models = {}       # 当前参与拟合点的一至三阶显示诊断模型
+        self._high_order_inputs = None
+        self._analysis_revision = 0
+        self._lod_cache = LODCache()
         self.last_import_note = ""        # 最近一次导入说明
         self.last_displayed_points = 0     # 最近一次绘图实际显示点数
         self.large_file_mode = 'standard'  # 大文件策略模式：fast / standard / precise / custom
@@ -1768,15 +1772,11 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             except (ValueError, IndexError):
                 order = 1
             if self.high_order_models.get(order) is None:
-                self.cb_surface_display.blockSignals(True)
-                self.cb_surface_display.setCurrentIndex(
-                    max(0, self.cb_surface_display.findData('raw')))
-                self.cb_surface_display.blockSignals(False)
-                self.display_surface_mode = 'raw'
-                self.display_detrended = False
-                self.lbl_surface_residual_metrics.setText(f"{order}阶残差不可用，保持原始高度显示")
-                self._show_status(f"{order}阶残差模型不可用，未切换显示模式。", 6000)
-                self.update_plots_only(preserve_view=False)
+                if not self._start_high_order_diagnostic(order, mode):
+                    self.cb_surface_display.blockSignals(True)
+                    self.cb_surface_display.setCurrentIndex(
+                        max(0, self.cb_surface_display.findData('raw')))
+                    self.cb_surface_display.blockSignals(False)
                 return
         self.display_surface_mode = mode
         self.display_detrended = mode != 'raw'
@@ -1784,6 +1784,51 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         # raw(mm) 与 residual(µm) 的纵轴单位和数量级不同，必须按新数据
         # 重新 autoscale；保留旧 ylim 会把绝大多数残差点裁出视野。
         self.update_plots_only(preserve_view=False)
+
+    def _start_high_order_diagnostic(self, order, requested_mode):
+        inputs = self._high_order_inputs
+        if inputs is None or self._task_thread is not None:
+            self._show_status(f"{order}阶诊断暂不可用或已有后台任务。", 5000)
+            return False
+        revision = int(self._analysis_revision)
+        self.lbl_surface_residual_metrics.setText(f"正在后台计算{order}阶残差…")
+
+        def work(progress, cancel_event):
+            if cancel_event.is_set():
+                from .workers import TaskCancelled
+                raise TaskCancelled()
+            progress(10, f"正在计算{order}阶诊断模型")
+            model = fit_polynomial_surface(*inputs, order)
+            progress(100, f"{order}阶诊断模型计算完成")
+            return revision, order, requested_mode, model
+
+        def accept(result):
+            result_revision, result_order, mode, model = result
+            if result_revision != self._analysis_revision:
+                return
+            self.high_order_models[result_order] = model
+            if str(self.cb_surface_display.currentData() or 'raw') == mode:
+                self.display_surface_mode = mode
+                self.display_detrended = True
+                self._update_surface_display_metrics()
+                self.update_plots_only(preserve_view=False)
+
+        return self._run_background_task(
+            f"{order}阶诊断", work, accept,
+            on_error=lambda message: self._show_status(
+                f"{order}阶诊断计算失败: {message}", 8000))
+
+    def _ensure_all_high_order_models(self):
+        """Materialize export diagnostics on demand for output compatibility."""
+        if self._high_order_inputs is None:
+            return
+        for order in (1, 2, 3):
+            if order not in self.high_order_models:
+                try:
+                    self.high_order_models[order] = fit_polynomial_surface(
+                        *self._high_order_inputs, order)
+                except ValueError:
+                    continue
 
     def _update_surface_display_metrics(self):
         mode = getattr(self, 'display_surface_mode', 'raw')
@@ -1904,6 +1949,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.lbl_filter_info.setText(" | ".join(info_parts))
 
             fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
+            self.import_info['final_effective_rows'] = int(len(self.active_idx))
+            self.import_info['analysis_rows'] = int(len(self.df_raw))
 
             # 2. 最终拟合与指标（与批量处理共用 compute_plane_metrics）
             self._import_ui_stage(96, '正在计算平面、PV、Rx/Ry 和高阶残差')
@@ -1912,8 +1959,16 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.current_coeffs = c
             mean_z, ttv, pv, rx, ry = m['mean_z'], m['ttv'], m['pv'], m['rx'], m['ry']
 
+            self._analysis_revision += 1
+            self._high_order_inputs = (fx, fy, fz)
             self.high_order_models = {}
-            for order in (1, 2, 3):
+            requested_order = 1
+            if self.display_surface_mode != 'raw':
+                try:
+                    requested_order = int(self.display_surface_mode.rsplit('_', 1)[1])
+                except (ValueError, IndexError):
+                    requested_order = 1
+            for order in sorted({1, requested_order}):
                 try:
                     self.high_order_models[order] = fit_polynomial_surface(fx, fy, fz, order)
                 except ValueError:
@@ -2089,15 +2144,19 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
         xy_plot_idx, xy_sampled = (xy_source_idx, False) if raster_enabled else sample_for_display(xy_plot_idx)
         detail_sampled = len(detail_plot_idx) > display_limit
-        lod_inputs = (tx,ty,tz,detail_plot_idx)
-        lod_options = (display_limit,tuple(self.current_coeffs) if self.current_coeffs is not None else None)
-        cached = getattr(self,'_detail_lod_cache',None)
-        if cached is not None and all(a is b for a,b in zip(lod_inputs,cached[0])) and lod_options == cached[1]:
-            required,detail_plot_idx = cached[2:]
+        lod_key = (
+            int(self._df_version), int(self._analysis_revision), 'detail',
+            int(display_limit), str(self.display_surface_mode),
+            tuple(self.transform_pipeline),
+        )
+        cached = self._lod_cache.get(lod_key) if PERFORMANCE_POLICY.lod_cache_enabled else None
+        if cached is not None:
+            required, detail_plot_idx = cached
         else:
             required = critical_indices(tx,ty,tz,detail_plot_idx,self.current_coeffs)
             detail_plot_idx = spatial_lod_indices(tx,ty,detail_plot_idx,display_limit,required)
-            self._detail_lod_cache = (lod_inputs,lod_options,required,detail_plot_idx)
+            if PERFORMANCE_POLICY.lod_cache_enabled:
+                self._lod_cache.put(lod_key, (required, detail_plot_idx))
         self._last_critical_plot_indices = required
         self._last_xy_plot_indices = np.asarray(xy_plot_idx, dtype=int).copy()
         self._last_detail_plot_indices = np.asarray(detail_plot_idx, dtype=int).copy()
@@ -2206,7 +2265,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         if len(detail_x) > 0:
             set_surface_box_aspect(
                 self.canvas.ax3d, detail_x, detail_y, detail_z,
-                zoom=1.18, z_tick_count=3, min_z_ratio=0.28)
+                zoom=0.96, z_tick_count=3, min_z_ratio=0.28)
 
         self._draw_temp_selection_overlay(tx, ty, plot_z_all, display_limit)
 
