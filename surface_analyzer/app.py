@@ -2265,7 +2265,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         if len(detail_x) > 0:
             set_surface_box_aspect(
                 self.canvas.ax3d, detail_x, detail_y, detail_z,
-                zoom=0.96, z_tick_count=3, min_z_ratio=0.28)
+                zoom=1.18, z_tick_count=3, min_z_ratio=0.28)
 
         self._draw_temp_selection_overlay(tx, ty, plot_z_all, display_limit)
 
