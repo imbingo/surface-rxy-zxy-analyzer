@@ -1,4 +1,5 @@
 """Window-modal import feedback; percentages describe stages, not time remaining."""
+import html
 import time
 from PyQt6.QtCore import Qt, QRectF, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
@@ -10,11 +11,13 @@ class ProgressRing(QWidget):
         super().__init__(parent)
         self.value = 0
         self.active = False
+        self.failed = False
         self.setFixedSize(58, 58)
 
     def set_progress(self, value, active=False):
         self.value = max(0, min(100, int(value)))
         self.active = active
+        self.failed = False
         self.setAccessibleName(f'进度 {self.value}%')
         self.update()
 
@@ -24,7 +27,8 @@ class ProgressRing(QWidget):
         rect = QRectF(5, 5, self.width()-10, self.height()-10)
         painter.setPen(QPen(QColor('#e6ebf1'), 4))
         painter.drawEllipse(rect)
-        color = QColor('#25855a' if self.value == 100 else '#2f6db0')
+        color = QColor('#c62828' if self.failed else
+                       ('#25855a' if self.value == 100 else '#2f6db0'))
         painter.setPen(QPen(color, 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawArc(rect, 90 * 16, -round(self.value * 3.6 * 16))
         painter.setPen(color if self.active or self.value else QColor('#8693a3'))
@@ -66,6 +70,8 @@ class ImportProgressDialog(QDialog):
             self.rings.append(ring)
         self.detail = QLabel('正在准备导入…')
         self.detail.setWordWrap(True)
+        self.detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.detail.setAccessibleName('导入状态详情')
         layout.addWidget(self.detail)
         self.elapsed = QLabel()
         layout.addWidget(self.elapsed)
@@ -101,9 +107,30 @@ class ImportProgressDialog(QDialog):
             self.set_progress(100, '导入完成')
             self.accept()
         else:
-            self.detail.setText(message or '导入未完成')
+            detail = message or '导入未完成'
+            cancelled = detail.startswith('已取消')
+            title = '⚠ 导入已取消' if cancelled else '⛔ 导入失败'
+            color = '#8a5a00' if cancelled else '#a61b1b'
+            background = '#fff8e6' if cancelled else '#fff1f0'
+            border = '#e6b84f' if cancelled else '#d9363e'
+            self.setWindowTitle(('导入已取消' if cancelled else '导入失败') + ' - 导入测量数据')
+            self.detail.setText(f'<div style="font-size:16px; font-weight:700; color:{color};">{title}</div>'
+                                f'<div style="margin-top:8px; color:#20242a;">'
+                                f'{html.escape(detail).replace(chr(10), "<br>")}</div>')
+            self.detail.setStyleSheet(
+                f'QLabel {{ background:{background}; border:2px solid {border}; '
+                'border-radius:8px; padding:14px; }}')
+            self.detail.setMinimumHeight(112)
+            failed_index = next((i for i, (_, start, end) in enumerate(self.stages)
+                                 if start <= self.progress_value < end), 0)
+            self.states[failed_index].setText('已取消' if cancelled else '失败')
+            self.states[failed_index].setStyleSheet(f'font-weight:700; color:{color};')
+            self.rings[failed_index].failed = not cancelled
+            self.rings[failed_index].update()
             self.cancel_button.setText('关闭')
             self.cancel_button.setEnabled(True)
+            self.cancel_button.setDefault(True)
+            self.cancel_button.setFocus()
 
     def reject(self):
         if self.finished_state:
