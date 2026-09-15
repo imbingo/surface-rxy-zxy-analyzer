@@ -1905,7 +1905,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
     def update_analysis(self):
         if self.df_raw is None: return
         if hasattr(self, 'adjustment_panel'):
-            self._parallel_revision = getattr(self, '_parallel_revision', 0) + 1
+            self._parallel_revision = int(getattr(self, '_parallel_revision', 0) or 0) + 1
             self.parallel_result = None
             self.adjustment_panel.invalidate('主控处理或 ROI 已更新；面槽保留设置时快照，请重新设置对应面并计算平行度。')
             self._update_parallel_result_ui()

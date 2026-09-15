@@ -4122,7 +4122,8 @@ class DataIOMixin:
                 '_trans_cache_key', '_trans_cache_data',
                 'parallel_base', 'parallel_measure', 'parallel_result',
                 '_parallel_revision', 'data_stack', 'data_base1', 'data_base2')
-            previous_state = {name: getattr(self, name, None) for name in state_names}
+            missing_state = object()
+            previous_state = {name: getattr(self, name, missing_state) for name in state_names}
             view_state = None
             if hasattr(self, 'canvas'):
                 view_state = {
@@ -4156,11 +4157,16 @@ class DataIOMixin:
             dialog.open()
 
             def restore_previous():
-                dataset_was_replaced = self.df_raw is not previous_state['df_raw']
+                old_df = previous_state['df_raw']
+                dataset_was_replaced = old_df is not missing_state and self.df_raw is not old_df
                 self.import_info = previous_info
                 self.last_import_note = previous_note
                 for name, value in previous_state.items():
-                    setattr(self, name, value)
+                    if value is missing_state:
+                        if hasattr(self, name):
+                            delattr(self, name)
+                    else:
+                        setattr(self, name, value)
                 for name, (items, current) in combo_state.items():
                     combo = getattr(self, name)
                     combo.blockSignals(True)
@@ -4175,7 +4181,8 @@ class DataIOMixin:
                     if self.adjustment_panel.result is not None:
                         self.adjustment_panel.render()
                 self._update_import_status_label()
-                if dataset_was_replaced and self.df_raw is not None and self.active_idx is not None:
+                if (dataset_was_replaced and getattr(self, 'df_raw', None) is not None and
+                        getattr(self, 'active_idx', None) is not None):
                     self.update_plots_only(preserve_view=True)
                     if view_state is not None:
                         self._restore_plot_view_state(view_state)

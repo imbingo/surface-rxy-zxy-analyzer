@@ -200,6 +200,46 @@ class ImportTransactionTests(unittest.TestCase):
             window.close()
             self.app.processEvents()
 
+    def test_failed_first_import_does_not_poison_next_valid_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wrong = Path(directory) / "wrong.csv"
+            wrong.write_text("X,Y,Z\n0,0,1\n1,0,2\n0,1,3\n", encoding="utf-8")
+            valid = Path(directory) / "valid.csv"
+            valid.write_text(
+                "X,Y,Z\n0,0,1\n1,0,1.1\n0,1,1.2\n1,1,1.3\n",
+                encoding="utf-8")
+            window = SurfaceAnalyzerPro()
+            self.addCleanup(window.close)
+            window.import_z_unit = "mm"
+            window.show()
+            window.input_layout_mode = "height_matrix"
+            self.assertTrue(window.load_path(wrong))
+            first_dialog = window._import_dialog
+            deadline = time.monotonic() + 5.0
+            while window._task_thread is not None and time.monotonic() < deadline:
+                self.app.processEvents()
+            self.assertIsNone(window._task_thread)
+            self.assertFalse(hasattr(window, '_parallel_revision'))
+            if first_dialog is not None:
+                first_dialog.close(); first_dialog.deleteLater()
+
+            window.input_layout_mode = "point_table"
+            with patch.object(QMessageBox, "information",
+                              return_value=QMessageBox.StandardButton.Ok):
+                self.assertTrue(window.load_path(valid))
+                second_dialog = window._import_dialog
+                deadline = time.monotonic() + 5.0
+                while window._task_thread is not None and time.monotonic() < deadline:
+                    self.app.processEvents()
+            self.assertIsNone(window._task_thread)
+            self.assertIsNotNone(window.df_raw)
+            self.assertEqual(len(window.df_raw), 4)
+            self.assertIsInstance(window._parallel_revision, int)
+            if second_dialog is not None:
+                second_dialog.close(); second_dialog.deleteLater()
+            window.close()
+            self.app.processEvents()
+
 
 if __name__ == "__main__":
     unittest.main()
