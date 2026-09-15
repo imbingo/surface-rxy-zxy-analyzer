@@ -44,6 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--threshold-um", type=float, default=5.0)
     parser.add_argument("--sigma-k", type=float, default=3.0)
     parser.add_argument("--sigma-iterations", type=int, default=5)
+    parser.add_argument("--sigma-residual-order", default="order1",
+                        choices=("order1", "order2", "order3", "follow_detrend"))
     parser.add_argument("--max-points", type=int, default=100_000)
     parser.add_argument("--transform", action="append", default=[],
                         choices=("CW90", "CCW90", "ROT180", "SWAP", "FLIPX", "FLIPY", "ORIGIN(0,0)"))
@@ -66,6 +68,7 @@ def _run_headless(args: argparse.Namespace) -> int:
         threshold_um=args.threshold_um,
         sigma_k=args.sigma_k,
         sigma_iterations=args.sigma_iterations,
+        sigma_residual_order=args.sigma_residual_order,
     )
     try:
         result = analyze_file(

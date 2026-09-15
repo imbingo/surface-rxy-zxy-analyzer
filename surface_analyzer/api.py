@@ -35,6 +35,7 @@ class AnalysisOptions:
     threshold_um: float = 5.0
     sigma_k: float = 3.0
     sigma_iterations: int = 5
+    sigma_residual_order: str = "order1"
 
 
 @dataclass
@@ -122,7 +123,7 @@ def analyze_xyz(
     mode_key = str(options.filter_mode).strip().lower()
     if mode_key not in FILTER_MODES:
         raise ValueError(f"不支持的滤波模式: {options.filter_mode!r}")
-    keep = AnalysisMixin.filter_keep_mask(
+    keep, sigma_summary = AnalysisMixin.filter_keep_mask(
         xb,
         yb,
         zb,
@@ -131,6 +132,8 @@ def analyze_xyz(
         threshold_mm=float(options.threshold_um) / 1000.0,
         sigma_k=float(options.sigma_k),
         sigma_iters=max(1, int(options.sigma_iterations)),
+        sigma_residual_order=options.sigma_residual_order,
+        return_summary=True,
     )
     if int(keep.sum()) < 3:
         raise ValueError("滤波后有效点少于 3，无法拟合平面")
@@ -159,6 +162,8 @@ def analyze_xyz(
             "threshold_um": float(options.threshold_um),
             "sigma_k": float(options.sigma_k),
             "sigma_iterations": int(options.sigma_iterations),
+            "sigma_residual_order": str(options.sigma_residual_order),
+            "sigma_summary": sigma_summary,
         },
         metrics=clean_metrics,
         warnings=warnings,

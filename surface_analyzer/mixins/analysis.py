@@ -3,6 +3,9 @@
 import numpy as np
 from scipy.spatial import cKDTree
 
+from ..polynomial import TERM_POWERS, fit_polynomial_surface, evaluate_polynomial_surface
+from ..workers import TaskCancelled
+
 
 
 class AnalysisMixin:
@@ -63,9 +66,12 @@ class AnalysisMixin:
         return local_ok & global_ok
 
     @classmethod
-    def sigma_clip_filter(cls, x, y, z, sigma_k=3.0, max_iter=5):
+    def sigma_clip_filter(cls, x, y, z, sigma_k=3.0, max_iter=5,
+                          residual_order='order1', detrend_order=1,
+                          cancel_event=None, convergence=1e-6,
+                          allow_fallback=True, return_summary=False):
         """迭代σ裁剪（sigma-clipping）：
-        反复用最佳拟合平面残差的标准差σ裁掉 |残差-均值| > sigma_k·σ 的点并重拟合，
+        反复用所选完整拟合面残差的标准差σ裁掉 |残差-均值| > sigma_k·σ 的点并重拟合，
         直到残差std收敛或本轮无新增剔除为止。
 
         特性：
@@ -75,16 +81,56 @@ class AnalysisMixin:
         注意：σ来自全局残差，若工件面有真实弧度，残差里含真实信号，
         本档会把面型真正的峰/谷当离群点剪掉，导致PV被人为缩小；弧形面请优先用局部中位数滤波。
         """
+        x, y, z = (np.asarray(v, dtype=float) for v in (x, y, z))
+        requested = str(residual_order or 'order1')
+        if requested == 'follow_detrend':
+            requested_order = max(1, min(3, int(detrend_order)))
+        else:
+            try:
+                requested_order = int(requested.replace('order', ''))
+            except (TypeError, ValueError):
+                raise ValueError(f"不支持的σ残差模型: {residual_order!r}")
+        if requested_order not in (1, 2, 3):
+            raise ValueError(f"不支持的σ残差阶数: {requested_order}")
+
         n = len(z)
         keep = np.ones(n, dtype=bool)
         max_iter = max(1, int(max_iter))
-        for _ in range(max_iter):
-            if keep.sum() < 3:
+        actual_order = requested_order
+        fallback_reason = ''
+        previous_sigma = None
+        actual_iterations = 0
+        for iteration in range(max_iter):
+            if cancel_event is not None and cancel_event.is_set():
+                raise TaskCancelled()
+            minimum_points = len(TERM_POWERS[actual_order])
+            while keep.sum() < minimum_points and actual_order > 1 and allow_fallback:
+                if not fallback_reason:
+                    fallback_reason = (
+                        f"保留点数 {int(keep.sum())} 少于{actual_order}阶模型所需的"
+                        f" {minimum_points} 点")
+                actual_order -= 1
+                minimum_points = len(TERM_POWERS[actual_order])
+            if keep.sum() < minimum_points:
                 break
-            c = cls.fit_plane(x[keep], y[keep], z[keep])
-            resid = z - (c[0] * x + c[1] * y + c[2])
+            while True:
+                try:
+                    model = fit_polynomial_surface(
+                        x[keep], y[keep], z[keep], actual_order,
+                        check_stability=True)
+                    break
+                except ValueError as exc:
+                    if not allow_fallback or actual_order <= 1:
+                        raise ValueError(
+                            f"当前点集几何分布不足以稳定进行{actual_order}阶σ残差拟合，"
+                            "请改用较低阶模型。") from exc
+                    if not fallback_reason:
+                        fallback_reason = str(exc)
+                    actual_order -= 1
+            resid = z - evaluate_polynomial_surface(model, x, y)
             kept = resid[keep]
             sigma = np.std(kept)
+            actual_iterations = iteration + 1
             if sigma < 1e-12:
                 break
             mu = np.mean(kept)
@@ -94,28 +140,54 @@ class AnalysisMixin:
             if int(new_keep.sum()) == int(keep.sum()):
                 break  # 本轮无新增剔除，已收敛
             keep = new_keep
-        return keep
+            if (previous_sigma is not None and
+                    abs(previous_sigma - sigma) <= convergence * max(previous_sigma, 1e-12)):
+                break
+            previous_sigma = sigma
+        summary = {
+            'requested_model': requested,
+            'requested_order': requested_order,
+            'actual_model': f'order{actual_order}',
+            'actual_order': actual_order,
+            'fallback_reason': fallback_reason,
+            'sigma_k': float(sigma_k),
+            'max_iterations': max_iter,
+            'actual_iterations': actual_iterations,
+            'removed_points': int(n - keep.sum()),
+            'retained_points': int(keep.sum()),
+            'input_points': int(n),
+        }
+        return (keep, summary) if return_summary else keep
 
     @classmethod
     def filter_keep_mask(cls, xb, yb, zb, mode, k=12, threshold_mm=0.005,
-                         sigma_k=3.0, sigma_iters=5):
+                         sigma_k=3.0, sigma_iters=5,
+                         sigma_residual_order='order1', detrend_order=1,
+                         cancel_event=None, return_summary=False):
         """按滤波模式返回保留布尔掩码（相对输入点集）。
         mode: 0关闭 / 1 MAD全局 / 2 局部中位数 / 3 迭代σ裁剪。
         主界面与批量处理共用此分发，保证两条路径算法一致。"""
         n = len(zb)
         if mode == 0 or n <= 10:
-            return np.ones(n, dtype=bool)
+            mask = np.ones(n, dtype=bool)
+            return (mask, None) if return_summary else mask
         if mode == 3:
-            return cls.sigma_clip_filter(xb, yb, zb, sigma_k=sigma_k, max_iter=sigma_iters)
+            return cls.sigma_clip_filter(
+                xb, yb, zb, sigma_k=sigma_k, max_iter=sigma_iters,
+                residual_order=sigma_residual_order, detrend_order=detrend_order,
+                cancel_event=cancel_event, return_summary=return_summary)
         c0 = cls.fit_plane(xb, yb, zb)
         resids = zb - (c0[0] * xb + c0[1] * yb + c0[2])
         if mode == 1:
-            return cls.mad_filter(resids, k=3.5)
+            mask = cls.mad_filter(resids, k=3.5)
+            return (mask, None) if return_summary else mask
         if mode == 2:
-            return cls.local_median_filter(xb, yb, resids, k=k,
+            mask = cls.local_median_filter(xb, yb, resids, k=k,
                                            threshold_mm=threshold_mm,
                                            global_threshold_mm=threshold_mm)
-        return np.ones(n, dtype=bool)
+            return (mask, None) if return_summary else mask
+        mask = np.ones(n, dtype=bool)
+        return (mask, None) if return_summary else mask
 
     @staticmethod
     def fit_plane(x, y, z):

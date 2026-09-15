@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.7.0."""
+"""Qt application shell for Surface Analyzer V4.7.1."""
 
 import sys
 import os
@@ -103,6 +103,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.current_source_name = "--"   # 当前视图数据来源（文件名 / GAP结果）
         self.n_filtered = 0               # 最近一次滤波剔除点数
         self.last_metrics = None          # 最近一次分析指标（导出元数据用）
+        self.last_sigma_summary = None
+        self._sigma_async_result = None
+        self._pending_sigma_reanalysis = False
         self.display_surface_mode = 'raw' # raw / residual_1 / residual_2 / residual_3
         self.display_detrended = False    # 兼容旧Recipe；任意残差显示模式下为 True
         self.high_order_models = {}       # 当前参与拟合点的一至三阶显示诊断模型
@@ -616,6 +619,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         for control in self._task_controls:
             control.setEnabled(True)
         self._sync_gap_action_state()
+        if self._pending_sigma_reanalysis:
+            self._pending_sigma_reanalysis = False
+            QTimer.singleShot(0, self.update_analysis)
 
     def _set_system_frame_enabled(self, enabled):
         self.use_system_frame = bool(enabled)
@@ -1055,14 +1061,29 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.spin_sigma_iter.setRange(1, 20); self.spin_sigma_iter.setValue(5)
         self.spin_sigma_iter.setToolTip("迭代σ裁剪的最大轮数，达到收敛会提前停止；常用 3~8")
         fl.addWidget(self.spin_sigma_iter, 2, 3)
+        self.lbl_sigma_model = QLabel("残差基准:")
+        self.lbl_sigma_model.setToolTip(
+            "一阶/二阶/三阶仅决定迭代σ裁剪时用于识别异常点的趋势模型，"
+            "不改变最终 Rx、Ry、PV、TTV、RMS、Mean Z 的量测定义。")
+        fl.addWidget(self.lbl_sigma_model, 3, 0)
+        self.cb_sigma_residual = NoWheelComboBox()
+        self.cb_sigma_residual.addItem("一阶平面", "order1")
+        self.cb_sigma_residual.addItem("二阶曲面", "order2")
+        self.cb_sigma_residual.addItem("三阶曲面", "order3")
+        self.cb_sigma_residual.addItem("跟随当前去残差阶数", "follow_detrend")
+        self.cb_sigma_residual.setToolTip(
+            "高阶模型仅用于识别异常点。三阶模型自由度更高，可能将部分缓慢变化解释为真实趋势；"
+            "建议仅在已知存在三阶低频形貌时使用。")
+        fl.addWidget(self.cb_sigma_residual, 3, 1, 1, 3)
         self.lbl_filter_info = QLabel("滤波剔除: 0 点 | 手动删除: 0 点")
         self.lbl_filter_info.setObjectName("mutedNote")
-        fl.addWidget(self.lbl_filter_info, 3, 0, 1, 4)
+        fl.addWidget(self.lbl_filter_info, 4, 0, 1, 4)
         self.cb_filter.currentIndexChanged.connect(self._on_filter_mode_changed)
         self.spin_k.valueChanged.connect(self._on_filter_param_changed)
         self.spin_thresh.valueChanged.connect(self._on_filter_param_changed)
         self.spin_sigma.valueChanged.connect(self._on_filter_param_changed)
         self.spin_sigma_iter.valueChanged.connect(self._on_filter_param_changed)
+        self.cb_sigma_residual.currentIndexChanged.connect(self._on_filter_param_changed)
         self._sync_filter_enabled()
         ll.addWidget(flt_group)
 
@@ -1748,6 +1769,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
     def _on_filter_param_changed(self):
         # 局部中位数(2) / 迭代σ裁剪(3) 模式下参数变化才需要重算
         if self.cb_filter.currentIndex() in (2, 3):
+            self._sigma_async_result = None
             self.update_analysis()
 
     def _sync_filter_enabled(self):
@@ -1757,10 +1779,21 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         sigma_on = (m == 3)
         for w in (self.lbl_k, self.spin_k, self.lbl_thresh, self.spin_thresh):
             w.setEnabled(local_on)
-        for w in (self.lbl_sigma, self.spin_sigma, self.lbl_sigma_iter, self.spin_sigma_iter):
+        for w in (self.lbl_sigma, self.spin_sigma, self.lbl_sigma_iter, self.spin_sigma_iter,
+                  self.lbl_sigma_model, self.cb_sigma_residual):
             w.setEnabled(sigma_on)
 
+    def _current_detrend_order(self):
+        mode = str(getattr(self, 'display_surface_mode', 'raw'))
+        if mode.startswith('residual_'):
+            try:
+                return max(1, min(3, int(mode.rsplit('_', 1)[1])))
+            except (ValueError, IndexError):
+                pass
+        return 1
+
     def _on_filter_mode_changed(self):
+        self._sigma_async_result = None
         self._sync_filter_enabled()
         self.update_analysis()
 
@@ -1929,12 +1962,66 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self._import_ui_stage(95, '正在按当前参数执行异常点滤波')
             mode = self.cb_filter.currentIndex()
             self.n_filtered = 0
-            keep = self.filter_keep_mask(
-                xb, yb, zb, mode,
-                k=self.spin_k.value(),
-                threshold_mm=self.spin_thresh.value() * 1e-3,
-                sigma_k=self.spin_sigma.value(),
-                sigma_iters=self.spin_sigma_iter.value())
+            sigma_order = str(self.cb_sigma_residual.currentData() or 'order1')
+            sigma_k_value = float(self.spin_sigma.value())
+            sigma_iter_value = int(self.spin_sigma_iter.value())
+            neighbor_k_value = int(self.spin_k.value())
+            threshold_value = float(self.spin_thresh.value()) * 1e-3
+            detrend_order_value = self._current_detrend_order()
+            sigma_key = (
+                int(self._df_version), len(idx), int(idx[0]), int(idx[-1]), int(idx.sum()),
+                tuple(self.transform_pipeline), repr(self.roi_shapes) if self.roi_enabled else '',
+                sigma_k_value, sigma_iter_value, sigma_order, detrend_order_value)
+            async_result = self._sigma_async_result
+            if mode == 3 and self.isVisible() and len(idx) > 250_000 and (
+                    async_result is None or async_result[0] != sigma_key):
+                self.last_metrics = None
+                self._clear_result_labels()
+                if self._task_thread is not None:
+                    self._pending_sigma_reanalysis = True
+                    self._import_mapping_ready = True
+                    self._show_status("数据已载入，正在等待后台执行高阶σ残差筛选。")
+                    return
+
+                def sigma_work(progress, cancel_event):
+                    progress(5, "正在后台拟合σ残差模型")
+                    result = self.filter_keep_mask(
+                        xb, yb, zb, mode, k=neighbor_k_value,
+                        threshold_mm=threshold_value,
+                        sigma_k=sigma_k_value,
+                        sigma_iters=sigma_iter_value,
+                        sigma_residual_order=sigma_order,
+                        detrend_order=detrend_order_value,
+                        cancel_event=cancel_event, return_summary=True)
+                    progress(100, "高阶σ残差筛选完成")
+                    return sigma_key, result
+
+                def sigma_accept(payload):
+                    key, result = payload
+                    self._sigma_async_result = (key, result)
+                    self.update_analysis()
+
+                self._run_background_task(
+                    "迭代σ裁剪", sigma_work, sigma_accept,
+                    on_error=lambda message: self._show_status(
+                        f"迭代σ裁剪失败：{message}", 12000))
+                return
+            if mode == 3 and async_result is not None and async_result[0] == sigma_key:
+                keep, sigma_summary = async_result[1]
+            else:
+                keep, sigma_summary = self.filter_keep_mask(
+                    xb, yb, zb, mode,
+                    k=self.spin_k.value(),
+                    threshold_mm=self.spin_thresh.value() * 1e-3,
+                    sigma_k=self.spin_sigma.value(),
+                    sigma_iters=self.spin_sigma_iter.value(),
+                    sigma_residual_order=sigma_order,
+                    detrend_order=self._current_detrend_order(), return_summary=True)
+            self.last_sigma_summary = sigma_summary
+            if sigma_summary is None:
+                self.import_info.pop('sigma_clip', None)
+            else:
+                self.import_info['sigma_clip'] = dict(sigma_summary)
             if mode != 0 and keep.sum() < 3:
                 self._show_status("滤波后点数不足 3 个，已自动退回未滤波状态。请调整参数。", 10000)
                 self.active_idx = idx
@@ -1946,7 +2033,15 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             if self._roi_is_active():
                 info_parts.append(f"ROI保留: {self.last_roi_keep_count} 点")
             info_parts.append(f"参与拟合: {len(self.active_idx)} 点")
+            if sigma_summary is not None:
+                info_parts.append(
+                    f"σ残差: {sigma_summary['actual_order']}阶 | 实际迭代: "
+                    f"{sigma_summary['actual_iterations']}")
             self.lbl_filter_info.setText(" | ".join(info_parts))
+            if sigma_summary and sigma_summary.get('fallback_reason'):
+                self._show_status(
+                    f"σ残差模型已从请求的{sigma_summary['requested_order']}阶降为"
+                    f"{sigma_summary['actual_order']}阶：{sigma_summary['fallback_reason']}", 15000)
 
             fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
             self.import_info['final_effective_rows'] = int(len(self.active_idx))

@@ -105,6 +105,17 @@ class ReportingMixin:
             lines.append(
                 f"Precitec拓扑: {'矩阵8邻域' if info.get('precitec_topology_usable') else '自适应点云回退'}"
                 f" | {topology_reason} | 局部点距 {float(info.get('precitec_local_spacing_mm', 0.0) or 0.0):.6g} mm")
+        sigma = info.get('sigma_clip') or {}
+        if sigma:
+            sigma_line = (
+                f"迭代σ裁剪: 请求 {sigma.get('requested_model')} | 实际 "
+                f"{sigma.get('actual_model')} | {sigma.get('sigma_k')}σ | "
+                f"迭代 {sigma.get('actual_iterations')}/{sigma.get('max_iterations')} | "
+                f"剔除 {int(sigma.get('removed_points', 0)):,}/"
+                f"{int(sigma.get('input_points', 0)):,}")
+            if sigma.get('fallback_reason'):
+                sigma_line += f" | 降阶原因: {sigma['fallback_reason']}"
+            lines.append(sigma_line)
         return lines
 
     def export_report_image(self):
@@ -133,7 +144,8 @@ class ReportingMixin:
             if self.cb_filter.currentIndex() == 2:
                 filter_text += f" (k={self.spin_k.value()}, 阈值={self.spin_thresh.value()}µm)"
             elif self.cb_filter.currentIndex() == 3:
-                filter_text += f" (σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})"
+                filter_text += (f" (残差基准={self.cb_sigma_residual.currentText()}, "
+                                f"σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})")
             fig = self._render_report_figure(
                 self.current_source_name, tx, ty, tz, self.active_idx, metrics,
                 self.n_filtered, pipeline_text, filter_text, self.import_info,
@@ -180,7 +192,8 @@ class ReportingMixin:
             if self.cb_filter.currentIndex() == 2:
                 filter_text += f" (k={self.spin_k.value()}, 局部阈值={self.spin_thresh.value()}µm, 全局兜底阈值={self.spin_thresh.value()}µm)"
             elif self.cb_filter.currentIndex() == 3:
-                filter_text += f" (σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})"
+                filter_text += (f" (残差基准={self.cb_sigma_residual.currentText()}, "
+                                f"σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})")
             roi_info = self._roi_report_info(tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data())
             quality = self._current_metric_quality()
             meta = [
@@ -199,6 +212,18 @@ class ReportingMixin:
                 f"# 源文件大小: {self.import_info.get('file_size_mb', 0.0):.1f} MB | 读入行数: {self.import_info.get('import_rows', 0)} | 有效点数: {self.import_info.get('valid_rows', len(self.df_raw) if self.df_raw is not None else 0)}",
                 f"# 显示上限: {self._display_limit()} 点 | 最近一次绘图显示: {self.last_displayed_points} 点",
             ]
+            sigma_summary = getattr(self, 'last_sigma_summary', None)
+            if sigma_summary:
+                meta.extend([
+                    f"# Sigma residual model: {sigma_summary['actual_model']}",
+                    f"# Sigma requested model: {sigma_summary['requested_model']}",
+                    f"# Sigma threshold: {sigma_summary['sigma_k']}",
+                    f"# Sigma max iterations: {sigma_summary['max_iterations']}",
+                    f"# Sigma actual iterations: {sigma_summary['actual_iterations']}",
+                    f"# Sigma removed points: {sigma_summary['removed_points']}",
+                ])
+                if sigma_summary.get('fallback_reason'):
+                    meta.append(f"# Sigma fallback reason: {sigma_summary['fallback_reason']}")
             display_mode = str(getattr(self, 'display_surface_mode', 'raw'))
             if display_mode != 'raw':
                 try:
@@ -250,7 +275,8 @@ class ReportingMixin:
         if mode == 2:
             filter_text += f" (k={self.spin_k.value()}, 阈值={self.spin_thresh.value()}µm)"
         elif mode == 3:
-            filter_text += f" (σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})"
+            filter_text += (f" (残差基准={self.cb_sigma_residual.currentText()}, "
+                            f"σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})")
         pipeline = list(self.transform_pipeline)
         return {
             'x_col': self.cb_x_col.currentText(),
@@ -269,6 +295,8 @@ class ReportingMixin:
             'threshold_mm': self.spin_thresh.value() * 1e-3,
             'sigma_k': self.spin_sigma.value(),
             'sigma_iters': self.spin_sigma_iter.value(),
+            'sigma_residual_order': str(self.cb_sigma_residual.currentData() or 'order1'),
+            'detrend_order': self._current_detrend_order(),
             'filter_text': filter_text,
             'display_surface_mode': getattr(self, 'display_surface_mode', 'raw'),
             'render_config': {'xy_mode': self.canvas.xy_mode.currentData(),
@@ -498,10 +526,19 @@ class ReportingMixin:
                         roi_mask = np.ones(n_total, dtype=bool)
                         roi_idx = np.arange(n_total)
                     bx, by, bz = x[roi_idx], y[roi_idx], z[roi_idx]
-                    keep = self.filter_keep_mask(
+                    filter_result = self.filter_keep_mask(
                         bx, by, bz, params['mode'],
                         k=params['k'], threshold_mm=params['threshold_mm'],
-                        sigma_k=params['sigma_k'], sigma_iters=params['sigma_iters'])
+                        sigma_k=params['sigma_k'], sigma_iters=params['sigma_iters'],
+                        sigma_residual_order=params.get('sigma_residual_order', 'order1'),
+                        detrend_order=params.get('detrend_order', 1),
+                        cancel_event=cancel_event, return_summary=True)
+                    if isinstance(filter_result, tuple):
+                        keep, sigma_summary = filter_result
+                    else:
+                        keep, sigma_summary = filter_result, None
+                    if sigma_summary:
+                        import_info_snap['sigma_clip'] = sigma_summary
                     if params['mode'] != 0 and keep.sum() < 3:
                         raise ValueError("滤波后有效点少于 3 个")
                     n_filtered = int(len(roi_idx) - keep.sum())

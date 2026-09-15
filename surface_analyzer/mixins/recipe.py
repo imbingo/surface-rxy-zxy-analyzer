@@ -98,7 +98,7 @@ class RecipeMixin:
             },
             'units': {'x_unit': self.cb_x_unit.currentText(), 'y_unit': self.cb_y_unit.currentText(), 'z_unit': self.cb_z_unit.currentText()},
             'transform_pipeline': list(self.transform_pipeline),
-            'filter': {'mode_index': int(self.cb_filter.currentIndex()), 'mode_text': self.cb_filter.currentText(), 'neighbor_k': int(self.spin_k.value()), 'threshold_um': float(self.spin_thresh.value()), 'sigma_k': float(self.spin_sigma.value()), 'sigma_iters': int(self.spin_sigma_iter.value())},
+            'filter': {'mode_index': int(self.cb_filter.currentIndex()), 'mode_text': self.cb_filter.currentText(), 'neighbor_k': int(self.spin_k.value()), 'threshold_um': float(self.spin_thresh.value()), 'sigma_k': float(self.spin_sigma.value()), 'sigma_iters': int(self.spin_sigma_iter.value()), 'sigma_residual_order': str(self.cb_sigma_residual.currentData() or 'order1')},
             'input': {
                 'layout_mode': str(getattr(self, 'input_layout_mode', 'point_table')),
                 'search_start_row': int(getattr(self, 'import_search_start_row', 0)),
@@ -327,6 +327,9 @@ class RecipeMixin:
         self.spin_thresh.setValue(float(flt.get('threshold_um', self.spin_thresh.value())))
         self.spin_sigma.setValue(float(flt.get('sigma_k', self.spin_sigma.value())))
         self.spin_sigma_iter.setValue(int(flt.get('sigma_iters', self.spin_sigma_iter.value())))
+        sigma_model = str(flt.get('sigma_residual_order', 'order1') or 'order1')
+        sigma_index = self.cb_sigma_residual.findData(sigma_model)
+        self.cb_sigma_residual.setCurrentIndex(max(0, sigma_index))
         self._sync_filter_enabled()
         display_config = recipe.get('display', {}) or {}
         surface_mode = str(display_config.get('surface_mode') or

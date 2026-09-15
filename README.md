@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.7.0
+# Surface Rxy ZXY Analyzer V4.7.1
 
-面型及 Rxy 分析工具当前版本为 **V4.7.0 — Performance Engine Phase 1**。本版加入格式感知的快速解析、规则矩阵隐式拓扑、等价连通域快路径、分块 LOD 与按需后台高阶诊断，并保持量测和 ROI 定义不变。详见 [V4.7.0 发布说明](docs/RELEASE_NOTES_V4.7.0.md)。
+面型及 Rxy 分析工具当前版本为 **V4.7.1 — 导入稳定性修复 + 迭代σ裁剪残差模型扩展**。本版加入有界导入预检、错误格式快速终止、事务式导入回滚，以及一至三阶完整曲面 σ 残差模型，并保持全部标准量测定义不变。详见 [V4.7.1 发布说明](docs/RELEASE_NOTES_V4.7.1.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.7.0.py`：V4.7.0 Python 启动入口。
-- `start_surface_analyzer_v4_7_0.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.7.1.py`：V4.7.1 Python 启动入口。
+- `start_surface_analyzer_v4_7_1.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,36 +14,36 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_7_0.bat
+start_surface_analyzer_v4_7_1.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_7_0.bat
+.\start_surface_analyzer_v4_7_1.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_7_0.bat --check
+.\start_surface_analyzer_v4_7_1.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.7.0.py
+python .\面型及Rxy分析工具V4.7.1.py
 python -m surface_analyzer
 ```
 
-## V4.7.0 重点
+## V4.7.1 重点
 
-- 普通 CSV、quoted CSV、TSV、稳定 whitespace 和 Pixel XY 使用 pandas C engine；异常格式自动回退兼容解析器。
-- Z Matrix/Keyence metadata 扫描在稳定数值正文处停止，非采样矩阵复用预扫描数值，减少正文重复解析。
-- 规则矩阵使用紧凑二维索引表达 8 邻域；固定 gate 的 plane-residual 使用 SciPy 连通域并保持旧 BFS 掩码逐位一致。
-- 大点云 LOD 分块限制临时内存并按 data/analysis/display revision 缓存；空变换不复制 XYZ。
-- 二、三阶诊断按需在后台计算，晚到结果由 analysis revision 拦截。
-- `SURFACE_PERF_DEBUG=1` 输出结构化阶段计时；统一线程预算默认保留一个物理核心给界面和系统。
+- 文本导入先在 512 KB、400 行以内检查所选格式，明显不匹配时快速失败并给出推荐策略。
+- robust 与分块 C 解析器支持连续失败提前终止和批次间取消；失败或取消会恢复此前有效数据状态。
+- 迭代 σ 裁剪支持一阶、完整二阶、完整三阶和跟随去残差阶数，并记录实际迭代、剔除和降阶原因。
+- 高阶拟合沿用归一化多项式核心，新增空间覆盖、近似共线、矩阵秩及条件数检查。
+- Recipe、批量分析、CSV 和报告保留 σ 残差模型追溯信息；旧 Recipe 默认使用一阶平面。
+- 最终 Rx、Ry、PV、TTV、RMS、Mean Z 继续由过滤后点集的一阶最佳拟合平面统一计算。
 
 ## V4.6.8 重点
 

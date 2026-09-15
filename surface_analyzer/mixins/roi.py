@@ -1072,6 +1072,7 @@ class ROIMixin:
                 'threshold_um': float(self.spin_thresh.value()),
                 'sigma_k': float(self.spin_sigma.value()),
                 'sigma_iters': int(self.spin_sigma_iter.value()),
+                'sigma_residual_order': str(self.cb_sigma_residual.currentData() or 'order1'),
             },
             'roi': {
                 'enabled': bool(self.roi_enabled),
@@ -1147,6 +1148,7 @@ class ROIMixin:
                     'threshold_um': max(0.0, float(flt.get('threshold_um', 5.0))),
                     'sigma_k': max(0.1, float(flt.get('sigma_k', 3.0))),
                     'sigma_iters': max(1, int(flt.get('sigma_iters', 5))),
+                    'sigma_residual_order': str(flt.get('sigma_residual_order', 'order1')),
                 },
                 'roi': {
                     'enabled': bool(roi.get('enabled', False)),
@@ -1184,7 +1186,9 @@ class ROIMixin:
         keep = self.filter_keep_mask(
             tx[idx], ty[idx], tz[idx], flt['mode_index'],
             k=flt['neighbor_k'], threshold_mm=flt['threshold_um'] * 1e-3,
-            sigma_k=flt['sigma_k'], sigma_iters=flt['sigma_iters'])
+            sigma_k=flt['sigma_k'], sigma_iters=flt['sigma_iters'],
+            sigma_residual_order=flt.get('sigma_residual_order', 'order1'),
+            detrend_order=self._current_detrend_order())
         filtered_scope = np.zeros(len(z), dtype=bool)
         filtered_scope[idx[keep]] = True
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## V4.7.1 — Import stability and sigma residual filtering
+
+- Fixed UI freeze / long hang when an incorrect import format is selected.
+- Added import preflight validation and fail-fast parsing.
+- Extended cancellation support across all import stages.
+- Preserved the previous dataset when a new import fails.
+- Added selectable first-, second-, third-order and follow-detrend residual models for iterative sigma clipping.
+- Preserved all existing metrology definitions after filtering.
+- Added high-order fit stability checks and Recipe traceability.
+
 ## V4.7.0 — Performance Engine Phase 1
 
 - Added format-aware C-parser paths with automatic robust fallback.

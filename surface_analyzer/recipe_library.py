@@ -51,6 +51,9 @@ def validate_recipe(data):
                         raise ValueError()
                 except (TypeError, ValueError, OverflowError):
                     raise ValueError(f'Recipe {section}.{key} 数值无效') from None
+    sigma_model = str(data.get('filter', {}).get('sigma_residual_order', 'order1'))
+    if sigma_model not in ('order1', 'order2', 'order3', 'follow_detrend'):
+        raise ValueError('Recipe filter.sigma_residual_order 值无效')
     if 'transform_pipeline' in data and (not isinstance(data['transform_pipeline'], list)
             or not all(isinstance(v, str) for v in data['transform_pipeline'])):
         raise ValueError('姿态变换必须是字符串列表')

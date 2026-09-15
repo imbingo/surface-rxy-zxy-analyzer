@@ -40,6 +40,7 @@ from ..config import (MISSING_TEXT_TOKENS as _CONFIG_MISSING_TEXT_TOKENS,
                       PERFORMANCE_POLICY, perf_event)
 from ..delimited_text import detect_delimiter, tokenize_delimited_line
 from ..data_scale import scale_summary
+from ..import_preflight import IMPORT_GUARD_POLICY, validate_selected_layout
 
 
 _NORMALIZED_MISSING_TOKENS = frozenset(
@@ -75,6 +76,31 @@ class DataIOMixin:
         app = QApplication.instance()
         if app is not None and QThread.currentThread() is app.thread():
             app.processEvents()
+
+    def _read_excel_raw_cancelable(self, path, suffix, progress=None, cancel_event=None):
+        """Read modern Excel rows cooperatively; retain pandas for legacy .xls."""
+        self._check_cancel(cancel_event)
+        if suffix == '.xls':
+            frame = pd.read_excel(path, header=None, dtype=object)
+            self._check_cancel(cancel_event)
+            return frame
+        from openpyxl import load_workbook
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        try:
+            worksheet = workbook.active
+            rows = []
+            total = max(1, int(worksheet.max_row or 1))
+            for row_no, values in enumerate(worksheet.iter_rows(values_only=True), start=1):
+                if row_no % 16 == 0:
+                    self._check_cancel(cancel_event)
+                rows.append(values)
+                if progress is not None and row_no % 500 == 0:
+                    progress(min(70, 12 + int(58 * row_no / total)),
+                             f"正在解析 Excel: {row_no:,}/{total:,} 行")
+            self._check_cancel(cancel_event)
+            return pd.DataFrame.from_records(rows)
+        finally:
+            workbook.close()
 
     def _bigfile_mode_label(self, mode_key=None):
         mode = mode_key or getattr(self, 'large_file_mode', 'standard')
@@ -1329,11 +1355,14 @@ class DataIOMixin:
         return frame
 
     @classmethod
-    def _extract_text_preamble_metadata(cls, path, enc, data_line_no, header_line_no=None):
+    def _extract_text_preamble_metadata(cls, path, enc, data_line_no, header_line_no=None,
+                                        cancel_event=None):
         metadata = {}
         try:
             with open(path, 'r', encoding=enc, errors='ignore') as handle:
                 for row_index, line in enumerate(handle):
+                    if row_index % 32 == 0:
+                        cls._check_cancel(cancel_event)
                     if row_index >= int(data_line_no):
                         break
                     if header_line_no is not None and row_index == int(header_line_no):
@@ -1828,7 +1857,7 @@ class DataIOMixin:
                 arr[np.isclose(arr, marker, rtol=0.0, atol=1e-9)] = np.nan
         return arr
 
-    def _looks_like_height_matrix_layout(self, path, enc, layout):
+    def _looks_like_height_matrix_layout(self, path, enc, layout, cancel_event=None):
         """判断文本数据是否为二维高度矩阵，而不是普通 XYZ 表格。"""
         if not layout or int(layout.get('ncols', 0)) < 2:
             return False
@@ -1848,6 +1877,8 @@ class DataIOMixin:
         try:
             with open(path, 'r', encoding=enc, errors='ignore') as fh:
                 for line_no, line in enumerate(fh):
+                    if line_no % 32 == 0:
+                        self._check_cancel(cancel_event)
                     if line_no < int(layout['data_line_no']):
                         continue
                     stripped = line.strip().lstrip('\ufeff')
@@ -2517,6 +2548,8 @@ class DataIOMixin:
         """Read one detected logical point table without requiring auxiliary fields to be numeric."""
         rows = []
         bad_rows = 0
+        consecutive_failures = 0
+        checked_records = 0
         consumed_bytes = 0
         file_size = max(1, Path(path).stat().st_size)
         with open(path, 'r', encoding=enc, errors='ignore') as handle:
@@ -2528,9 +2561,13 @@ class DataIOMixin:
                 text = line.strip().lstrip('\ufeff')
                 if not text or text.startswith('#'):
                     continue
+                checked_records += 1
                 tokens = self._trim_trailing_empty_tokens(self._split_text_line(text, sep))
                 if len(tokens) > int(ncols):
                     bad_rows += 1
+                    consecutive_failures += 1
+                    if consecutive_failures >= IMPORT_GUARD_POLICY.maximum_consecutive_failures:
+                        raise ValueError("正文解析失败：连续多行与已识别列结构不匹配，已提前终止。")
                     continue
                 if len(tokens) < int(ncols):
                     tokens.extend([''] * (int(ncols) - len(tokens)))
@@ -2540,7 +2577,14 @@ class DataIOMixin:
                     valid_record = self._looks_like_pixel_record_row(tokens)
                 if not valid_record:
                     bad_rows += 1
+                    consecutive_failures += 1
+                else:
+                    consecutive_failures = 0
                 rows.append(tokens)
+                if (checked_records == IMPORT_GUARD_POLICY.early_quality_window and
+                        (checked_records - bad_rows) / checked_records <
+                        IMPORT_GUARD_POLICY.early_minimum_valid_ratio):
+                    raise ValueError("正文解析失败：开头数据有效率过低，已提前终止。")
                 if progress is not None and len(rows) % 50000 == 0:
                     progress(min(78, 35 + int(40 * consumed_bytes / file_size)),
                              f"正在读取点表: {len(rows):,} 行")
@@ -2580,13 +2624,23 @@ class DataIOMixin:
                             raise ValueError('multi-line quoted record requires robust parser')
                     if not quoted and line_no >= int(data_line_no) + 128:
                         break
-            frame = pd.read_csv(
+            chunks = pd.read_csv(
                 path, sep=sep, engine='c', encoding=enc,
                 encoding_errors='ignore', header=None, names=list(column_names),
                 skiprows=int(data_line_no), comment='#', skip_blank_lines=True,
                 dtype=str, keep_default_na=False, na_filter=False,
-                on_bad_lines='error')
-            self._check_cancel(cancel_event)
+                on_bad_lines='error', chunksize=100_000)
+            frames = []
+            rows_read = 0
+            for chunk in chunks:
+                self._check_cancel(cancel_event)
+                frames.append(chunk)
+                rows_read += len(chunk)
+                if progress is not None:
+                    progress(min(77, 35 + rows_read // 100_000),
+                             f"正在解析数据: {rows_read:,} 行")
+            frame = (pd.concat(frames, ignore_index=True) if frames else
+                     pd.DataFrame(columns=list(column_names)))
             if frame.shape[1] != int(ncols):
                 raise ValueError('fast parser column count mismatch')
             self.import_info['bad_rows'] = 0
@@ -3131,10 +3185,12 @@ class DataIOMixin:
         raise ValueError(f"无法识别文本编码: {last_error}")
 
     @classmethod
-    def _text_format_signature(cls, path):
+    def _text_format_signature(cls, path, cancel_event=None):
         """Detect only deterministic device signatures; never infer from numeric width."""
         try:
+            cls._check_cancel(cancel_event)
             enc, lines = cls._read_text_header(path, max_lines=12)
+            cls._check_cancel(cancel_event)
         except Exception:
             return None, None
         first = lines[0].strip().lstrip('\ufeff') if lines else ''
@@ -3790,7 +3846,7 @@ class DataIOMixin:
         signature = None
         signature_encoding = None
         if suffix in self.TEXT_SUFFIXES or suffix == '':
-            signature, signature_encoding = self._text_format_signature(path)
+            signature, signature_encoding = self._text_format_signature(path, cancel_event)
         if layout_mode == 'zygo_xyz':
             if suffix not in self.TEXT_SUFFIXES and suffix != '':
                 raise ValueError("Zygo XYZ 导入仅支持文本类文件。")
@@ -3826,11 +3882,19 @@ class DataIOMixin:
             self._update_import_status_label()
             return df
 
+        if (suffix in self.TEXT_SUFFIXES or suffix == '') and signature is None:
+            if progress is not None:
+                progress(8, "正在检查格式")
+            preflight = validate_selected_layout(path, layout_mode, cancel_event)
+            self.import_info['preflight'] = dict(preflight)
+            self.import_info['preflight_status'] = 'passed'
+
         if suffix in self.EXCEL_SUFFIXES:
             self._check_cancel(cancel_event)
             if progress is not None:
                 progress(12, "正在读取 Excel 工作表")
-            raw_excel = pd.read_excel(path, header=None, dtype=object)
+            raw_excel = self._read_excel_raw_cancelable(
+                path, suffix, progress=progress, cancel_event=cancel_event)
             nonempty_excel = raw_excel.dropna(axis=1, how='all')
             if layout_mode == 'height_matrix':
                 df = self._read_excel_height_matrix(
@@ -3890,7 +3954,7 @@ class DataIOMixin:
                 ncols = layout['ncols']
                 col_names = layout['header_tokens'] if layout['header_tokens'] else [f'Col{i+1}' for i in range(ncols)]
                 if layout_mode == 'height_matrix':
-                    if not self._looks_like_height_matrix_layout(path, enc, layout):
+                    if not self._looks_like_height_matrix_layout(path, enc, layout, cancel_event):
                         raise ValueError(
                             "当前导入策略选择了Z矩阵，但文件中未找到稳定的二维数值矩阵区。\n"
                             "请检查正文搜索起始行，或在文件导入策略中切换为XYZ点表。")
@@ -3901,7 +3965,8 @@ class DataIOMixin:
                         self._update_import_status_label()
                     return df
                 text_metadata = self._extract_text_preamble_metadata(
-                    path, enc, layout['data_line_no'], layout.get('header_line_no'))
+                    path, enc, layout['data_line_no'], layout.get('header_line_no'),
+                    cancel_event)
                 auto_sample = bool(getattr(self, 'auto_sample_large_text', True))
                 if auto_sample and file_size >= self._large_text_threshold_bytes():
                     if layout_mode == 'pixel_xy':
@@ -4046,6 +4111,43 @@ class DataIOMixin:
                 and self.isVisible() and self._task_thread is None):
             previous_info = copy.deepcopy(getattr(self, 'import_info', {}))
             previous_note = str(getattr(self, 'last_import_note', ''))
+            state_names = (
+                'absolute_raw_df', 'df_raw', 'manual_mask', 'temp_selected_mask',
+                'manual_delete_operations', '_manual_delete_mask_history',
+                'pending_delete_operation', 'active_idx', 'transform_pipeline',
+                'current_coeffs', 'current_source_name', 'n_filtered', 'last_metrics',
+                'last_sigma_summary', 'high_order_models', '_high_order_inputs',
+                'roi_enabled', 'roi_shapes', 'last_roi_keep_count',
+                'display_surface_mode', 'display_detrended',
+                '_trans_cache_key', '_trans_cache_data',
+                'parallel_base', 'parallel_measure', 'parallel_result',
+                '_parallel_revision', 'data_stack', 'data_base1', 'data_base2')
+            previous_state = {name: getattr(self, name, None) for name in state_names}
+            view_state = None
+            if hasattr(self, 'canvas'):
+                view_state = {
+                    'XY': (self.canvas.ax_xy.get_xlim(), self.canvas.ax_xy.get_ylim()),
+                    'XZ': (self.canvas.ax_xz.get_xlim(), self.canvas.ax_xz.get_ylim()),
+                    'YZ': (self.canvas.ax_yz.get_xlim(), self.canvas.ax_yz.get_ylim()),
+                    '3D': (self.canvas.ax3d.get_xlim3d(), self.canvas.ax3d.get_ylim3d(),
+                           self.canvas.ax3d.get_zlim3d(), self.canvas.ax3d.elev,
+                           self.canvas.ax3d.azim),
+                }
+            adjustment_state = None
+            if hasattr(self, 'adjustment_panel'):
+                adjustment_state = (self.adjustment_panel.result,
+                                    copy.deepcopy(self.adjustment_panel.context))
+            combo_state = {}
+            for name in ('cb_x_col', 'cb_y_col', 'cb_z_col',
+                         'cb_x_unit', 'cb_y_unit', 'cb_z_unit'):
+                combo = getattr(self, name, None)
+                if combo is not None:
+                    combo_state[name] = ([combo.itemText(i) for i in range(combo.count())],
+                                         combo.currentText())
+            label_state = {name: getattr(self, name).text() for name in
+                           ('lbl_source', 'lbl_eqn', 'lbl_z', 'lbl_pv', 'lbl_ttv',
+                            'lbl_rx', 'lbl_ry', 'lbl_filter_info')
+                           if hasattr(self, name)}
             from ..import_progress import ImportProgressDialog
             dialog = ImportProgressDialog(Path(path).name, self)
             self._import_dialog = dialog
@@ -4054,9 +4156,30 @@ class DataIOMixin:
             dialog.open()
 
             def restore_previous():
+                dataset_was_replaced = self.df_raw is not previous_state['df_raw']
                 self.import_info = previous_info
                 self.last_import_note = previous_note
+                for name, value in previous_state.items():
+                    setattr(self, name, value)
+                for name, (items, current) in combo_state.items():
+                    combo = getattr(self, name)
+                    combo.blockSignals(True)
+                    combo.clear(); combo.addItems(items); combo.setCurrentText(current)
+                    combo.blockSignals(False)
+                for name, value in label_state.items():
+                    getattr(self, name).setText(value)
+                if hasattr(self, '_update_parallel_result_ui'):
+                    self._update_parallel_result_ui()
+                if adjustment_state is not None:
+                    self.adjustment_panel.result, self.adjustment_panel.context = adjustment_state
+                    if self.adjustment_panel.result is not None:
+                        self.adjustment_panel.render()
                 self._update_import_status_label()
+                if dataset_was_replaced and self.df_raw is not None and self.active_idx is not None:
+                    self.update_plots_only(preserve_view=True)
+                    if view_state is not None:
+                        self._restore_plot_view_state(view_state)
+                        self.canvas.draw()
 
             def task(progress, cancel_event):
                 frame = self._read_table(path, progress, cancel_event)
@@ -4079,6 +4202,8 @@ class DataIOMixin:
                     self.statusBar().clearMessage()
                     self._update_import_status_label()
                     dialog.deleteLater()
+                else:
+                    restore_previous()
 
             def failure(message):
                 restore_previous()
@@ -4206,10 +4331,12 @@ class DataIOMixin:
                 self._safe_set_combo_text(self.cb_x_col, mapping.get('x_col'))
                 self._safe_set_combo_text(self.cb_y_col, mapping.get('y_col'))
                 self._safe_set_combo_text(self.cb_z_col, mapping.get('z_col'))
-                self.apply_mapping(preserve_analysis_settings=True)
+                if self.apply_mapping(preserve_analysis_settings=True) is False:
+                    raise ValueError("列映射或数据标准化失败。")
                 self.apply_recipe(self.pending_recipe, path_hint='已随当前文件自动应用', remap_current_data=False)
             else:
-                self.apply_mapping()
+                if self.apply_mapping() is False:
+                    raise ValueError("列映射或数据标准化失败。")
             self._update_import_status_label()
             self._remember_recent_file(path)
             if self.last_import_note:
@@ -4388,6 +4515,9 @@ class DataIOMixin:
             else:
                 self.reset_all(confirm=False)
             if getattr(self, '_import_dialog', None) is not None:
-                self._import_mapping_ready = self.last_metrics is not None
+                self._import_mapping_ready = (self.last_metrics is not None or
+                                              self._pending_sigma_reanalysis)
+            return True
         except Exception as e:
             QMessageBox.critical(self, "解析失败", str(e))
+            return False
