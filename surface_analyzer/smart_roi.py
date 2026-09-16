@@ -661,6 +661,7 @@ def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
     if len(candidate) != len(x):
         raise ValueError('candidate_mask长度与点数不一致')
     candidate &= np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+    metrics['candidate_input_count'] = int(candidate.sum())
     if seed_index is None:
         seed = int(np.argmin((x - float(seed_x)) ** 2 + (y - float(seed_y)) ** 2))
     else:
@@ -686,6 +687,7 @@ def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
     if strict:
         residual = np.abs(z - (seed_plane[0] * x + seed_plane[1] * y + seed_plane[2]))
         candidate &= np.isfinite(residual) & (residual <= tolerance)
+        metrics['candidate_after_residual'] = int(candidate.sum())
         visited = np.zeros(len(x), dtype=bool)
         if not candidate[seed]:
             candidate[seed] = True
@@ -707,6 +709,7 @@ def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
             seed_label = int(labels[int(point_rows[seed]), int(point_cols[seed])])
             if seed_label:
                 visited = labels[point_rows, point_cols] == seed_label
+            metrics['connected_result_count'] = int(visited.sum())
             metrics['processed'] = int(visited.sum())
             metrics['slow_path'] = int(visited.sum())
             metrics['algorithm'] = 'matrix8_component'
@@ -734,6 +737,7 @@ def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
                     visited[neighbor] = True
                     queue.append(neighbor)
         metrics['slow_path'] = int(visited.sum())
+        metrics['connected_result_count'] = int(visited.sum())
         emit_preview(visited, queue, True)
         if progress is not None:
             progress(100, int(metrics['processed']), int(len(x)))
@@ -818,5 +822,7 @@ def grow_surface_roi(x, y, z, seed_x, seed_y, tolerance_mm, topology,
         progress(100, int(metrics['processed']), int(len(x)))
     emit_preview(accepted, queue, True)
     metrics['selected'] = int(accepted.sum())
+    metrics['candidate_after_residual'] = int(candidate.sum())
+    metrics['connected_result_count'] = int(accepted.sum())
     metrics['fast_accept_ratio'] = float(metrics['fast_accept'] / max(metrics['selected'] - 1, 1))
     return accepted

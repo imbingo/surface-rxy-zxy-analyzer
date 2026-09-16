@@ -106,7 +106,7 @@ class V4ApiTests(unittest.TestCase):
         window.import_search_start_row = 123
         window.input_layout_mode = "height_matrix"
         recipe = window._current_recipe_dict()
-        self.assertEqual(APP_VERSION, "V4.7.1")
+        self.assertEqual(APP_VERSION, "V4.7.2")
         self.assertEqual(recipe["schema_version"], 8)
         self.assertEqual(recipe["input"]["search_start_row"], 123)
         self.assertNotIn("data_start_row", recipe["input"])

@@ -51,8 +51,10 @@ def scale_summary(info, analysis_points=None, final_points=None, xy_points=None,
     records, valid, positions = source_counts(info)
     def number(value):
         return '未计算' if value is None else f'{int(value):,}'
+    analysis_mode = ('（抽样）' if info.get('sampled') else
+                     ('（自动抽样关闭）' if info.get('auto_sample_enabled') is False else ''))
     text = (f'源有效点 {valid.text()} → 分析输入 {number(analysis_points)}'
-            f"{'（抽样）' if info.get('sampled') else ''} → 最终计算 {number(final_points)}"
+            f"{analysis_mode} → 最终计算 {number(final_points)}"
             f' | XY显示 {number(xy_points)} | 3D/XZ/YZ显示 {number(detail_points)}')
     detail = (f'源总记录：{records.text()}（{records.basis or "未完整统计"}）\n'
               f'源有效点：{valid.text()}（{valid.basis or "未完整统计，不能用读入点数代替"}）\n'

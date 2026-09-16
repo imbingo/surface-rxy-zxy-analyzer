@@ -152,7 +152,9 @@ class ReportingMixin:
                 getattr(self, 'display_surface_mode', 'raw'),
                 render_config={'xy_mode': self.canvas.xy_mode.currentData(),
                                'xy_raster_max_side': 1200},
-                roi_info=self._roi_report_info(tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data()),
+                roi_info=self._roi_report_info(
+                    tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data(),
+                    topology_domain_mask=self.manual_mask),
                 overview_idx=np.flatnonzero(self.manual_mask),
                 roi_mask_all=(getattr(self, '_effective_roi_mask_cache', None)
                               if self._roi_is_active() else np.ones(len(tz), dtype=bool)))
@@ -194,7 +196,9 @@ class ReportingMixin:
             elif self.cb_filter.currentIndex() == 3:
                 filter_text += (f" (残差基准={self.cb_sigma_residual.currentText()}, "
                                 f"σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})")
-            roi_info = self._roi_report_info(tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data())
+            roi_info = self._roi_report_info(
+                tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data(),
+                topology_domain_mask=self.manual_mask)
             quality = self._current_metric_quality()
             meta = [
                 f"# ===== 面型及Rxy分析工具 {self.APP_VERSION} 导出 =====",

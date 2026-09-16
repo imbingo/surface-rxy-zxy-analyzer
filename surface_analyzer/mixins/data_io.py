@@ -153,6 +153,81 @@ class DataIOMixin:
     def _large_text_import_limit(self):
         return int(getattr(self, 'large_text_import_limit', self.LARGE_TEXT_IMPORT_LIMIT))
 
+    def _enforce_analysis_input_cap(self, frame, *, reader='unknown'):
+        """Final, reader-independent guard for the user-visible analysis cap.
+
+        Reader-specific streaming/grid sampling remains preferred.  This guard is
+        the compatibility backstop and is intentionally called at every import
+        return boundary, including vendor and Excel readers.
+        """
+        if frame is None:
+            raise ValueError(f"{reader} 未生成可分析数据。")
+        source_rows = int(len(frame))
+        limit = max(3, self._large_text_import_limit())
+        auto = bool(getattr(self, 'auto_sample_large_text', True))
+        self.import_info['auto_sample_enabled'] = auto
+        self.import_info['analysis_input_limit'] = limit
+        self.import_info['reader_finalize'] = str(reader)
+        if not auto:
+            self.import_info['analysis_cap_status'] = 'disabled'
+            self.import_info['analysis_rows'] = source_rows
+            self.import_info['analysis_points'] = source_rows
+            self.import_info['import_rows'] = source_rows
+            return frame
+        if source_rows > limit:
+            matrix_columns = ('_matrix_row' in frame.columns and
+                              '_matrix_col' in frame.columns)
+            if matrix_columns:
+                rows = pd.to_numeric(frame['_matrix_row'], errors='coerce').to_numpy()
+                cols = pd.to_numeric(frame['_matrix_col'], errors='coerce').to_numpy()
+                finite_rc = np.isfinite(rows) & np.isfinite(cols)
+                stride = max(1, int(np.ceil(np.sqrt(source_rows / limit))))
+                if np.any(finite_rc):
+                    selected = np.flatnonzero(
+                        finite_rc &
+                        (((rows - np.nanmin(rows[finite_rc])) % stride) == 0) &
+                        (((cols - np.nanmin(cols[finite_rc])) % stride) == 0))
+                else:
+                    selected = np.array([], dtype=np.int64)
+                if len(selected) < 3:
+                    selected = np.linspace(0, source_rows - 1, limit, dtype=np.int64)
+                elif len(selected) > limit:
+                    selected = selected[np.linspace(
+                        0, len(selected) - 1, limit, dtype=np.int64)]
+                method_key = 'post_read_matrix_stride'
+                self.import_info['topology_method'] = 'sampled_matrix8'
+                self.import_info['analysis_stride_n'] = stride
+                extrema_preserved = False
+            else:
+                selected = np.linspace(0, source_rows - 1, limit, dtype=np.int64)
+                method_key = 'post_read_file_position'
+                extrema_preserved = False
+            frame = frame.iloc[np.unique(selected)].reset_index(drop=True)
+            self.import_info.update({
+                'sampled': True,
+                'sample_method_key': method_key,
+                'extrema_preserved': extrema_preserved,
+                'sampling_trigger': 'analysis_input_hard_cap',
+                'post_read_cap': True,
+                'pre_cap_rows': source_rows,
+                'strategy': f"{self.import_info.get('strategy', reader)} + 统一分析上限",
+            })
+            if self.import_info.get('source_record_rows') is None:
+                self.import_info['source_record_rows'] = source_rows
+            note = (f"分析输入硬上限 {limit:,}：{source_rows:,} → {len(frame):,}")
+            self.import_info['notes'] = (
+                f"{self.import_info.get('notes', '')} | {note}".strip(' |'))
+            self.last_import_note = (
+                f"{self.last_import_note}\n{note}".strip())
+        self.import_info['analysis_cap_status'] = 'enforced'
+        self.import_info['analysis_rows'] = int(len(frame))
+        self.import_info['analysis_points'] = int(len(frame))
+        self.import_info['import_rows'] = int(len(frame))
+        if len(frame) > limit:
+            raise AssertionError(
+                f"{reader} 分析输入 {len(frame):,} 超过统一上限 {limit:,}。")
+        return frame
+
     def _display_limit(self):
         return int(getattr(self, 'display_point_limit', self.DISPLAY_POINT_LIMIT))
 
@@ -1489,8 +1564,10 @@ class DataIOMixin:
         z_unit = z_override if z_override != 'auto' else str(metadata['z_unit'])
         valid_points = int(np.isfinite(values).sum())
         point_threshold = int(getattr(self, 'matrix_analysis_threshold', 400_000))
+        import_limit = self._large_text_import_limit()
         sampled = bool(getattr(self, 'auto_sample_large_text', True)
-                       and valid_points > point_threshold)
+                       and (valid_points > point_threshold or
+                            valid_points > import_limit))
         if progress is not None:
             progress(55, f"Excel矩阵有效点 {valid_points:,}，正在准备分析数据")
         if sampled:
@@ -1522,6 +1599,7 @@ class DataIOMixin:
             'manual_expected_rows': (manual_rows if manual_rows > 0 else None),
             'row_count_mismatch': row_count_mismatch,
             'source_matrix_positions': int(values.size),
+            'source_record_rows': actual_rows,
             'source_valid_rows': valid_points,
             'original_valid_points': valid_points,
             'analysis_points': len(frame),
@@ -2387,7 +2465,8 @@ class DataIOMixin:
         cols_count = int(prescan['matrix_cols'])
         valid_points = int(prescan['original_valid_points'])
         large_matrix = (file_size >= self._large_text_threshold_bytes()
-                        or valid_points > point_threshold)
+                        or valid_points > point_threshold
+                        or valid_points > self._large_text_import_limit())
         sampled = bool(auto_sample and large_matrix)
         common_args = (
             path, enc, layout['sep'], cols_count, int(layout['data_line_no']),
@@ -2459,6 +2538,7 @@ class DataIOMixin:
             'height_matrix': True,
             'import_rows': analysis_points,
             'source_matrix_positions': rows_count * cols_count,
+            'source_record_rows': rows_count,
             'source_valid_rows': valid_points,
             'original_valid_points': valid_points,
             'analysis_points': analysis_points,
@@ -3263,7 +3343,9 @@ class DataIOMixin:
                 f"{camera_res_um:.4g} µm/点相差超过1%；坐标仍按手动值生成。")
 
         auto_sample = bool(getattr(self, 'auto_sample_large_text', True))
-        sampled = auto_sample and file_size >= self._large_text_threshold_bytes()
+        sampled = bool(auto_sample and (
+            file_size >= self._large_text_threshold_bytes() or
+            phase_width * phase_height > self._large_text_import_limit()))
         method = str(getattr(self, 'large_file_sample_method', 'file_position'))
         if method == 'stride':
             method = 'file_position'
@@ -3610,7 +3692,10 @@ class DataIOMixin:
                     yield current_index, line_no, tokens
 
         auto_sample = bool(getattr(self, 'auto_sample_large_text', True))
-        sampled = auto_sample and file_size >= self._large_text_threshold_bytes()
+        sampled = bool(auto_sample and (
+            file_size >= self._large_text_threshold_bytes() or
+            (expected_points is not None and
+             expected_points > self._large_text_import_limit())))
         method = str(getattr(self, 'large_file_sample_method', 'file_position'))
         if method == 'stride': method = 'file_position'
         max_rows = self._large_text_import_limit()
@@ -3859,14 +3944,14 @@ class DataIOMixin:
                 cancel_event=cancel_event)
             self.import_info['display_limit'] = self._display_limit()
             self._update_import_status_label()
-            return df
+            return self._enforce_analysis_input_cap(df, reader='Zygo XYZ')
         if signature == 'zygo_xyz_format_1' and layout_mode == 'pixel_xy':
             df = self._read_zygo_xyz(
                 path, signature_encoding, file_size, progress=progress,
                 cancel_event=cancel_event)
             self.import_info['input_layout_mode'] = 'pixel_xy'
             self.import_info['display_limit'] = self._display_limit()
-            return df
+            return self._enforce_analysis_input_cap(df, reader='Zygo XYZ')
         if signature == 'zygo_xyz_format_1':
             raise ValueError(
                 "检测到 Zygo XYZ Data File - Format 1。\n"
@@ -3880,7 +3965,7 @@ class DataIOMixin:
                 cancel_event=cancel_event)
             self.import_info['display_limit'] = self._display_limit()
             self._update_import_status_label()
-            return df
+            return self._enforce_analysis_input_cap(df, reader='Precitec FSS')
 
         if (suffix in self.TEXT_SUFFIXES or suffix == '') and signature is None:
             if progress is not None:
@@ -3902,7 +3987,7 @@ class DataIOMixin:
                 self.import_info['display_limit'] = self._display_limit()
                 if progress is None:
                     self._update_import_status_label()
-                return df
+                return self._enforce_analysis_input_cap(df, reader='Excel Z Matrix')
             if nonempty_excel.shape[1] == 1:
                 df = self._read_packed_single_column_excel(path, raw_excel)
             else:
@@ -3963,7 +4048,7 @@ class DataIOMixin:
                     self.import_info['display_limit'] = self._display_limit()
                     if progress is None:
                         self._update_import_status_label()
-                    return df
+                    return self._enforce_analysis_input_cap(df, reader='Text Z Matrix')
                 text_metadata = self._extract_text_preamble_metadata(
                     path, enc, layout['data_line_no'], layout.get('header_line_no'),
                     cancel_event)
@@ -4094,7 +4179,9 @@ class DataIOMixin:
         if progress is not None:
             progress(88, "文件解析完成，正在标准化坐标与列映射")
         self._update_import_status_label()
-        return df
+        return self._enforce_analysis_input_cap(
+            df, reader=('Excel point table' if suffix in self.EXCEL_SUFFIXES
+                        else f'Text {layout_mode}'))
 
     def load_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -4492,6 +4579,11 @@ class DataIOMixin:
                 temp_df['_topology_row'] = temp_df['_topology_row'].astype(int)
                 temp_df['_topology_col'] = temp_df['_topology_col'].astype(int)
                 out_cols += ['_topology_row', '_topology_col']
+            if (getattr(self, 'auto_sample_large_text', True) and
+                    len(temp_df) > self._large_text_import_limit()):
+                raise AssertionError(
+                    f"映射后分析输入 {len(temp_df):,} 超过统一导入上限 "
+                    f"{self._large_text_import_limit():,}；reader hard-cap 未生效。")
             self.df_raw = temp_df[out_cols]
             self._update_smart_tolerance_recommendation(self.df_raw['Z'].to_numpy(dtype=float),
                                                         apply_value=not preserve_analysis_settings)

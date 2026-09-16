@@ -79,6 +79,16 @@ class ROIMixin:
         return ('matrix', len(rows), int(rows[0]), int(cols[0]),
                 int(rows[-1]), int(cols[-1]))
 
+    @staticmethod
+    def _mask_runtime_signature(mask):
+        if mask is None:
+            return ('all',)
+        values = np.asarray(mask, dtype=bool).reshape(-1)
+        if bool(np.all(values)):
+            return ('all',)
+        packed = np.packbits(values, bitorder='little').tobytes()
+        return ('mask', len(values), int(values.sum()), hash(packed))
+
     def _smart_dataset_cache_key(self, x, y, z, matrix_rc=None):
         """Identify the transformed dataset used by topology and ROI masks."""
         current = getattr(self, '_trans_cache_data', None)
@@ -92,9 +102,11 @@ class ROIMixin:
                         self._array_runtime_identity(z))
         return geometry + (self._matrix_runtime_signature(matrix_rc),)
 
-    def _smart_topology_cache_key(self, x, y, z, matrix_rc, sensitivity):
+    def _smart_topology_cache_key(self, x, y, z, matrix_rc, sensitivity,
+                                  eligible_mask=None):
         return ('smart-topology-v2', self._smart_dataset_cache_key(x, y, z, matrix_rc),
-                str(sensitivity), 150000)
+                str(sensitivity), 150000,
+                self._mask_runtime_signature(eligible_mask))
 
     @staticmethod
     def _smart_roi_parameter_signature(roi):
@@ -108,14 +120,18 @@ class ROIMixin:
             float(roi.get('xy_radius_mm', 0.0) or 0.0),
         )
 
-    def _smart_roi_mask_cache_key(self, x, y, z, roi, matrix_rc=None):
+    def _smart_roi_mask_cache_key(self, x, y, z, roi, matrix_rc=None,
+                                  eligible_mask=None):
         return ('smart-roi-mask', int(roi.get('id', 0) or 0),
                 self._smart_dataset_cache_key(x, y, z, matrix_rc),
-                self._smart_roi_parameter_signature(roi))
+                self._smart_roi_parameter_signature(roi),
+                self._mask_runtime_signature(eligible_mask))
 
-    def _lookup_smart_roi_mask(self, x, y, z, roi, matrix_rc=None):
+    def _lookup_smart_roi_mask(self, x, y, z, roi, matrix_rc=None,
+                               eligible_mask=None):
         self._ensure_smart_roi_cache_state()
-        key = self._smart_roi_mask_cache_key(x, y, z, roi, matrix_rc)
+        key = self._smart_roi_mask_cache_key(
+            x, y, z, roi, matrix_rc, eligible_mask)
         entry = self._smart_roi_mask_cache.get(key)
         if entry is None:
             return None, key
@@ -127,10 +143,12 @@ class ROIMixin:
         return mask, key
 
     def _store_smart_roi_mask(self, x, y, z, roi, keep_mask, matrix_rc=None,
-                              topology_key=None, performance=None):
+                              topology_key=None, performance=None,
+                              eligible_mask=None):
         self._ensure_smart_roi_cache_state()
         mask = np.asarray(keep_mask, dtype=bool).copy()
-        key = self._smart_roi_mask_cache_key(x, y, z, roi, matrix_rc)
+        key = self._smart_roi_mask_cache_key(
+            x, y, z, roi, matrix_rc, eligible_mask)
         self._smart_roi_mask_cache[key] = {
             'roi_id': int(roi.get('id', 0) or 0),
             'data_version': int(getattr(self, '_df_version', 0)),
@@ -166,12 +184,19 @@ class ROIMixin:
         self._smart_topology_cache[key] = entry
         return entry
 
-    def _get_or_build_smart_topology(self, x, y, z, matrix_rc, sensitivity):
-        key = self._smart_topology_cache_key(x, y, z, matrix_rc, sensitivity)
+    def _get_or_build_smart_topology(self, x, y, z, matrix_rc, sensitivity,
+                                     eligible_mask=None):
+        key = self._smart_topology_cache_key(
+            x, y, z, matrix_rc, sensitivity, eligible_mask)
         cached = self._lookup_smart_topology(key)
         if cached is not None:
             return cached, True
         finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+        if eligible_mask is not None:
+            domain = np.asarray(eligible_mask, dtype=bool)
+            if len(domain) != len(finite):
+                raise ValueError('Smart topology domain长度与点数不一致')
+            finite &= domain
         finite_idx = np.flatnonzero(finite)
         finite_matrix = None
         if matrix_rc is not None:
@@ -185,7 +210,8 @@ class ROIMixin:
             key, topology, finite_idx, time.perf_counter() - started)
         return entry, False
 
-    def _effective_roi_cache_signature(self, x, y, z, shapes, enabled, matrix_rc):
+    def _effective_roi_cache_signature(self, x, y, z, shapes, enabled, matrix_rc,
+                                       topology_domain_mask=None):
         shape_signature = tuple(
             (int(shape.get('id', 0) or 0), bool(shape.get('enabled', True)),
              str(shape.get('type', 'rect')),
@@ -195,20 +221,26 @@ class ROIMixin:
             for shape in shapes
         )
         return ('effective-roi', bool(enabled),
-                self._smart_dataset_cache_key(x, y, z, matrix_rc), shape_signature)
+                self._smart_dataset_cache_key(x, y, z, matrix_rc), shape_signature,
+                self._mask_runtime_signature(topology_domain_mask))
 
     def _get_effective_roi_mask_cached(self, x, y, z, matrix_rc=None,
                                        roi_shapes=None, roi_enabled=None):
         self._ensure_smart_roi_cache_state()
         shapes = self.roi_shapes if roi_shapes is None else (roi_shapes or [])
         enabled = self.roi_enabled if roi_enabled is None else bool(roi_enabled)
-        key = self._effective_roi_cache_signature(x, y, z, shapes, enabled, matrix_rc)
+        manual_domain = getattr(self, 'manual_mask', None)
+        if manual_domain is not None and len(manual_domain) != len(x):
+            manual_domain = None
+        key = self._effective_roi_cache_signature(
+            x, y, z, shapes, enabled, matrix_rc, manual_domain)
         if key == self._effective_roi_mask_cache_key:
             cached = self._effective_roi_mask_cache
             if cached is not None and len(cached) == len(x):
                 return cached
         keep = self._roi_keep_mask_for_arrays(
-            x, y, z, shapes, enabled, matrix_rc=matrix_rc)
+            x, y, z, shapes, enabled, matrix_rc=matrix_rc,
+            topology_domain_mask=manual_domain)
         self._effective_roi_mask_cache_key = key
         self._effective_roi_mask_cache = np.asarray(keep, dtype=bool)
         return self._effective_roi_mask_cache
@@ -540,24 +572,32 @@ class ROIMixin:
         keep[candidate_idx[visited]] = True
         return keep
 
-    def _smart_face_keep_mask_for_arrays(self, x, y, z, roi, matrix_rc=None, update_radius=False):
+    def _smart_face_keep_mask_for_arrays(self, x, y, z, roi, matrix_rc=None,
+                                         update_radius=False, eligible_mask=None):
         if z is None:
             return np.zeros(len(x), dtype=bool)
         x = np.asarray(x, dtype=float)
         y = np.asarray(y, dtype=float)
         z = np.asarray(z, dtype=float)
-        cached_mask, _ = self._lookup_smart_roi_mask(x, y, z, roi, matrix_rc)
+        finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+        if eligible_mask is not None:
+            domain = np.asarray(eligible_mask, dtype=bool)
+            if len(domain) != len(finite):
+                raise ValueError('Smart topology domain长度与点数不一致')
+            finite &= domain
+        eligible_mask = finite
+        cached_mask, _ = self._lookup_smart_roi_mask(
+            x, y, z, roi, matrix_rc, eligible_mask)
         if cached_mask is not None:
             return cached_mask
         if int(roi.get('smart_algorithm_version', 1) or 1) >= 2:
-            finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
             finite_idx = np.flatnonzero(finite)
             if len(finite_idx) < 3:
                 return np.zeros(len(x), dtype=bool)
             sensitivity = str(roi.get('sensitivity', 'standard'))
             try:
                 topology_entry, topology_hit = self._get_or_build_smart_topology(
-                    x, y, z, matrix_rc, sensitivity)
+                    x, y, z, matrix_rc, sensitivity, finite)
                 topology = topology_entry['topology']
                 finite_idx = topology_entry['finite_idx']
                 algorithm_version = int(roi.get('smart_algorithm_version', 2) or 2)
@@ -596,13 +636,16 @@ class ROIMixin:
                     'topology_seconds': 0.0 if topology_hit else float(topology_entry['build_seconds']),
                     'grow_seconds': float(time.perf_counter() - grow_started),
                     'points': int(len(finite_idx)),
+                    'topology_input_count': int(len(finite_idx)),
+                    'connected_result_count': int(np.sum(local_keep)),
                     **growth_stats,
                 }
                 self.smart_roi_performance = dict(performance)
                 if int(roi.get('id', 0) or 0) > 0:
                     self._store_smart_roi_mask(
                         x, y, z, roi, result, matrix_rc,
-                        topology_key=topology_entry['cache_key'], performance=performance)
+                        topology_key=topology_entry['cache_key'], performance=performance,
+                        eligible_mask=finite)
                 return result
             except Exception as exc:
                 roi['topology_label'] = '拓扑失败'
@@ -610,14 +653,36 @@ class ROIMixin:
                 roi['topology_fallback_reason'] = str(exc)
                 self._show_status(f"Smart ROI拓扑失败: {exc}", 12000)
                 return np.zeros(len(x), dtype=bool)
+        eligible_idx = np.flatnonzero(eligible_mask)
+        if len(eligible_idx) < 3:
+            return np.zeros(len(x), dtype=bool)
+        local_matrix = None
+        if matrix_rc is not None:
+            local_matrix = (np.asarray(matrix_rc[0])[eligible_idx],
+                            np.asarray(matrix_rc[1])[eligible_idx])
         if str(roi.get('smart_mode', 'plane_residual')) == 'plane_residual':
-            return self._smart_face_keep_mask_plane_residual(x, y, z, roi, update_radius=update_radius)
+            local_keep = self._smart_face_keep_mask_plane_residual(
+                x[eligible_idx], y[eligible_idx], z[eligible_idx], roi,
+                update_radius=update_radius)
+            result = np.zeros(len(x), dtype=bool)
+            result[eligible_idx[np.asarray(local_keep, dtype=bool)]] = True
+            return result
         if roi.get('connectivity') == 'matrix8' and matrix_rc is not None:
             try:
-                return self._smart_face_keep_mask_matrix(x, y, z, roi, matrix_rc)
+                local_keep = self._smart_face_keep_mask_matrix(
+                    x[eligible_idx], y[eligible_idx], z[eligible_idx], roi,
+                    local_matrix)
+                result = np.zeros(len(x), dtype=bool)
+                result[eligible_idx[np.asarray(local_keep, dtype=bool)]] = True
+                return result
             except Exception:
                 pass
-        return self._smart_face_keep_mask_auto_xy(x, y, z, roi, update_radius=update_radius)
+        local_keep = self._smart_face_keep_mask_auto_xy(
+            x[eligible_idx], y[eligible_idx], z[eligible_idx], roi,
+            update_radius=update_radius)
+        result = np.zeros(len(x), dtype=bool)
+        result[eligible_idx[np.asarray(local_keep, dtype=bool)]] = True
+        return result
 
     @staticmethod
     def _gate_plot_z(x, y, z, gate):
@@ -650,43 +715,55 @@ class ROIMixin:
             keep &= inside
         return keep
 
-    def _roi_keep_mask_for_arrays(self, x, y, z=None, roi_shapes=None, roi_enabled=None, matrix_rc=None):
+    def _manual_roi_domain_mask(self, x, y, z, shapes, enabled=True):
+        """Union inside each manual view, intersection across active views."""
+        if not enabled:
+            return np.ones(len(x), dtype=bool)
+        manual_by_view = {view: [] for view in ('XY', 'XZ', 'YZ')}
+        for roi in shapes or []:
+            if (not roi.get('enabled', True) or
+                    roi.get('type') == 'smart_face'):
+                continue
+            view = str(roi.get('view', 'XY')).upper()
+            if view not in manual_by_view:
+                view = 'XY'
+            manual_by_view[view].append(
+                self._manual_roi_mask_for_arrays(x, y, z, roi))
+        keep = np.ones(len(x), dtype=bool)
+        for masks in manual_by_view.values():
+            if masks:
+                keep &= np.logical_or.reduce(masks)
+        return keep
+
+    def _roi_keep_mask_for_arrays(self, x, y, z=None, roi_shapes=None,
+                                  roi_enabled=None, matrix_rc=None,
+                                  topology_domain_mask=None):
         shapes = self.roi_shapes if roi_shapes is None else (roi_shapes or [])
         if not self._roi_is_active(roi_enabled, shapes):
             return np.ones(len(x), dtype=bool)
         x = np.asarray(x, dtype=float)
         y = np.asarray(y, dtype=float)
         z = np.asarray(z if z is not None else np.zeros(len(x)), dtype=float)
-        manual_by_view = {view: [] for view in ('XY', 'XZ', 'YZ')}
+        manual_keep = self._manual_roi_domain_mask(
+            x, y, z, shapes, enabled=True)
+        topology_domain = manual_keep.copy()
+        if topology_domain_mask is not None:
+            supplied = np.asarray(topology_domain_mask, dtype=bool)
+            if len(supplied) != len(topology_domain):
+                raise ValueError('Smart topology外部domain长度与点数不一致')
+            topology_domain &= supplied
+        topology_domain &= np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
         smart_masks = []
         for roi in shapes:
             if not roi.get('enabled', True):
                 continue
             if roi.get('type') == 'smart_face':
                 smart_masks.append(
-                    self._smart_face_keep_mask_for_arrays(x, y, z, roi, matrix_rc=matrix_rc))
+                    self._smart_face_keep_mask_for_arrays(
+                        x, y, z, roi, matrix_rc=matrix_rc,
+                        eligible_mask=topology_domain))
                 continue
-            view = str(roi.get('view', 'XY')).upper()
-            if view not in manual_by_view:
-                view = 'XY'
-            cx = float(roi.get('cx', 0.0))
-            cy = float(roi.get('cy', 0.0))
-            second_axis = y if view == 'XY' else self._gate_plot_z(x, y, z, roi)
-            first_axis = x if view in ('XY', 'XZ') else y
-            if roi.get('type') == 'circle':
-                r = float(roi.get('radius', 0.0))
-                mask = ((first_axis - cx) ** 2 + (second_axis - cy) ** 2) <= (r ** 2)
-            else:
-                hw = float(roi.get('width', 0.0)) / 2.0
-                hh = float(roi.get('height', 0.0)) / 2.0
-                mask = ((first_axis >= cx - hw) & (first_axis <= cx + hw)
-                        & (second_axis >= cy - hh) & (second_axis <= cy + hh))
-            manual_by_view[view].append(mask)
-
-        keep = np.ones(len(x), dtype=bool)
-        for view_masks in manual_by_view.values():
-            if view_masks:
-                keep &= np.logical_or.reduce(view_masks)
+        keep = manual_keep
         if smart_masks:
             keep &= np.logical_or.reduce(smart_masks)
         return keep
@@ -795,7 +872,10 @@ class ROIMixin:
             self.update_analysis()
 
     def _add_roi_shape(self, roi, keep_roi_mode=False, precomputed_mask=None,
-                       cache_context=None, topology_key=None, performance=None):
+                       cache_context=None, topology_key=None, performance=None,
+                       eligible_mask=None):
+        self._invalidate_smart_roi_runtime_cache(
+            topology=True, masks=True, reason='ROI已添加')
         roi['id'] = int(self.roi_next_id)
         roi['name'] = f"ROI {self.roi_next_id}"
         roi['enabled'] = True
@@ -805,7 +885,8 @@ class ROIMixin:
             x, y, z, matrix_rc = cache_context
             self._store_smart_roi_mask(
                 x, y, z, roi, precomputed_mask, matrix_rc,
-                topology_key=topology_key, performance=performance)
+                topology_key=topology_key, performance=performance,
+                eligible_mask=eligible_mask)
         else:
             self._invalidate_effective_roi_mask_cache()
         self.roi_enabled = True
@@ -888,7 +969,8 @@ class ROIMixin:
         if idx is None:
             return
         self.roi_shapes[idx]['enabled'] = not self.roi_shapes[idx].get('enabled', True)
-        self._invalidate_effective_roi_mask_cache()
+        self._invalidate_smart_roi_runtime_cache(
+            topology=True, masks=True, reason='ROI启用状态已变化')
         self._refresh_roi_ui(update=True)
 
     def delete_selected_roi(self, *_args):
@@ -902,7 +984,8 @@ class ROIMixin:
                 key: value for key, value in self._smart_roi_mask_cache.items()
                 if int(value.get('roi_id', 0) or 0) != roi_id
             }
-        self._invalidate_effective_roi_mask_cache()
+        self._invalidate_smart_roi_runtime_cache(
+            topology=True, masks=True, reason='ROI已删除')
         if not self.roi_shapes:
             self.roi_enabled = False
             self.last_roi_keep_count = None
@@ -914,8 +997,8 @@ class ROIMixin:
 
     def clear_rois(self, checked=None, update=True):
         self.roi_shapes = []
-        self._smart_roi_mask_cache.clear()
-        self._invalidate_effective_roi_mask_cache()
+        self._invalidate_smart_roi_runtime_cache(
+            topology=True, masks=True, reason='ROI已清空')
         self.roi_enabled = False
         self.last_roi_keep_count = None
         self.set_delete_selection_mode(show_message=False)
@@ -925,13 +1008,17 @@ class ROIMixin:
             self.chk_roi_enable.blockSignals(False)
         self._refresh_roi_ui(update=update)
 
-    def _roi_report_info(self, tx=None, ty=None, tz=None, roi_enabled=None, roi_shapes=None, matrix_rc=None):
+    def _roi_report_info(self, tx=None, ty=None, tz=None, roi_enabled=None,
+                         roi_shapes=None, matrix_rc=None,
+                         topology_domain_mask=None):
         shapes = [dict(r) for r in (roi_shapes if roi_shapes is not None else self.roi_shapes)]
         enabled = self.roi_enabled if roi_enabled is None else bool(roi_enabled)
         active = self._roi_is_active(enabled, shapes)
         keep_count = None
         if active and tx is not None and ty is not None:
-            keep_count = int(self._roi_keep_mask_for_arrays(tx, ty, tz, shapes, enabled, matrix_rc).sum())
+            keep_count = int(self._roi_keep_mask_for_arrays(
+                tx, ty, tz, shapes, enabled, matrix_rc,
+                topology_domain_mask=topology_domain_mask).sum())
         summary = "关闭" if not active else f"开启 | 启用 {sum(bool(r.get('enabled', True)) for r in shapes)}/{len(shapes)} 个"
         if keep_count is not None:
             summary += f" | 合并保留 {keep_count:,} 点"
@@ -1178,7 +1265,8 @@ class ROIMixin:
         roi = op['roi']
         if self._roi_is_active(roi.get('enabled'), roi.get('shapes')):
             scope &= self._roi_keep_mask_for_arrays(
-                tx, ty, tz, roi.get('shapes'), roi.get('enabled'), self._matrix_rc_for_current_data())
+                tx, ty, tz, roi.get('shapes'), roi.get('enabled'),
+                self._matrix_rc_for_current_data(), topology_domain_mask=scope)
         idx = np.flatnonzero(scope)
         if len(idx) == 0:
             return np.zeros(len(z), dtype=bool)
@@ -1396,15 +1484,30 @@ class ROIMixin:
         if self.df_raw is None:
             return
         tx, ty, tz = self.get_final_transformed_data(self.df_raw)
-        base_mask = self.manual_mask if self.manual_mask is not None else np.ones(len(tz), dtype=bool)
-        seed_candidates = np.where(base_mask & np.isfinite(tx) & np.isfinite(ty) & np.isfinite(tz))[0]
-        finite_idx = np.where(np.isfinite(tx) & np.isfinite(ty) & np.isfinite(tz))[0]
-        if len(seed_candidates) < 3 or len(finite_idx) < 3:
+        base_mask = (np.asarray(self.manual_mask, dtype=bool).copy()
+                     if self.manual_mask is not None else np.ones(len(tz), dtype=bool))
+        manual_roi_domain = self._manual_roi_domain_mask(
+            tx, ty, tz, self.roi_shapes, enabled=bool(self.roi_enabled))
+        eligible_mask = (base_mask & manual_roi_domain &
+                         np.isfinite(tx) & np.isfinite(ty) & np.isfinite(tz))
+        seed_candidates = np.flatnonzero(eligible_mask)
+        finite_idx = seed_candidates
+        if len(seed_candidates) < 3:
             self.statusBar().showMessage("有效点不足，无法智能抓面。", 6000)
             return
         if seed_index is None or not np.any(seed_candidates == int(seed_index)):
             dist2 = (tx[seed_candidates] - px) ** 2 + (ty[seed_candidates] - py) ** 2
             seed_idx = int(seed_candidates[int(np.argmin(dist2))])
+            snap_distance = float(np.sqrt(np.min(dist2)))
+            neighbor_radius = self._estimate_xy_neighbor_radius(
+                tx[seed_candidates], ty[seed_candidates])
+            span = float(np.hypot(np.ptp(tx[seed_candidates]), np.ptp(ty[seed_candidates])))
+            max_snap_distance = max(neighbor_radius * 4.0, span * 0.01, 1e-9)
+            if snap_distance > max_snap_distance:
+                self.statusBar().showMessage(
+                    "点击位置距离可用点过远，可能位于已删除区或ROI外；未创建Smart ROI。",
+                    8000)
+                return
         else:
             seed_idx = int(seed_index)
         connectivity = 'matrix8' if self._matrix_rc_for_current_data() is not None else 'auto_xy'
@@ -1427,11 +1530,12 @@ class ROIMixin:
         }
         matrix_rc = self._matrix_rc_for_current_data()
         topology_key = self._smart_topology_cache_key(
-            tx, ty, tz, matrix_rc, roi['sensitivity'])
+            tx, ty, tz, matrix_rc, roi['sensitivity'], eligible_mask)
         topology_entry = self._lookup_smart_topology(topology_key)
         if hasattr(self, '_run_background_task'):
             snapshot_version = int(getattr(self, '_df_version', 0))
             snapshot_pipeline = tuple(self.transform_pipeline)
+            snapshot_domain_signature = self._mask_runtime_signature(eligible_mask)
             finite_idx_snapshot = (topology_entry['finite_idx'].copy()
                                    if topology_entry is not None else finite_idx.copy())
             finite_x = np.asarray(tx[finite_idx_snapshot], dtype=float).copy()
@@ -1446,7 +1550,7 @@ class ROIMixin:
             local_seed_index = int(seed_matches[0]) if len(seed_matches) else None
             from ..smart_preview import PreviewMailbox
             from ..smart_xy_progress import SmartXYProgress
-            mailbox = PreviewMailbox(finite_x, finite_y, visible_mask=base_mask[finite_idx_snapshot])
+            mailbox = PreviewMailbox(finite_x, finite_y)
             dialog = SmartXYProgress(mailbox, (roi['seed_x'], roi['seed_y']), self)
             self._smart_progress = dialog
             dialog.cancelRequested.connect(self._cancel_background_task)
@@ -1496,6 +1600,7 @@ class ROIMixin:
                         'topology_seconds': float(topology_seconds),
                         'grow_seconds': float(time.perf_counter() - grow_started),
                         'finite_idx': finite_idx_snapshot,
+                        'domain_signature': snapshot_domain_signature,
                         'growth_stats': growth_stats}
 
             def apply_result(result):
@@ -1503,6 +1608,16 @@ class ROIMixin:
                         or tuple(self.transform_pipeline) != result['pipeline']
                         or self.df_raw is None or len(self.df_raw) != len(tx)):
                     self._show_status('数据或姿态在抓面期间发生变化，本次结果已丢弃，请重新点击种子。', 8000)
+                    return False
+                current_manual = (np.asarray(self.manual_mask, dtype=bool)
+                                  if self.manual_mask is not None else np.ones(len(tx), dtype=bool))
+                current_roi_domain = self._manual_roi_domain_mask(
+                    tx, ty, tz, self.roi_shapes, enabled=bool(self.roi_enabled))
+                current_domain = (current_manual & current_roi_domain &
+                                  np.isfinite(tx) & np.isfinite(ty) & np.isfinite(tz))
+                if self._mask_runtime_signature(current_domain) != result['domain_signature']:
+                    self._show_status(
+                        '删除点或手动ROI在抓面期间发生变化，本次结果已丢弃，请重新点击种子。', 8000)
                     return False
                 topology = result['topology']
                 if not result['topology_hit']:
@@ -1523,12 +1638,15 @@ class ROIMixin:
                     'topology_seconds': result['topology_seconds'],
                     'grow_seconds': result['grow_seconds'],
                     'points': int(len(result['finite_idx'])),
+                    'topology_input_count': int(len(result['finite_idx'])),
+                    'connected_result_count': int(np.sum(result['local_keep'])),
                     **dict(result.get('growth_stats', {})),
                 }
                 self.smart_roi_performance = dict(performance)
                 self._complete_smart_face_roi(
                     roi, keep, tx, ty, tz, matrix_rc,
-                    topology_key=topology_key, performance=performance)
+                    topology_key=topology_key, performance=performance,
+                    eligible_mask=current_domain)
                 return int(keep.sum()) >= 3
 
             def finish(success, message=''):
@@ -1555,13 +1673,16 @@ class ROIMixin:
                 finish(False, '任务未启动，请等待当前任务结束后重试。')
             return
         keep = self._smart_face_keep_mask_for_arrays(
-            tx, ty, tz, roi, matrix_rc=matrix_rc, update_radius=True)
+            tx, ty, tz, roi, matrix_rc=matrix_rc, update_radius=True,
+            eligible_mask=eligible_mask)
         self._complete_smart_face_roi(
             roi, keep, tx, ty, tz, matrix_rc, topology_key=topology_key,
-            performance=getattr(self, 'smart_roi_performance', {}))
+            performance=getattr(self, 'smart_roi_performance', {}),
+            eligible_mask=eligible_mask)
 
     def _complete_smart_face_roi(self, roi, keep, tx=None, ty=None, tz=None, matrix_rc=None,
-                                 topology_key=None, performance=None):
+                                 topology_key=None, performance=None,
+                                 eligible_mask=None):
         count = int(np.sum(keep))
         if count < 3:
             self.statusBar().showMessage(
@@ -1574,7 +1695,7 @@ class ROIMixin:
         self._add_roi_shape(
             roi, keep_roi_mode=True, precomputed_mask=keep,
             cache_context=cache_context, topology_key=topology_key,
-            performance=performance)
+            performance=performance, eligible_mask=eligible_mask)
         mode_text = "严格同平面" if roi.get('smart_mode') == 'plane_residual' else "连续曲面"
         conn_text = roi.get('topology_label') or ("矩阵8邻域" if roi['connectivity'] == 'matrix8' else "自适应点云")
         fallback_text = (f" | 回退原因: {roi['topology_fallback_reason']}"
@@ -1731,6 +1852,8 @@ class ROIMixin:
             self._manual_delete_mask_history = []
         self._manual_delete_mask_history.append(self.manual_mask.copy())
         self.manual_mask &= (~self.temp_selected_mask)
+        self._invalidate_smart_roi_runtime_cache(
+            topology=True, masks=True, reason='手动删除点已变化')
         if operation:
             self.manual_delete_operations.append(operation)
         self.pending_delete_operation = None
@@ -1759,6 +1882,8 @@ class ROIMixin:
                 replayed.append(operation)
             self.manual_delete_operations = replayed
             self.manual_mask = replay_mask
+        self._invalidate_smart_roi_runtime_cache(
+            topology=True, masks=True, reason='已撤销手动删除')
         self.pending_delete_operation = None
         if self.temp_selected_mask is None or len(self.temp_selected_mask) != len(self.df_raw):
             self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)

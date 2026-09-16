@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.7.1
+# Surface Rxy ZXY Analyzer V4.7.2
 
-面型及 Rxy 分析工具当前版本为 **V4.7.1 — 导入稳定性修复 + 迭代σ裁剪残差模型扩展**。本版加入有界导入预检、错误格式快速终止、事务式导入回滚，以及一至三阶完整曲面 σ 残差模型，并保持全部标准量测定义不变。详见 [V4.7.1 发布说明](docs/RELEASE_NOTES_V4.7.1.md)。
+面型及 Rxy 分析工具当前版本为 **V4.7.2 — 统一导入分析硬上限 + Smart ROI 拓扑域修复**。本版统一约束所有导入器的分析输入规模，并确保手动删除点和手动 ROI 外点不会进入 Smart ROI 拓扑。详见 [V4.7.2 发布说明](docs/RELEASE_NOTES_V4.7.2.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.7.1.py`：V4.7.1 Python 启动入口。
-- `start_surface_analyzer_v4_7_1.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.7.2.py`：V4.7.2 Python 启动入口。
+- `start_surface_analyzer_v4_7_2.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,27 +14,35 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_7_1.bat
+start_surface_analyzer_v4_7_2.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_7_1.bat
+.\start_surface_analyzer_v4_7_2.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_7_1.bat --check
+.\start_surface_analyzer_v4_7_2.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.7.1.py
+python .\面型及Rxy分析工具V4.7.2.py
 python -m surface_analyzer
 ```
+
+## V4.7.2 重点
+
+- 自动抽样开启时，Physical XYZ、Pixel XY、Z Matrix、Zygo、Precitec、Excel 和通用文本的最终分析输入统一不超过“导入上限(行)”。
+- 文件大小低于 MB 阈值但有效点数超过导入上限时仍会抽样；关闭自动抽样时保留全量分析并明确显示状态。
+- Smart ROI 在构建 KDTree、Delaunay、adaptive kNN 或 matrix8 拓扑前排除手动删除点及手动 ROI 外点，阻断其桥接作用。
+- 删除、恢复、ROI、数据、映射、变换和滤波变化会使相关拓扑缓存失效。
+- Rx、Ry、PV、TTV、RMS 与 Mean Z 的数学定义保持不变。
 
 ## V4.7.1 重点
 

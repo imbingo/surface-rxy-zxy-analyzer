@@ -96,13 +96,20 @@ def _resolve_column(frame: pd.DataFrame, value: int | str, label: str):
     return value
 
 
-def _read_excel(path: Path, x_column: int | str, y_column: int | str, z_column: int | str) -> LoadedPoints:
+def _read_excel(path: Path, x_column: int | str, y_column: int | str,
+                z_column: int | str, max_points: int) -> LoadedPoints:
     frame = pd.read_excel(path)
     xc = _resolve_column(frame, x_column, "X")
     yc = _resolve_column(frame, y_column, "Y")
     zc = _resolve_column(frame, z_column, "Z")
     xyz = frame[[xc, yc, zc]].apply(pd.to_numeric, errors="coerce").dropna().to_numpy(dtype=float)
-    return LoadedPoints(xyz[:, 0], xyz[:, 1], xyz[:, 2], False, "Excel全量读取")
+    max_points = max(3, int(max_points))
+    sampled = len(xyz) > max_points
+    if sampled:
+        xyz = xyz[np.linspace(0, len(xyz) - 1, max_points, dtype=np.int64)]
+    return LoadedPoints(
+        xyz[:, 0], xyz[:, 1], xyz[:, 2], sampled,
+        "Excel分析上限均匀采样" if sampled else "Excel全量读取")
 
 
 def _read_text(
@@ -185,7 +192,12 @@ def _read_text(
             na_values=list(MISSING_TEXT_TOKENS),
         )
         xyz = frame.iloc[:, indices].apply(pd.to_numeric, errors="coerce").dropna().to_numpy(dtype=float)
-        strategy = "文本全量读取"
+        if len(xyz) > max_points:
+            xyz = xyz[np.linspace(0, len(xyz) - 1, max_points, dtype=np.int64)]
+            sampled = True
+            strategy = "文本分析上限均匀采样"
+        else:
+            strategy = "文本全量读取"
 
     if xyz.ndim != 2 or xyz.shape[0] < 3:
         raise ValueError("读取后有效 XYZ 点少于 3")
@@ -205,7 +217,7 @@ def load_xyz_points(
         raise FileNotFoundError(f"文件不存在: {source}")
     suffix = source.suffix.lower()
     if suffix in EXCEL_SUFFIXES:
-        return _read_excel(source, x_column, y_column, z_column)
+        return _read_excel(source, x_column, y_column, z_column, max_points)
     if suffix in TEXT_SUFFIXES:
         return _read_text(source, x_column, y_column, z_column, max_points)
     raise ValueError(f"接口暂不支持 {suffix or '无后缀'}；支持常规 XYZ 文本和 Excel")

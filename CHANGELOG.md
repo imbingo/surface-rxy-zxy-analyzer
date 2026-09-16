@@ -1,5 +1,15 @@
 # Changelog
 
+## V4.7.2 — Unified import hard cap and Smart topology domain fix
+
+- Unified the analysis import hard cap across all supported readers.
+- Fixed cases where files below the MB threshold could exceed the configured import limit.
+- Unified source / analysis / final / display count semantics.
+- Fixed Smart ROI topology to exclude manually deleted points before graph construction.
+- Restricted the Smart topology domain by active manual ROI.
+- Prevented deleted or excluded points from acting as connectivity bridge nodes.
+- Added regression tests for multi-cluster deletion, broken bridges, and per-reader import caps.
+
 ## V4.7.1 — Import stability and sigma residual filtering
 
 - Fixed UI freeze / long hang when an incorrect import format is selected.

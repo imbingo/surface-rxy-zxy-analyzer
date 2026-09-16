@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.7.1."""
+"""Qt application shell for Surface Analyzer V4.7.2."""
 
 import sys
 import os
@@ -2120,6 +2120,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                     f"Mask {perf.get('mask_combine_seconds', 0.0):.4f}s | "
                     f"分析 {perf.get('analysis_seconds', 0.0):.3f}s | "
                     f"绘图 {perf.get('plot_seconds', 0.0):.3f}s | 总计 {perf.get('total_seconds', 0.0):.3f}s\n"
+                    f"Topology input {perf.get('topology_input_count', perf.get('points', 0)):,} | "
+                    f"Candidate {perf.get('candidate_after_residual', perf.get('candidate_input_count', 0)):,} | "
+                    f"Connected {perf.get('connected_result_count', perf.get('selected', 0)):,}\n"
                     f"Fast {perf.get('fast_accept', 0):,} | Reject {perf.get('fast_reject', 0):,} | "
                     f"Slow {perf.get('slow_path', 0):,} | 局部拟合 {perf.get('local_plane_fits', 0):,}")
         except Exception as e:
