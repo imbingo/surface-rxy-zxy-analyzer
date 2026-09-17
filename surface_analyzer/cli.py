@@ -39,13 +39,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--y-unit", default="mm", choices=("mm", "um", "µm", "nm"))
     parser.add_argument("--z-unit", default="mm", choices=("mm", "um", "µm", "nm"))
     parser.add_argument("--filter", dest="filter_mode", default="off",
-                        choices=("off", "mad", "local_median", "sigma_clip"))
+                        choices=("off", "mad", "local_median", "sigma_clip", "gaussian_lowpass"))
     parser.add_argument("--neighbor-k", type=int, default=12)
     parser.add_argument("--threshold-um", type=float, default=5.0)
     parser.add_argument("--sigma-k", type=float, default=3.0)
     parser.add_argument("--sigma-iterations", type=int, default=5)
     parser.add_argument("--sigma-residual-order", default="order1",
                         choices=("order1", "order2", "order3", "follow_detrend"))
+    parser.add_argument("--gaussian-sigma-mm", type=float, default=0.05)
     parser.add_argument("--max-points", type=int, default=100_000)
     parser.add_argument("--transform", action="append", default=[],
                         choices=("CW90", "CCW90", "ROT180", "SWAP", "FLIPX", "FLIPY", "ORIGIN(0,0)"))
@@ -69,6 +70,7 @@ def _run_headless(args: argparse.Namespace) -> int:
         sigma_k=args.sigma_k,
         sigma_iterations=args.sigma_iterations,
         sigma_residual_order=args.sigma_residual_order,
+        gaussian_sigma_mm=args.gaussian_sigma_mm,
     )
     try:
         result = analyze_file(

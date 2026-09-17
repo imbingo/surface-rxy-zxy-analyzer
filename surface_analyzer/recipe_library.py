@@ -20,8 +20,8 @@ def validate_recipe(data):
         schema = int(data.get('schema_version', 1) or 1)
     except (ValueError, TypeError, OverflowError):
         raise ValueError('Recipe schema_version 必须是有效整数') from None
-    if not 1 <= schema <= 8:
-        raise ValueError(f'不支持 Recipe schema {schema}；当前支持 1–8')
+    if not 1 <= schema <= 9:
+        raise ValueError(f'不支持 Recipe schema {schema}；当前支持 1–9')
     for key in ('column_mapping', 'units', 'filter', 'input', 'display', 'roi',
                 'manual_deletion', 'large_file', 'gap', 'library_metadata'):
         if key in data and not isinstance(data[key], dict):

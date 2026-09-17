@@ -18,6 +18,7 @@ FILTER_MODES = {
     "mad": 1,
     "local_median": 2,
     "sigma_clip": 3,
+    "gaussian_lowpass": 4,
 }
 UNIT_SCALES = {"mm": 1.0, "um": 1e-3, "µm": 1e-3, "nm": 1e-6}
 
@@ -36,6 +37,7 @@ class AnalysisOptions:
     sigma_k: float = 3.0
     sigma_iterations: int = 5
     sigma_residual_order: str = "order1"
+    gaussian_sigma_mm: float = 0.05
 
 
 @dataclass
@@ -139,6 +141,11 @@ def analyze_xyz(
         raise ValueError("滤波后有效点少于 3，无法拟合平面")
 
     fx, fy, fz = xb[keep], yb[keep], zb[keep]
+    spatial_summary = None
+    if mode_key == "gaussian_lowpass":
+        fz, spatial_summary = AnalysisMixin.spatial_gaussian_filter(
+            fx, fy, fz, sigma_mm=float(options.gaussian_sigma_mm),
+            return_summary=True)
     metrics = AnalysisMixin.compute_plane_metrics(fx, fy, fz)
     clean_metrics = {key: float(value) for key, value in metrics.items() if key != "coeffs"}
     warnings: list[str] = []
@@ -164,6 +171,8 @@ def analyze_xyz(
             "sigma_iterations": int(options.sigma_iterations),
             "sigma_residual_order": str(options.sigma_residual_order),
             "sigma_summary": sigma_summary,
+            "gaussian_sigma_mm": float(options.gaussian_sigma_mm),
+            "spatial_summary": spatial_summary,
         },
         metrics=clean_metrics,
         warnings=warnings,

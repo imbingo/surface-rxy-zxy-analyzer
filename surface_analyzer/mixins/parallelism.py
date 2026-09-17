@@ -40,6 +40,9 @@ class ParallelismMixin:
             QMessageBox.warning(self, "暂无数据", "请先在主页面导入并处理数据。")
             return None
         tx, ty, tz = self.get_final_transformed_data(self.df_raw)
+        analysis_z = getattr(self, '_analysis_z_full', None)
+        if analysis_z is not None and len(analysis_z) == len(tz):
+            tz = np.asarray(analysis_z, dtype=float)
         fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
         if len(fz) < 3:
             QMessageBox.warning(self, "点数不足", "参与拟合点少于 3 个，无法写入平行度分析。")

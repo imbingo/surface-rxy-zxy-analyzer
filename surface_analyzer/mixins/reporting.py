@@ -116,6 +116,13 @@ class ReportingMixin:
             if sigma.get('fallback_reason'):
                 sigma_line += f" | 降阶原因: {sigma['fallback_reason']}"
             lines.append(sigma_line)
+        spatial = info.get('spatial_gaussian') or {}
+        if spatial:
+            lines.append(
+                f"空间高斯低通: σ={float(spatial.get('sigma_mm', 0.0)):.4g} mm | "
+                f"作用半径={float(spatial.get('support_radius_mm', 0.0)):.4g} mm | "
+                f"{spatial.get('method', '--')} | 不补孔 | "
+                f"Z变化RMS={float(spatial.get('rms_change_um', 0.0)):.3f} µm")
         return lines
 
     def export_report_image(self):
@@ -137,6 +144,10 @@ class ReportingMixin:
         try:
             self._ensure_all_high_order_models()
             tx, ty, tz = self.get_final_transformed_data(self.df_raw)
+            raw_tz = tz
+            analysis_z = getattr(self, '_analysis_z_full', None)
+            if analysis_z is not None and len(analysis_z) == len(tz):
+                tz = np.asarray(analysis_z, dtype=float)
             fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
             metrics = self.compute_plane_metrics(fx, fy, fz)
             pipeline_text = " -> ".join(self.transform_pipeline) if self.transform_pipeline else "原始状态"
@@ -146,6 +157,8 @@ class ReportingMixin:
             elif self.cb_filter.currentIndex() == 3:
                 filter_text += (f" (残差基准={self.cb_sigma_residual.currentText()}, "
                                 f"σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})")
+            elif self.cb_filter.currentIndex() == 4:
+                filter_text += f" (空间σ={self.spin_gaussian_sigma.value():.4g} mm, 不补孔)"
             fig = self._render_report_figure(
                 self.current_source_name, tx, ty, tz, self.active_idx, metrics,
                 self.n_filtered, pipeline_text, filter_text, self.import_info,
@@ -153,7 +166,7 @@ class ReportingMixin:
                 render_config={'xy_mode': self.canvas.xy_mode.currentData(),
                                'xy_raster_max_side': 1200},
                 roi_info=self._roi_report_info(
-                    tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data(),
+                    tx, ty, raw_tz, matrix_rc=self._matrix_rc_for_current_data(),
                     topology_domain_mask=self.manual_mask),
                 overview_idx=np.flatnonzero(self.manual_mask),
                 roi_mask_all=(getattr(self, '_effective_roi_mask_cache', None)
@@ -175,6 +188,10 @@ class ReportingMixin:
         try:
             self._ensure_all_high_order_models()
             tx, ty, tz = self.get_final_transformed_data(self.df_raw)
+            raw_tz = tz
+            analysis_z = getattr(self, '_analysis_z_full', None)
+            if analysis_z is not None and len(analysis_z) == len(tz):
+                tz = np.asarray(analysis_z, dtype=float)
             fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
 
             df_out = pd.DataFrame({
@@ -182,6 +199,10 @@ class ReportingMixin:
                 'Y_mm': fy,
                 'Z_um': fz * 1000.0,   # 内部 mm -> 导出 µm 必须乘 1000
             })
+            if self.cb_filter.currentIndex() == 4:
+                df_out['Z_raw_um'] = raw_tz[self.active_idx] * 1000.0
+                df_out['Gaussian_removed_um'] = (
+                    raw_tz[self.active_idx] - fz) * 1000.0
             if self.current_coeffs is not None:
                 c = self.current_coeffs
                 df_out['Resid_um'] = (fz - (c[0] * fx + c[1] * fy + c[2])) * 1000.0
@@ -196,8 +217,10 @@ class ReportingMixin:
             elif self.cb_filter.currentIndex() == 3:
                 filter_text += (f" (残差基准={self.cb_sigma_residual.currentText()}, "
                                 f"σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})")
+            elif self.cb_filter.currentIndex() == 4:
+                filter_text += f" (空间σ={self.spin_gaussian_sigma.value():.4g} mm, 不补孔)"
             roi_info = self._roi_report_info(
-                tx, ty, tz, matrix_rc=self._matrix_rc_for_current_data(),
+                tx, ty, raw_tz, matrix_rc=self._matrix_rc_for_current_data(),
                 topology_domain_mask=self.manual_mask)
             quality = self._current_metric_quality()
             meta = [
@@ -228,6 +251,15 @@ class ReportingMixin:
                 ])
                 if sigma_summary.get('fallback_reason'):
                     meta.append(f"# Sigma fallback reason: {sigma_summary['fallback_reason']}")
+            spatial_summary = getattr(self, 'last_spatial_filter_summary', None)
+            if spatial_summary:
+                meta.extend([
+                    f"# Spatial Gaussian sigma mm: {spatial_summary['sigma_mm']}",
+                    f"# Spatial Gaussian support radius mm: {spatial_summary['support_radius_mm']}",
+                    f"# Spatial Gaussian method: {spatial_summary['method']}",
+                    "# Spatial Gaussian hole filling: disabled",
+                    f"# Spatial Gaussian removed RMS um: {spatial_summary['rms_change_um']}",
+                ])
             display_mode = str(getattr(self, 'display_surface_mode', 'raw'))
             if display_mode != 'raw':
                 try:
@@ -281,6 +313,8 @@ class ReportingMixin:
         elif mode == 3:
             filter_text += (f" (残差基准={self.cb_sigma_residual.currentText()}, "
                             f"σ={self.spin_sigma.value()}, 迭代上限={self.spin_sigma_iter.value()})")
+        elif mode == 4:
+            filter_text += f" (空间σ={self.spin_gaussian_sigma.value():.4g} mm, 不补孔)"
         pipeline = list(self.transform_pipeline)
         return {
             'x_col': self.cb_x_col.currentText(),
@@ -300,6 +334,7 @@ class ReportingMixin:
             'sigma_k': self.spin_sigma.value(),
             'sigma_iters': self.spin_sigma_iter.value(),
             'sigma_residual_order': str(self.cb_sigma_residual.currentData() or 'order1'),
+            'gaussian_sigma_mm': float(self.spin_gaussian_sigma.value()),
             'detrend_order': self._current_detrend_order(),
             'filter_text': filter_text,
             'display_surface_mode': getattr(self, 'display_surface_mode', 'raw'),
@@ -530,6 +565,7 @@ class ReportingMixin:
                         roi_mask = np.ones(n_total, dtype=bool)
                         roi_idx = np.arange(n_total)
                     bx, by, bz = x[roi_idx], y[roi_idx], z[roi_idx]
+                    roi_z = z
                     filter_result = self.filter_keep_mask(
                         bx, by, bz, params['mode'],
                         k=params['k'], threshold_mm=params['threshold_mm'],
@@ -548,9 +584,23 @@ class ReportingMixin:
                     n_filtered = int(len(roi_idx) - keep.sum())
                     active_idx = roi_idx[keep]
                     fx, fy, fz = x[active_idx], y[active_idx], z[active_idx]
+                    if params['mode'] == 4:
+                        active_matrix_rc = None
+                        if matrix_rc is not None:
+                            active_matrix_rc = (
+                                np.asarray(matrix_rc[0])[active_idx],
+                                np.asarray(matrix_rc[1])[active_idx])
+                        fz, spatial_summary = self.spatial_gaussian_filter(
+                            fx, fy, fz,
+                            sigma_mm=params.get('gaussian_sigma_mm', 0.05),
+                            matrix_rc=active_matrix_rc,
+                            cancel_event=cancel_event, return_summary=True)
+                        z = z.copy()
+                        z[active_idx] = fz
+                        import_info_snap['spatial_gaussian'] = spatial_summary
                     metrics = self.compute_plane_metrics(fx, fy, fz)
                     roi_info = self._roi_report_info(
-                        x, y, z, params.get('roi_enabled', False), file_roi_shapes, matrix_rc)
+                        x, y, roi_z, params.get('roi_enabled', False), file_roi_shapes, matrix_rc)
                     fig = self._render_report_figure(
                         name, x, y, z, active_idx, metrics, n_filtered,
                         params['pipeline_text'], params['filter_text'],

@@ -87,7 +87,7 @@ class RecipeMixin:
         """导出当前界面参数，不包含测量数据本身。"""
         return {
             'recipe_type': 'SurfaceRxyZxyAnalyzerRecipe',
-            'schema_version': 8,
+            'schema_version': 9,
             'adjustment_config': self.adjustment_panel.fixture(),
             'app_version': self.APP_VERSION,
             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -98,7 +98,7 @@ class RecipeMixin:
             },
             'units': {'x_unit': self.cb_x_unit.currentText(), 'y_unit': self.cb_y_unit.currentText(), 'z_unit': self.cb_z_unit.currentText()},
             'transform_pipeline': list(self.transform_pipeline),
-            'filter': {'mode_index': int(self.cb_filter.currentIndex()), 'mode_text': self.cb_filter.currentText(), 'neighbor_k': int(self.spin_k.value()), 'threshold_um': float(self.spin_thresh.value()), 'sigma_k': float(self.spin_sigma.value()), 'sigma_iters': int(self.spin_sigma_iter.value()), 'sigma_residual_order': str(self.cb_sigma_residual.currentData() or 'order1')},
+            'filter': {'mode_index': int(self.cb_filter.currentIndex()), 'mode_text': self.cb_filter.currentText(), 'neighbor_k': int(self.spin_k.value()), 'threshold_um': float(self.spin_thresh.value()), 'sigma_k': float(self.spin_sigma.value()), 'sigma_iters': int(self.spin_sigma_iter.value()), 'sigma_residual_order': str(self.cb_sigma_residual.currentData() or 'order1'), 'gaussian_sigma_mm': float(self.spin_gaussian_sigma.value())},
             'input': {
                 'layout_mode': str(getattr(self, 'input_layout_mode', 'point_table')),
                 'search_start_row': int(getattr(self, 'import_search_start_row', 0)),
@@ -193,9 +193,9 @@ class RecipeMixin:
             schema_version = int(recipe.get('schema_version', 1) or 1)
         except (TypeError, ValueError, OverflowError):
             schema_version = 1
-        if schema_version > 8:
+        if schema_version > 9:
             raise ValueError(
-                f"该 Recipe schema {schema_version} 高于当前支持的 schema 8，"
+                f"该 Recipe schema {schema_version} 高于当前支持的 schema 9，"
                 "为避免覆盖未知字段，已停止加载。")
         from ..adjustment_panel import validate_fixture, default_fixture
         from ..rendering.settings import validate_display
@@ -327,6 +327,8 @@ class RecipeMixin:
         self.spin_thresh.setValue(float(flt.get('threshold_um', self.spin_thresh.value())))
         self.spin_sigma.setValue(float(flt.get('sigma_k', self.spin_sigma.value())))
         self.spin_sigma_iter.setValue(int(flt.get('sigma_iters', self.spin_sigma_iter.value())))
+        self.spin_gaussian_sigma.setValue(float(
+            flt.get('gaussian_sigma_mm', self.spin_gaussian_sigma.value())))
         sigma_model = str(flt.get('sigma_residual_order', 'order1') or 'order1')
         sigma_index = self.cb_sigma_residual.findData(sigma_model)
         self.cb_sigma_residual.setCurrentIndex(max(0, sigma_index))

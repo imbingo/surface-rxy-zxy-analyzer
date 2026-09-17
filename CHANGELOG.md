@@ -1,5 +1,14 @@
 # Changelog
 
+## V4.7.3 — Mask-aware spatial Gaussian low-pass
+
+- Added a physical-scale spatial Gaussian low-pass mode for regular matrices and irregular XYZ point clouds.
+- Preserved point count and source holes; the filter never creates replacement points inside missing regions.
+- Added normalized valid-mask convolution for matrix data and radius-limited Gaussian neighborhoods for point clouds.
+- Displayed filtered Z in 3D/XZ/YZ views and retained raw Z plus removed high-frequency residuals in CSV exports.
+- Added Recipe, batch, CLI, API and report traceability for Gaussian sigma, support radius and RMS change.
+- Kept the existing MAD, local median and iterative sigma-clipping modes compatible and unchanged.
+
 ## V4.7.2 — Unified import hard cap and Smart topology domain fix
 
 - Unified the analysis import hard cap across all supported readers.

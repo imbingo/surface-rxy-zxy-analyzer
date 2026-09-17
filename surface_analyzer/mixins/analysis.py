@@ -1,6 +1,7 @@
 """AnalysisMixin extracted from the V3.9.3 application."""
 
 import numpy as np
+from scipy.ndimage import gaussian_filter
 from scipy.spatial import cKDTree
 
 from ..polynomial import TERM_POWERS, fit_polynomial_surface, evaluate_polynomial_surface
@@ -9,6 +10,108 @@ from ..workers import TaskCancelled
 
 
 class AnalysisMixin:
+    @staticmethod
+    def spatial_gaussian_filter(x, y, z, sigma_mm=0.05, matrix_rc=None,
+                                truncate=3.0, max_neighbors=128,
+                                cancel_event=None, return_summary=False):
+        """Mask-aware areal Gaussian low-pass without creating or filling points.
+
+        Regular matrix data uses normalized convolution over valid cells.  Other
+        point clouds use a radius-limited Gaussian over nearby measured points.
+        In both cases the original XY locations and point count are preserved.
+        """
+        x, y, z = (np.asarray(v, dtype=float).reshape(-1) for v in (x, y, z))
+        if not (len(x) == len(y) == len(z)) or len(z) < 1:
+            raise ValueError("空间高斯滤波需要长度一致的XYZ数据。")
+        sigma_mm = float(sigma_mm)
+        if not np.isfinite(sigma_mm) or sigma_mm <= 0:
+            raise ValueError("空间高斯滤波σ必须大于0 mm。")
+        finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+        if not np.all(finite):
+            raise ValueError("空间高斯滤波输入必须为有限有效点。")
+        if cancel_event is not None and cancel_event.is_set():
+            raise TaskCancelled()
+
+        method = 'point_cloud_radius'
+        output = z.copy()
+        support_radius = float(truncate) * sigma_mm
+        used_matrix = False
+        if matrix_rc is not None:
+            rows = np.asarray(matrix_rc[0]).reshape(-1)
+            cols = np.asarray(matrix_rc[1]).reshape(-1)
+            if len(rows) == len(z) and len(cols) == len(z):
+                rows = rows.astype(np.int64, copy=False)
+                cols = cols.astype(np.int64, copy=False)
+                r0, c0 = int(rows.min()), int(cols.min())
+                rr, cc = rows - r0, cols - c0
+                shape = (int(rr.max()) + 1, int(cc.max()) + 1)
+                # Avoid allocating an unexpectedly sparse giant logical matrix.
+                if shape[0] * shape[1] <= max(5_000_000, 6 * len(z)):
+                    def axis_pitch(values):
+                        unique = np.unique(values)
+                        diffs = np.diff(unique)
+                        diffs = diffs[diffs > 1e-12]
+                        return float(np.median(diffs)) if len(diffs) else np.nan
+
+                    pitch_x, pitch_y = axis_pitch(x), axis_pitch(y)
+                    if np.isfinite(pitch_x) and np.isfinite(pitch_y):
+                        values = np.zeros(shape, dtype=float)
+                        weights = np.zeros(shape, dtype=float)
+                        values[rr, cc] = z
+                        weights[rr, cc] = 1.0
+                        sigma_px = (sigma_mm / pitch_y, sigma_mm / pitch_x)
+                        numerator = gaussian_filter(
+                            values, sigma=sigma_px, mode='constant', cval=0.0,
+                            truncate=float(truncate))
+                        denominator = gaussian_filter(
+                            weights, sigma=sigma_px, mode='constant', cval=0.0,
+                            truncate=float(truncate))
+                        valid_weight = denominator[rr, cc] > 1e-12
+                        output[valid_weight] = (
+                            numerator[rr[valid_weight], cc[valid_weight]] /
+                            denominator[rr[valid_weight], cc[valid_weight]])
+                        method = 'masked_matrix_gaussian'
+                        used_matrix = True
+
+        if not used_matrix:
+            tree = cKDTree(np.column_stack([x, y]))
+            k = max(2, min(int(max_neighbors), len(z)))
+            max_values = 2_000_000
+            batch_size = max(500, min(len(z), max_values // k))
+            for start in range(0, len(z), batch_size):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise TaskCancelled()
+                end = min(start + batch_size, len(z))
+                distances, indices = tree.query(
+                    np.column_stack([x[start:end], y[start:end]]),
+                    k=k, distance_upper_bound=support_radius)
+                if k == 1:
+                    distances = distances[:, None]
+                    indices = indices[:, None]
+                valid_neighbor = np.isfinite(distances) & (indices < len(z))
+                safe_indices = np.where(valid_neighbor, indices, 0)
+                weights = np.exp(-0.5 * (distances / sigma_mm) ** 2)
+                weights[~valid_neighbor] = 0.0
+                weight_sum = weights.sum(axis=1)
+                usable = weight_sum > 1e-12
+                smoothed = (weights * z[safe_indices]).sum(axis=1)
+                output_block = output[start:end]
+                output_block[usable] = smoothed[usable] / weight_sum[usable]
+                output[start:end] = output_block
+
+        summary = {
+            'enabled': True,
+            'method': method,
+            'sigma_mm': sigma_mm,
+            'support_radius_mm': support_radius,
+            'input_points': int(len(z)),
+            'output_points': int(len(output)),
+            'hole_filling': False,
+            'max_neighbors': (None if used_matrix else int(max_neighbors)),
+            'rms_change_um': float(np.sqrt(np.mean((output - z) ** 2)) * 1000.0),
+        }
+        return (output, summary) if return_summary else output
+
     @staticmethod
     def mad_filter(resids, k=3.5):
         """全局 MAD 鲁棒滤波：|r - median| <= k * 1.4826 * MAD"""

@@ -159,7 +159,7 @@ class V460QuotedCsvAndSearchStartTests(unittest.TestCase):
             self.window.apply_recipe(matrix_recipe, remap_current_data=False)
         self.assertEqual(self.window.import_search_start_row, 23)
         saved = self.window._current_recipe_dict()
-        self.assertEqual(saved["schema_version"], 8)
+        self.assertEqual(saved["schema_version"], 9)
         self.assertEqual(saved["input"]["search_start_row"], 23)
         self.assertNotIn("data_start_row", saved["input"])
         self.assertNotIn("matrix_start_row", saved["large_file"])

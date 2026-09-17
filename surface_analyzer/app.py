@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.7.2."""
+"""Qt application shell for Surface Analyzer V4.7.3."""
 
 import sys
 import os
@@ -104,7 +104,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.n_filtered = 0               # 最近一次滤波剔除点数
         self.last_metrics = None          # 最近一次分析指标（导出元数据用）
         self.last_sigma_summary = None
+        self.last_spatial_filter_summary = None
+        self._analysis_z_full = None
         self._sigma_async_result = None
+        self._spatial_async_result = None
         self._pending_sigma_reanalysis = False
         self.display_surface_mode = 'raw' # raw / residual_1 / residual_2 / residual_3
         self.display_detrended = False    # 兼容旧Recipe；任意残差显示模式下为 True
@@ -1025,7 +1028,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         fl.addWidget(QLabel("模式:"), 0, 0)
         self.cb_filter = NoWheelComboBox()
         self.cb_filter.addItems(["关闭", "MAD 全局鲁棒滤波", "局部中位数滤波 (邻域比较)",
-                                 "迭代σ裁剪 (残差±Nσ重拟合)"])
+                                 "迭代σ裁剪 (残差±Nσ重拟合)",
+                                 "空间高斯低通 (孔洞保持)"])
         self.cb_filter.setToolTip(
             "MAD全局: 对拟合残差做鲁棒3.5σ判定，适合零散毛刺。\n"
             "局部中位数: 每个点与其 k 个最近邻的残差中位数比较，偏离超过阈值判为异常。\n"
@@ -1034,7 +1038,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             "  单个离群点不会误杀周围正常点；成簇/边缘大离群点由全局兜底拦截。\n"
             "迭代σ裁剪: 反复用最佳拟合平面残差的标准差σ裁掉 |残差-均值|>Nσ 的点并重拟合，\n"
             "  直到残差std收敛或无新增剔除(单调裁剪，只剔不回收)。\n"
-            "  适合“基本是平面+少量毛刺”的工件；面有真实弧度时会削减PV，弧形面请优先用局部中位数。")
+            "  适合“基本是平面+少量毛刺”的工件；面有真实弧度时会削减PV，弧形面请优先用局部中位数。\n"
+            "空间高斯低通: 在XY物理空间内平滑Z高频变化，保持原点数和孔洞，不生成补点；会直接改变量测Z。")
         fl.addWidget(self.cb_filter, 0, 1, 1, 3)
         self.lbl_k = QLabel("邻居数 k:")
         fl.addWidget(self.lbl_k, 1, 0)
@@ -1075,15 +1080,29 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             "高阶模型仅用于识别异常点。三阶模型自由度更高，可能将部分缓慢变化解释为真实趋势；"
             "建议仅在已知存在三阶低频形貌时使用。")
         fl.addWidget(self.cb_sigma_residual, 3, 1, 1, 3)
+        self.lbl_gaussian_sigma = QLabel("空间σ (mm):")
+        self.lbl_gaussian_sigma.setToolTip(
+            "高斯低通的物理空间标准差。有效作用半径约为3σ；数值越大，曲面越平滑，空间分辨率越低。")
+        fl.addWidget(self.lbl_gaussian_sigma, 4, 0)
+        self.spin_gaussian_sigma = NoWheelDoubleSpinBox()
+        self.spin_gaussian_sigma.setDecimals(4)
+        self.spin_gaussian_sigma.setRange(0.0001, 1000.0)
+        self.spin_gaussian_sigma.setValue(0.0500)
+        self.spin_gaussian_sigma.setSingleStep(0.0100)
+        self.spin_gaussian_sigma.setSuffix(" mm")
+        self.spin_gaussian_sigma.setToolTip(
+            "建议从采样间距的1~2倍开始。滤波不会填孔；规则矩阵使用有效掩码归一化，点云使用3σ半径邻域。")
+        fl.addWidget(self.spin_gaussian_sigma, 4, 1, 1, 3)
         self.lbl_filter_info = QLabel("滤波剔除: 0 点 | 手动删除: 0 点")
         self.lbl_filter_info.setObjectName("mutedNote")
-        fl.addWidget(self.lbl_filter_info, 4, 0, 1, 4)
+        fl.addWidget(self.lbl_filter_info, 5, 0, 1, 4)
         self.cb_filter.currentIndexChanged.connect(self._on_filter_mode_changed)
         self.spin_k.valueChanged.connect(self._on_filter_param_changed)
         self.spin_thresh.valueChanged.connect(self._on_filter_param_changed)
         self.spin_sigma.valueChanged.connect(self._on_filter_param_changed)
         self.spin_sigma_iter.valueChanged.connect(self._on_filter_param_changed)
         self.cb_sigma_residual.currentIndexChanged.connect(self._on_filter_param_changed)
+        self.spin_gaussian_sigma.valueChanged.connect(self._on_filter_param_changed)
         self._sync_filter_enabled()
         ll.addWidget(flt_group)
 
@@ -1767,9 +1786,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.pose_origin_tile.style().polish(self.pose_origin_tile)
 
     def _on_filter_param_changed(self):
-        # 局部中位数(2) / 迭代σ裁剪(3) 模式下参数变化才需要重算
-        if self.cb_filter.currentIndex() in (2, 3):
+        # 局部中位数、迭代σ裁剪和空间高斯模式下参数变化需要重算。
+        if self.cb_filter.currentIndex() in (2, 3, 4):
             self._sigma_async_result = None
+            self._spatial_async_result = None
             self.update_analysis()
 
     def _sync_filter_enabled(self):
@@ -1777,11 +1797,14 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         m = self.cb_filter.currentIndex()
         local_on = (m == 2)
         sigma_on = (m == 3)
+        gaussian_on = (m == 4)
         for w in (self.lbl_k, self.spin_k, self.lbl_thresh, self.spin_thresh):
             w.setEnabled(local_on)
         for w in (self.lbl_sigma, self.spin_sigma, self.lbl_sigma_iter, self.spin_sigma_iter,
                   self.lbl_sigma_model, self.cb_sigma_residual):
             w.setEnabled(sigma_on)
+        for w in (self.lbl_gaussian_sigma, self.spin_gaussian_sigma):
+            w.setEnabled(gaussian_on)
 
     def _current_detrend_order(self):
         mode = str(getattr(self, 'display_surface_mode', 'raw'))
@@ -1794,6 +1817,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
     def _on_filter_mode_changed(self):
         self._sigma_async_result = None
+        self._spatial_async_result = None
         self._sync_filter_enabled()
         self.update_analysis()
 
@@ -1866,7 +1890,11 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
     def _update_surface_display_metrics(self):
         mode = getattr(self, 'display_surface_mode', 'raw')
         if mode == 'raw':
-            self.lbl_surface_residual_metrics.setText("原始高度显示")
+            if self.cb_filter.currentIndex() == 4:
+                self.lbl_surface_residual_metrics.setText(
+                    f"空间高斯后高度 | σ={self.spin_gaussian_sigma.value():.4g} mm")
+            else:
+                self.lbl_surface_residual_metrics.setText("原始高度显示")
             return
         try:
             order = int(mode.rsplit('_', 1)[1])
@@ -1900,6 +1928,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 fitted = evaluate_polynomial_surface(model, tx, ty)
                 plot_z = (tz - fitted) * 1000.0
                 return plot_z, f"{order}阶去除后残差 (µm)", f"{order}阶残差"
+        if self.cb_filter.currentIndex() == 4:
+            return tz, "高斯低通后 Z (mm)", "高斯后Z"
         return tz, "Z (mm)", "Z"
 
     def update_analysis(self):
@@ -2029,6 +2059,67 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 self.active_idx = idx[keep]
                 self.n_filtered = int(len(idx) - keep.sum())
 
+            fx, fy = tx[self.active_idx], ty[self.active_idx]
+            fz = tz[self.active_idx]
+            self.last_spatial_filter_summary = None
+            self.import_info.pop('spatial_gaussian', None)
+            analysis_tz = tz
+            if mode == 4:
+                gaussian_sigma_value = float(self.spin_gaussian_sigma.value())
+                active_matrix_rc = None
+                if matrix_rc is not None:
+                    active_matrix_rc = (
+                        np.asarray(matrix_rc[0])[self.active_idx],
+                        np.asarray(matrix_rc[1])[self.active_idx])
+                spatial_key = (
+                    int(self._df_version), len(self.active_idx),
+                    int(self.active_idx[0]), int(self.active_idx[-1]),
+                    int(self.active_idx.sum()),
+                    hash(np.asarray(self.active_idx, dtype=np.int64).tobytes()),
+                    tuple(self.transform_pipeline),
+                    gaussian_sigma_value)
+                cached_spatial = self._spatial_async_result
+                if (self.isVisible() and len(self.active_idx) > 250_000 and
+                        (cached_spatial is None or cached_spatial[0] != spatial_key)):
+                    self.last_metrics = None
+                    self._clear_result_labels()
+                    if self._task_thread is not None:
+                        self._show_status("正在等待后台执行空间高斯低通。")
+                        return
+
+                    def gaussian_work(progress, cancel_event):
+                        progress(5, "正在后台构建空间高斯邻域")
+                        result = self.spatial_gaussian_filter(
+                            fx, fy, fz,
+                            sigma_mm=gaussian_sigma_value,
+                            matrix_rc=active_matrix_rc,
+                            cancel_event=cancel_event, return_summary=True)
+                        progress(100, "空间高斯低通完成")
+                        return spatial_key, result
+
+                    def gaussian_accept(payload):
+                        key, result = payload
+                        self._spatial_async_result = (key, result)
+                        self.update_analysis()
+
+                    self._run_background_task(
+                        "空间高斯低通", gaussian_work, gaussian_accept,
+                        on_error=lambda message: self._show_status(
+                            f"空间高斯低通失败：{message}", 12000))
+                    return
+                if cached_spatial is not None and cached_spatial[0] == spatial_key:
+                    fz, spatial_summary = cached_spatial[1]
+                else:
+                    fz, spatial_summary = self.spatial_gaussian_filter(
+                        fx, fy, fz,
+                        sigma_mm=gaussian_sigma_value,
+                        matrix_rc=active_matrix_rc, return_summary=True)
+                analysis_tz = tz.copy()
+                analysis_tz[self.active_idx] = fz
+                self.last_spatial_filter_summary = spatial_summary
+                self.import_info['spatial_gaussian'] = dict(spatial_summary)
+            self._analysis_z_full = analysis_tz
+
             info_parts = [f"滤波剔除: {self.n_filtered} 点", f"手动删除: {manual_deleted} 点"]
             if self._roi_is_active():
                 info_parts.append(f"ROI保留: {self.last_roi_keep_count} 点")
@@ -2037,13 +2128,16 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 info_parts.append(
                     f"σ残差: {sigma_summary['actual_order']}阶 | 实际迭代: "
                     f"{sigma_summary['actual_iterations']}")
+            if self.last_spatial_filter_summary is not None:
+                info_parts.append(
+                    f"高斯σ={self.last_spatial_filter_summary['sigma_mm']:.4g} mm | "
+                    f"Z变化RMS={self.last_spatial_filter_summary['rms_change_um']:.3f} µm")
             self.lbl_filter_info.setText(" | ".join(info_parts))
             if sigma_summary and sigma_summary.get('fallback_reason'):
                 self._show_status(
                     f"σ残差模型已从请求的{sigma_summary['requested_order']}阶降为"
                     f"{sigma_summary['actual_order']}阶：{sigma_summary['fallback_reason']}", 15000)
 
-            fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
             self.import_info['final_effective_rows'] = int(len(self.active_idx))
             self.import_info['analysis_rows'] = int(len(self.df_raw))
 
@@ -2102,7 +2196,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             analysis_seconds = time.perf_counter() - analysis_started
             plot_started = time.perf_counter()
             self._import_ui_stage(99, '正在准备四视图与显示数据')
-            self.draw_plots(tx, ty, tz, roi_mask_all=roi_mask_all)
+            self.draw_plots(tx, ty, analysis_tz, roi_mask_all=roi_mask_all)
             plot_seconds = time.perf_counter() - plot_started
             self.setup_selectors()
             self._refresh_roi_ui(update=False, effective_roi_mask=roi_mask_all)
@@ -2305,6 +2399,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         a3.tick_params(colors='#9aa4ae', labelsize=7)
 
         self.canvas.set_titles(actual_display_mode)
+        if self.cb_filter.currentIndex() == 4 and actual_display_mode == 'raw':
+            self.canvas.title_3d.setText("3D 高斯低通后高度")
+            self.canvas.title_xy.setText("XY 高斯低通后分布")
 
         if len(xy_x) == 0 and len(detail_x) == 0:
             set_xy_equal_aspect(self.canvas.ax_xy)
@@ -2399,6 +2496,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         if self.df_raw is None or self.active_idx is None:
             return
         tx, ty, tz = self.get_final_transformed_data(self.df_raw)
+        analysis_z = getattr(self, '_analysis_z_full', None)
+        if analysis_z is not None and len(analysis_z) == len(tz):
+            tz = analysis_z
         roi_mask_all = None
         if self._roi_is_active():
             roi_mask_all = self._get_effective_roi_mask_cached(

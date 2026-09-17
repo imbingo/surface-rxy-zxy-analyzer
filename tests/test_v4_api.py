@@ -106,8 +106,8 @@ class V4ApiTests(unittest.TestCase):
         window.import_search_start_row = 123
         window.input_layout_mode = "height_matrix"
         recipe = window._current_recipe_dict()
-        self.assertEqual(APP_VERSION, "V4.7.2")
-        self.assertEqual(recipe["schema_version"], 8)
+        self.assertEqual(APP_VERSION, "V4.7.3")
+        self.assertEqual(recipe["schema_version"], 9)
         self.assertEqual(recipe["input"]["search_start_row"], 123)
         self.assertNotIn("data_start_row", recipe["input"])
         self.assertNotIn("matrix_start_row", recipe["large_file"])
@@ -489,7 +489,7 @@ class V4ApiTests(unittest.TestCase):
             recipe = source._current_recipe_dict()
             json.dumps(recipe, ensure_ascii=False)
             expected_mask = source.manual_mask.copy()
-            self.assertEqual(recipe["schema_version"], 8)
+            self.assertEqual(recipe["schema_version"], 9)
             self.assertEqual(len(recipe["manual_deletion"]["operations"]), 3)
             self.assertEqual(len(recipe["manual_deletion"]["source_sha256"]), 64)
             self.assertTrue(all(op["transform_pipeline"] == ["CW90"]

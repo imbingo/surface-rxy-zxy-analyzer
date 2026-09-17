@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.7.2
+# Surface Rxy ZXY Analyzer V4.7.3
 
-面型及 Rxy 分析工具当前版本为 **V4.7.2 — 统一导入分析硬上限 + Smart ROI 拓扑域修复**。本版统一约束所有导入器的分析输入规模，并确保手动删除点和手动 ROI 外点不会进入 Smart ROI 拓扑。详见 [V4.7.2 发布说明](docs/RELEASE_NOTES_V4.7.2.md)。
+面型及 Rxy 分析工具当前版本为 **V4.7.3 — 孔洞感知空间高斯低通**。本版新增以毫米为物理尺度的空间高斯低通，可降低面阵数据的高频 Z 噪声，同时保留采样点和原始孔洞。详见 [V4.7.3 发布说明](docs/RELEASE_NOTES_V4.7.3.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.7.2.py`：V4.7.2 Python 启动入口。
-- `start_surface_analyzer_v4_7_2.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.7.3.py`：V4.7.3 Python 启动入口。
+- `start_surface_analyzer_v4_7_3.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,27 +14,36 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_7_2.bat
+start_surface_analyzer_v4_7_3.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_7_2.bat
+.\start_surface_analyzer_v4_7_3.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_7_2.bat --check
+.\start_surface_analyzer_v4_7_3.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.7.2.py
+python .\面型及Rxy分析工具V4.7.3.py
 python -m surface_analyzer
 ```
+
+## V4.7.3 重点
+
+- 异常点滤波新增“空间高斯低通（孔洞保持）”，参数使用物理空间 σ，单位 mm，有效作用半径约为 3σ。
+- 规则矩阵使用有效掩码归一化二维高斯；不规则 XYZ 点云使用半径受限的空间邻域高斯。
+- 保留原始 XY、点数和孔洞，不在无效区域生成补点；手动删除点和 ROI 外点不参与滤波。
+- 3D、X-Z、Y-Z 和面型视图显示滤波后 Z；CSV 同时导出滤波后 Z、原始 Z 和被移除的高频分量。
+- Recipe schema 9、批量处理、CLI、API、报告和导出元数据均记录滤波尺度与处理摘要。
+- 默认仍为关闭，旧 Recipe 继续保持原有结果。
 
 ## V4.7.2 重点
 

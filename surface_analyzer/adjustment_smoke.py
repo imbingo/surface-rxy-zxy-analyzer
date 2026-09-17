@@ -41,7 +41,7 @@ def run(output=None):
             if 'RecommendedShim_um' not in panel.csv_text():
                 raise RuntimeError('Packaged CSV generation failed')
             recipe = window._current_recipe_dict()
-            if recipe['schema_version'] != 8 or 'support_results' in recipe['adjustment_config']:
+            if recipe['schema_version'] != 9 or 'support_results' in recipe['adjustment_config']:
                 raise RuntimeError('Recipe fixture contract failed')
             window.tabs.setCurrentIndex(2)
             window.parallel_pages.setCurrentIndex(1)
