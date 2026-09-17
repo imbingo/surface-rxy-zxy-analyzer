@@ -757,8 +757,15 @@ class ReportingMixin:
                     min(side,max(1,int(min(height,width/aspect)))))
             r = build_xy_display(ox,oy,oz,(xmin-padx,xmax+padx,ymin-pady,ymax+pady),size,membership)
             ax_xy.imshow(raster_rgba(r,xy_mode),origin='lower',extent=r.extent,interpolation='nearest')
+            # Keep the effective ROI height-coloured in exported reports.  The
+            # overview still shows the surrounding source domain, but only
+            # bins containing excluded points (and no retained points) are
+            # muted.  The previous polarity covered the Smart ROI itself in
+            # grey and made its surface shape impossible to read.
             overlay = np.zeros((*r.count.shape,4))
-            overlay[r.roi_count > 0] = [.42,.45,.50,.72]
+            if membership is not None:
+                excluded_only = (r.count > 0) & (r.roi_count == 0)
+                overlay[excluded_only] = [.42,.45,.50,.88]
             ax_xy.imshow(overlay,origin='lower',extent=r.extent,interpolation='nearest')
             m_xy = ScalarMappable(norm=Normalize(*r.z_limits),cmap='turbo')
         else:
@@ -771,13 +778,18 @@ class ReportingMixin:
                                  edgecolors='none')
         if (not raster_enabled and roi_info.get('enabled') and roi_mask_all is not None
                 and len(roi_mask_all) == len(tx)):
-            roi_overview = xy_indices[np.asarray(roi_mask_all, dtype=bool)[xy_indices]]
-            if len(roi_overview):
-                ax_xy.scatter(tx[roi_overview], ty[roi_overview], c='#80868b',
-                              s=16, alpha=0.72, edgecolors='none')
+            excluded_overview = xy_indices[~np.asarray(roi_mask_all, dtype=bool)[xy_indices]]
+            if len(excluded_overview):
+                ax_xy.scatter(tx[excluded_overview], ty[excluded_overview], c='#80868b',
+                              s=16, alpha=0.82, edgecolors='none')
         xy_title = 'XY 面型图' if raster_enabled else ('XY 原始点图' +
                     ('（显示抽样）' if len(xy_indices) < len(overview_idx) else '（全部点）'))
         ax_xy.set_title(xy_title); ax_xy.set_xlabel("X (mm)"); ax_xy.set_ylabel("Y (mm)")
+        if roi_info.get('enabled') and roi_mask_all is not None:
+            ax_xy.text(.01, .01, '有效 ROI：高度色  |  排除区：灰色',
+                       transform=ax_xy.transAxes, ha='left', va='bottom', fontsize=8,
+                       color='#344054', bbox={'facecolor':'white', 'edgecolor':'#d0d5dd',
+                                              'alpha':.88, 'boxstyle':'round,pad=.25'})
         set_xy_equal_aspect(ax_xy)
         self._draw_roi_overlays(ax_xy, roi_info.get('shapes'), roi_info.get('roi_enabled'), report=True)
         ax_xz.scatter(dx, dz, **sc); ax_xz.set_title(txt); ax_xz.set_xlabel("X (mm)"); ax_xz.set_ylabel(zlab)

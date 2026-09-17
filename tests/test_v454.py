@@ -134,6 +134,28 @@ class V454BatchAndViewportTests(unittest.TestCase):
         self.assertFalse(np.asarray(xy.images[1].get_array())[...,3].any())
         window.close()
 
+    def test_smart_roi_report_greys_excluded_raster_cells_not_retained_surface(self):
+        window = SurfaceAnalyzerPro()
+        frame = self._frame(); x = frame.X.to_numpy(); y = frame.Y.to_numpy(); z = frame.Z.to_numpy()
+        overview = np.arange(len(frame))
+        retained = np.zeros(len(frame), dtype=bool)
+        retained[[5, 6, 9, 10]] = True
+        active = np.flatnonzero(retained)
+        metrics = window.compute_plane_metrics(x[active], y[active], z[active])
+        fig = window._render_report_figure(
+            'smart.csv', x, y, z, active, metrics, 0, '原始状态', '关闭', {},
+            roi_info={'enabled': True, 'summary': 'Smart ROI', 'shapes': [],
+                      'roi_enabled': True},
+            overview_idx=overview, roi_mask_all=retained)
+        xy = next(ax for ax in fig.axes if ax.get_title() == 'XY 面型图')
+        gray_alpha = np.asarray(xy.images[1].get_array())[..., 3]
+        # Excluded-only cells are muted while retained/mixed Smart ROI cells
+        # remain transparent in the overlay so their height colour is visible.
+        self.assertGreater(int(np.count_nonzero(gray_alpha)), 0)
+        self.assertLess(int(np.count_nonzero(gray_alpha)), len(frame))
+        self.assertIn('有效 ROI：高度色', xy.texts[0].get_text())
+        window.close()
+
     def test_cancelled_result_is_delivered_and_finish_shows_partial_counts(self):
         delivered = []
         worker = FunctionWorker(lambda _p, cancel: {'ok': True}, True)

@@ -7,6 +7,7 @@
 - Added normalized valid-mask convolution for matrix data and radius-limited Gaussian neighborhoods for point clouds.
 - Displayed filtered Z in 3D/XZ/YZ views and retained raw Z plus removed high-frequency residuals in CSV exports.
 - Added Recipe, batch, CLI, API and report traceability for Gaussian sigma, support radius and RMS change.
+- Fixed Smart ROI report rendering so retained surface points remain height-coloured and only excluded overview regions are grey.
 - Kept the existing MAD, local median and iterative sigma-clipping modes compatible and unchanged.
 
 ## V4.7.2 — Unified import hard cap and Smart topology domain fix

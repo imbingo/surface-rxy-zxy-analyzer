@@ -240,6 +240,12 @@ class V453InteractionAndBatchTests(unittest.TestCase):
         xy_ax = by_title['XY 原始点图（全部点）']
         self.assertEqual(len(xy_ax.collections[0].get_offsets()), 6)
         self.assertEqual(len(xy_ax.collections[1].get_offsets()), 3)
+        # Reports keep effective/Smart ROI points height-coloured and mute the
+        # excluded overview points.  This guards against the old inverted mask.
+        self.assertTrue(np.array_equal(
+            np.asarray(xy_ax.collections[1].get_offsets())[:, 0],
+            np.array([0.0, 4.0, 5.0])))
+        self.assertIn('有效 ROI：高度色', xy_ax.texts[0].get_text())
         self.assertEqual(len(by_title['X-Z投影'].collections[0].get_offsets()), 4)
         self.assertEqual(len(by_title['Y-Z投影'].collections[0].get_offsets()), 4)
         window.close()
