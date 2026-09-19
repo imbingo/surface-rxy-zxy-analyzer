@@ -45,6 +45,37 @@ class ImportPreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(ImportPreflightError, "Pixel XY"):
                 validate_selected_layout(path, "point_table")
 
+    def test_wide_xyz_uses_semantic_columns_instead_of_matrix_width(self):
+        with tempfile.TemporaryDirectory() as directory:
+            header = ["Record", "Time_s", "X (mm)", "Quality", "Y Coordinate",
+                      "Temperature", "Height (um)", "Signal", "Zone", "Gain"]
+            rows = []
+            for index in range(40):
+                rows.append([index, index * 0.1, index * 0.02, 99,
+                             (index % 8) * 0.03, 23.5, 400 + index * 0.01,
+                             1200, index % 4, 2])
+            text = "Instrument,ArrayScanner\nBatch,ABC-001\n" + ",".join(header) + "\n"
+            text += "\n".join(",".join(map(str, row)) for row in rows)
+            path = self._file(directory, "wide_xyz.csv", text)
+
+            result = sniff_text_file(path)
+            self.assertEqual(result["kind"], "Physical XYZ point table")
+            self.assertEqual(result["xyz_mapping"], {"x": 2, "y": 4, "z": 6})
+            self.assertEqual(result["xyz_valid_ratio"], 1.0)
+            validate_selected_layout(path, "point_table")
+            with self.assertRaisesRegex(ImportPreflightError, "Physical XYZ"):
+                validate_selected_layout(path, "height_matrix")
+
+    def test_wide_commented_xyz_header_is_detected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            header = "# Index,Status,X_mm,Aux1,Y_mm,Aux2,Z_um,Aux3\n"
+            body = "\n".join(
+                f"{i},1,{i * .1},7,{i * .2},8,{500 + i},9" for i in range(20))
+            path = self._file(directory, "commented.dat", header + body)
+            result = sniff_text_file(path)
+            self.assertEqual(result["kind"], "Physical XYZ point table")
+            self.assertEqual(result["xyz_mapping"], {"x": 2, "y": 4, "z": 6})
+
     def test_empty_header_only_and_nonnumeric_fail_fast(self):
         with tempfile.TemporaryDirectory() as directory:
             for name, text in (("empty.csv", ""), ("header.csv", "X,Y,Z\n"),
@@ -158,6 +189,31 @@ class ImportTransactionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+
+    def test_wide_xyz_import_maps_semantic_columns_after_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "wide_measurement.dat"
+            header = ["Record", "Time_s", "X (mm)", "Quality", "Y Coordinate",
+                      "Temperature", "Height (um)", "Signal", "Zone", "Gain"]
+            rows = [
+                [i, i * 0.1, i * 0.02, 99, (i % 8) * 0.03, 23.5,
+                 400 + i * 0.01, 1200, i % 4, 2]
+                for i in range(40)
+            ]
+            text = "Instrument,ArrayScanner\nBatch,ABC-001\n" + ",".join(header) + "\n"
+            text += "\n".join(",".join(map(str, row)) for row in rows)
+            path.write_text(text, encoding="utf-8")
+
+            window = SurfaceAnalyzerPro()
+            self.addCleanup(window.close)
+            window.input_layout_mode = "point_table"
+            frame = window._read_table(path)
+            self.assertEqual(len(frame), 40)
+            self.assertEqual(window.import_info["header_auto_mapping"],
+                             {"x": 2, "y": 4, "z": 6})
+            self.assertEqual(list(frame.columns)[2], "X (mm)")
+            self.assertEqual(list(frame.columns)[4], "Y Coordinate")
+            self.assertEqual(list(frame.columns)[6], "Height (um)")
 
     def test_failed_visible_import_preserves_previous_dataset_and_results(self):
         with tempfile.TemporaryDirectory() as directory:

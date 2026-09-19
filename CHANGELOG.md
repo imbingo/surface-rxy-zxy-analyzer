@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Fixed wide Physical XYZ point tables being mistaken for Z Matrix data when coordinate columns are not the first three columns.
+- Made bounded preflight inspect the actual semantic X/Y/Z header mapping, including unit-bearing and commented headers after vendor metadata.
+
 ## V4.7.3 — Mask-aware spatial Gaussian low-pass
 
 - Added a physical-scale spatial Gaussian low-pass mode for regular matrices and irregular XYZ point clouds.
