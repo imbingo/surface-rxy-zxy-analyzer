@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.7.3
+# Surface Rxy ZXY Analyzer V4.7.4
 
-面型及 Rxy 分析工具当前版本为 **V4.7.3 — 孔洞感知空间高斯低通**。本版新增以毫米为物理尺度的空间高斯低通，可降低面阵数据的高频 Z 噪声，同时保留采样点和原始孔洞。详见 [V4.7.3 发布说明](docs/RELEASE_NOTES_V4.7.3.md)。
+面型及 Rxy 分析工具当前版本为 **V4.7.4 — 宽 XYZ 导入与 3D 视图优化**。本版修复多列 XYZ 点表被误判为 Z Matrix，并扩大主控 3D 绘图区、采用默认 45°工程视角。详见 [V4.7.4 发布说明](docs/RELEASE_NOTES_V4.7.4.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.7.3.py`：V4.7.3 Python 启动入口。
-- `start_surface_analyzer_v4_7_3.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.7.4.py`：V4.7.4 Python 启动入口。
+- `start_surface_analyzer_v4_7_4.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,27 +14,35 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_7_3.bat
+start_surface_analyzer_v4_7_4.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_7_3.bat
+.\start_surface_analyzer_v4_7_4.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_7_3.bat --check
+.\start_surface_analyzer_v4_7_4.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.7.3.py
+python .\面型及Rxy分析工具V4.7.4.py
 python -m surface_analyzer
 ```
+
+## V4.7.4 重点
+
+- 宽 Physical XYZ 点表不再因为列数较多而被误判为 Z Matrix。
+- 预检根据实际表头语义定位任意位置的 X/Y/Z 列，支持单位、中文坐标名、注释表头及设备元数据前缀。
+- 主控 3D 场景扩大至接近 X-Z/Y-Z 投影区的有效显示尺寸。
+- 默认和双击复位视角采用水平 −45°、俯视 30°的工程观察方向。
+- 不改变 Rx、Ry、PV、TTV、RMS、Mean Z 及现有滤波定义。
 
 ## V4.7.3 重点
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## V4.7.4 — Wide XYZ import and 3D view improvements
 
 - Fixed wide Physical XYZ point tables being mistaken for Z Matrix data when coordinate columns are not the first three columns.
 - Made bounded preflight inspect the actual semantic X/Y/Z header mapping, including unit-bearing and commented headers after vendor metadata.
