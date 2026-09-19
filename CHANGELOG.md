@@ -5,6 +5,7 @@
 - Fixed wide Physical XYZ point tables being mistaken for Z Matrix data when coordinate columns are not the first three columns.
 - Made bounded preflight inspect the actual semantic X/Y/Z header mapping, including unit-bearing and commented headers after vendor metadata.
 - Enlarged the main 3D scene to use the plot card more fully and visually match the projection panels.
+- Set the initial and reset 3D camera to a clear 45-degree engineering view.
 
 ## V4.7.3 — Mask-aware spatial Gaussian low-pass
 

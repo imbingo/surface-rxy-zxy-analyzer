@@ -28,7 +28,10 @@ from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSize, pyqtSignal
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
 
-from .plotting import set_surface_box_aspect, set_xy_equal_aspect
+from .plotting import (
+    DEFAULT_3D_AZIMUTH, DEFAULT_3D_ELEVATION,
+    set_surface_box_aspect, set_xy_equal_aspect,
+)
 from .pose_icons import focus_icon
 
 
@@ -177,6 +180,7 @@ class MultiViewCanvas(QWidget):
             fig = Figure(constrained_layout=False)
             ax = fig.add_axes([0.01, 0.01, 0.96, 0.96], projection=projection)
             ax.set_proj_type('ortho')
+            ax.view_init(elev=DEFAULT_3D_ELEVATION, azim=DEFAULT_3D_AZIMUTH)
         else:
             fig = Figure(constrained_layout=True)
             ax = fig.add_subplot(111, projection=projection)
