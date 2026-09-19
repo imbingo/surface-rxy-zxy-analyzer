@@ -6,6 +6,12 @@ import numpy as np
 from matplotlib.ticker import LinearLocator, MaxNLocator
 
 
+# The main 3D view uses a dedicated full-card canvas.  A larger scene zoom is
+# needed because mplot3d otherwise leaves substantially more internal whitespace
+# than the neighbouring 2D projections.  This changes presentation only.
+MAIN_3D_SCENE_ZOOM = 1.40
+
+
 def _finite_extent(values) -> float:
     array = np.asarray(values, dtype=float).ravel()
     finite = array[np.isfinite(array)]

@@ -42,7 +42,7 @@ from .widgets import (
     NoWheelSpinBox, NoWheelDoubleSpinBox, NoWheelComboBox,
     MultiViewCanvas, ParallelismCanvas, GapMatchCanvas,
 )
-from .plotting import set_surface_box_aspect, set_xy_equal_aspect
+from .plotting import MAIN_3D_SCENE_ZOOM, set_surface_box_aspect, set_xy_equal_aspect
 from .polynomial import fit_polynomial_surface, evaluate_polynomial_surface
 from .mixins.analysis import AnalysisMixin
 from .mixins.data_io import DataIOMixin
@@ -2460,7 +2460,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         if len(detail_x) > 0:
             set_surface_box_aspect(
                 self.canvas.ax3d, detail_x, detail_y, detail_z,
-                zoom=1.18, z_tick_count=3, min_z_ratio=0.28)
+                zoom=MAIN_3D_SCENE_ZOOM, z_tick_count=3, min_z_ratio=0.28)
+            # The enlarged scene needs a tighter Z-label offset to keep the
+            # complete unit label inside the card at common 1366/1920 widths.
+            self.canvas.ax3d.zaxis.labelpad = 4
 
         self._draw_temp_selection_overlay(tx, ty, plot_z_all, display_limit)
 
