@@ -99,8 +99,15 @@ class V475RegressionTests(unittest.TestCase):
         window.manual_mask = np.ones(len(window.df_raw), dtype=bool)
         window.active_idx = np.arange(len(window.df_raw))
         window.draw_plots(x.ravel(), y.ravel(), z.ravel())
-        self.assertGreaterEqual(window._last_3d_fitted_zoom, 0.65)
+        self.assertGreaterEqual(window._last_3d_fitted_zoom, 0.55)
         self.assertLessEqual(window._last_3d_fitted_zoom, 1.40)
+        self.assertTrue(window.canvas.ax3d._surface_home_fits)
+        left, right, bottom, top = window.canvas.ax3d._surface_home_safe_bounds
+        x0, x1, y0, y1 = window.canvas.ax3d._surface_home_screen_bounds
+        self.assertGreaterEqual(x0, left)
+        self.assertLessEqual(x1, right)
+        self.assertGreaterEqual(y0, bottom)
+        self.assertLessEqual(y1, top)
 
     def test_xy_xz_yz_hover_uses_source_coordinates_and_original_z(self):
         window = SurfaceAnalyzerPro()

@@ -105,24 +105,57 @@ def fit_surface_box_to_canvas(
     estimate for the current camera and actual canvas dimensions.
     """
     aspect = surface_box_aspect(x, y, z, min_z_ratio=min_z_ratio)
-    ax.set_box_aspect(aspect, zoom=1.0)
     xlim, ylim, zlim = ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()
     corners = np.array([
         (xx, yy, zz)
         for xx in xlim for yy in ylim for zz in zlim
     ], dtype=float)
-    projected = np.column_stack(proj3d.proj_transform(
-        corners[:, 0], corners[:, 1], corners[:, 2], ax.get_proj())[:2])
-    screen = ax.transData.transform(projected)
-    projected_width = max(float(np.ptp(screen[:, 0])), 1.0)
-    projected_height = max(float(np.ptp(screen[:, 1])), 1.0)
-    canvas_width, canvas_height = ax.figure.canvas.get_width_height()
-    usable_width = max(float(canvas_width) - 2.0 * horizontal_padding_px, 1.0)
-    usable_height = max(float(canvas_height) - 2.0 * vertical_padding_px, 1.0)
-    zoom = min(float(max_zoom), usable_width / projected_width,
-               usable_height / projected_height)
-    zoom = max(0.65, float(zoom) * 0.97)
-    ax.set_box_aspect(aspect, zoom=zoom)
+    zoom = float(max_zoom)
+    safe_bounds = None
+    screen = None
+    # Validate the final projected pixels rather than assuming zoom is exactly
+    # linear. This makes the home view deterministic across Matplotlib builds,
+    # DPI settings and landscape card sizes.
+    for _ in range(6):
+        ax.set_box_aspect(aspect, zoom=zoom)
+        projected = np.column_stack(proj3d.proj_transform(
+            corners[:, 0], corners[:, 1], corners[:, 2], ax.get_proj())[:2])
+        screen = ax.transData.transform(projected)
+        canvas_width, canvas_height = ax.figure.canvas.get_width_height()
+        # Axes3D forces its active axes bbox to a centred square even when the
+        # FigureCanvas is a wide landscape card.  3D artists can render across
+        # the full canvas, so fitting against ax.bbox would waste both side
+        # regions and shrink the surface unnecessarily.
+        safe_bounds = (
+            horizontal_padding_px,
+            float(canvas_width) - horizontal_padding_px,
+            vertical_padding_px,
+            float(canvas_height) - vertical_padding_px,
+        )
+        left, right, bottom, top = safe_bounds
+        projected_width = max(float(np.ptp(screen[:, 0])), 1.0)
+        projected_height = max(float(np.ptp(screen[:, 1])), 1.0)
+        usable_width = max(right - left, 1.0)
+        usable_height = max(top - bottom, 1.0)
+        inside = (float(np.min(screen[:, 0])) >= left and
+                  float(np.max(screen[:, 0])) <= right and
+                  float(np.min(screen[:, 1])) >= bottom and
+                  float(np.max(screen[:, 1])) <= top)
+        if inside:
+            break
+        correction = min(usable_width / projected_width,
+                         usable_height / projected_height)
+        zoom = max(0.55, zoom * min(0.96, correction * 0.94))
+    ax._surface_home_screen_bounds = None if screen is None else (
+        float(np.min(screen[:, 0])), float(np.max(screen[:, 0])),
+        float(np.min(screen[:, 1])), float(np.max(screen[:, 1])))
+    ax._surface_home_safe_bounds = safe_bounds
+    ax._surface_home_fits = bool(
+        screen is not None and safe_bounds is not None and
+        float(np.min(screen[:, 0])) >= safe_bounds[0] and
+        float(np.max(screen[:, 0])) <= safe_bounds[1] and
+        float(np.min(screen[:, 1])) >= safe_bounds[2] and
+        float(np.max(screen[:, 1])) <= safe_bounds[3])
     ax.xaxis.set_major_locator(MaxNLocator(nbins=3))
     ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
     ax.zaxis.set_major_locator(LinearLocator(3))
