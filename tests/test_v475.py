@@ -107,7 +107,8 @@ class V475RegressionTests(unittest.TestCase):
                 pixel = axis.transData.transform(point)
                 window._projection_hover_last_motion = 0.0
                 window.on_projection_hover(SimpleNamespace(
-                    inaxes=axis, x=float(pixel[0]), y=float(pixel[1])))
+                    inaxes=axis, x=float(pixel[0]), y=float(pixel[1]),
+                    key='control'))
                 annotation = window._projection_hover[view]['annotation']
                 self.assertTrue(annotation.get_visible())
                 self.assertIn('X: 1 mm', annotation.get_text())
@@ -126,8 +127,24 @@ class V475RegressionTests(unittest.TestCase):
         pixel = axis.transData.transform((0.0, 0.0))
         window._projection_hover_last_motion = 0.0
         window.on_projection_hover(SimpleNamespace(
-            inaxes=axis, x=float(pixel[0] + 20), y=float(pixel[1] + 20)))
+            inaxes=axis, x=float(pixel[0] + 20), y=float(pixel[1] + 20),
+            key='control'))
         self.assertFalse(window._projection_hover['XY']['annotation'].get_visible())
+
+    def test_hover_does_no_point_search_without_control(self):
+        window = SurfaceAnalyzerPro()
+        self.addCleanup(window.close)
+        values = np.array([0.0])
+        window._configure_projection_hover(
+            values, values, values, values, [0], [0], 'Z (mm)')
+        axis = window.canvas.ax_xy
+        axis.figure.canvas.draw()
+        pixel = axis.transData.transform((0.0, 0.0))
+        window._projection_hover_last_motion = 0.0
+        window.on_projection_hover(SimpleNamespace(
+            inaxes=axis, x=float(pixel[0]), y=float(pixel[1]), key=None))
+        self.assertFalse(window._projection_hover['XY']['annotation'].get_visible())
+        self.assertNotIn('XY', window._projection_hover_trees)
 
 
 if __name__ == '__main__':

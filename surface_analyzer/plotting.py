@@ -9,7 +9,9 @@ from matplotlib.ticker import LinearLocator, MaxNLocator
 # The main 3D view uses a dedicated full-card canvas.  A larger scene zoom is
 # needed because mplot3d otherwise leaves substantially more internal whitespace
 # than the neighbouring 2D projections.  This changes presentation only.
-MAIN_3D_SCENE_ZOOM = 1.40
+# Keep the enlarged surface readable without pushing the front corners and
+# axis labels outside mplot3d's clipping area at the symmetric C camera view.
+MAIN_3D_SCENE_ZOOM = 1.22
 DEFAULT_3D_ELEVATION = 30.0
 DEFAULT_3D_AZIMUTH = -135.0
 
@@ -81,6 +83,25 @@ def set_surface_box_aspect(
     if z_tick_count is not None:
         ax.zaxis.set_major_locator(LinearLocator(z_tick_count))
     return aspect
+
+
+def pad_surface_limits(ax, x, y, z, horizontal_fraction=0.055,
+                       vertical_fraction=0.08):
+    """Add stable display-only breathing room around a 3D surface."""
+    for values, setter, fraction in (
+            (x, ax.set_xlim3d, horizontal_fraction),
+            (y, ax.set_ylim3d, horizontal_fraction),
+            (z, ax.set_zlim3d, vertical_fraction)):
+        array = np.asarray(values, dtype=float)
+        finite = array[np.isfinite(array)]
+        if finite.size == 0:
+            continue
+        low, high = float(np.min(finite)), float(np.max(finite))
+        span = high - low
+        if not np.isfinite(span) or span <= 0.0:
+            span = max(abs(low), 1.0) * 1e-6
+        padding = span * float(fraction)
+        setter(low - padding, high + padding)
 
 
 def set_xy_equal_aspect(ax):

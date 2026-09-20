@@ -42,7 +42,10 @@ from .widgets import (
     NoWheelSpinBox, NoWheelDoubleSpinBox, NoWheelComboBox,
     MultiViewCanvas, ParallelismCanvas, GapMatchCanvas,
 )
-from .plotting import MAIN_3D_SCENE_ZOOM, set_surface_box_aspect, set_xy_equal_aspect
+from .plotting import (
+    MAIN_3D_SCENE_ZOOM, pad_surface_limits, set_surface_box_aspect,
+    set_xy_equal_aspect,
+)
 from .polynomial import fit_polynomial_surface, evaluate_polynomial_surface
 from .mixins.analysis import AnalysisMixin
 from .mixins.data_io import DataIOMixin
@@ -498,7 +501,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         ]
         for ax in (self.canvas.ax_xy, self.canvas.ax_xz,
                    self.canvas.ax_yz, self.canvas.ax3d):
-            ax.figure.canvas.setToolTip("滚轮缩放；双击恢复该视图原始大小")
+            tip = "滚轮缩放；双击恢复该视图原始大小"
+            if ax is not self.canvas.ax3d:
+                tip += "；按住 Ctrl 移到数据点可查看 XYZ"
+            ax.figure.canvas.setToolTip(tip)
         right_layout.addWidget(self.canvas, 1)
 
         self.right_stack = QStackedWidget()
@@ -2367,7 +2373,12 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.canvas.ax_yz: 'YZ',
         }
         view = axis_to_view.get(getattr(event, 'inaxes', None))
-        if (view is None or str(getattr(self, 'selection_mode', 'delete')).startswith('roi_')
+        event_key = str(getattr(event, 'key', '') or '').casefold()
+        ctrl_pressed = ('control' in event_key or 'ctrl' in event_key or
+                        bool(QApplication.keyboardModifiers() &
+                             Qt.KeyboardModifier.ControlModifier))
+        if (not ctrl_pressed or view is None
+                or str(getattr(self, 'selection_mode', 'delete')).startswith('roi_')
                 or getattr(self, '_task_thread', None) is not None
                 or event.x is None or event.y is None):
             self._clear_projection_hover(draw=True)
@@ -2582,6 +2593,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.canvas.ax3d.plot_surface(xx, yy, zz, color='#3498db', alpha=0.3, edgecolor='none')
 
         if len(detail_x) > 0:
+            pad_surface_limits(self.canvas.ax3d, detail_x, detail_y, detail_z)
             set_surface_box_aspect(
                 self.canvas.ax3d, detail_x, detail_y, detail_z,
                 zoom=MAIN_3D_SCENE_ZOOM, z_tick_count=3, min_z_ratio=0.28)
