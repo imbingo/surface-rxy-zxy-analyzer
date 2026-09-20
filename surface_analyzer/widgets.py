@@ -178,7 +178,10 @@ class MultiViewCanvas(QWidget):
             # better than constrained_layout, which tends to shrink 3D axes to
             # a small square when Z is much smaller than X/Y.
             fig = Figure(constrained_layout=False)
-            ax = fig.add_axes([0.01, 0.01, 0.96, 0.96], projection=projection)
+            # Use the complete canvas. Data-limit padding in draw_plots keeps
+            # boundary points inside the 3D clip box; shrinking this axes rect
+            # only wastes card area and makes the material harder to inspect.
+            ax = fig.add_axes([0.0, 0.0, 1.0, 1.0], projection=projection)
             ax.set_proj_type('ortho')
             ax.view_init(elev=DEFAULT_3D_ELEVATION, azim=DEFAULT_3D_AZIMUTH)
         else:

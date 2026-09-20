@@ -9,9 +9,9 @@ from matplotlib.ticker import LinearLocator, MaxNLocator
 # The main 3D view uses a dedicated full-card canvas.  A larger scene zoom is
 # needed because mplot3d otherwise leaves substantially more internal whitespace
 # than the neighbouring 2D projections.  This changes presentation only.
-# Keep the enlarged surface readable without pushing the front corners and
-# axis labels outside mplot3d's clipping area at the symmetric C camera view.
-MAIN_3D_SCENE_ZOOM = 1.22
+# The 3D axis now receives explicit data-limit padding, so the scene can use
+# the full-card scale without clipping the material's boundary markers.
+MAIN_3D_SCENE_ZOOM = 1.40
 DEFAULT_3D_ELEVATION = 30.0
 DEFAULT_3D_AZIMUTH = -135.0
 

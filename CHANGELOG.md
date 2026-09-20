@@ -7,7 +7,7 @@
 - Changed the initial and reset 3D camera to the symmetric X/Y 45-degree view with positive Z upward.
 - Added source-point XYZ hover readouts to XY, XZ and YZ projections, including displayed and original Z when processing changes the shown surface.
 - Made coordinate inspection opt-in with Ctrl to avoid continuous nearest-point searches during normal mouse movement.
-- Added 3D surface padding and reduced internal scene zoom so material corners remain visible at the default camera angle.
+- Added 3D surface padding and expanded the 3D axes to the full card so material corners remain visible without shrinking the surface.
 
 ## V4.7.4 — Wide XYZ import and 3D view improvements
 
