@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 from matplotlib.ticker import LinearLocator, MaxNLocator
+from mpl_toolkits.mplot3d import proj3d
 
 
 # The main 3D view uses a dedicated full-card canvas.  A larger scene zoom is
@@ -83,6 +84,51 @@ def set_surface_box_aspect(
     if z_tick_count is not None:
         ax.zaxis.set_major_locator(LinearLocator(z_tick_count))
     return aspect
+
+
+def fit_surface_box_to_canvas(
+    ax,
+    x,
+    y,
+    z,
+    *,
+    max_zoom: float = MAIN_3D_SCENE_ZOOM,
+    min_z_ratio: float = 0.28,
+    horizontal_padding_px: float = 54.0,
+    vertical_padding_px: float = 42.0,
+):
+    """Maximize a 3D scene while keeping its projected box inside the canvas.
+
+    mplot3d's ``zoom`` is independent of the FigureCanvas aspect ratio.  A
+    fixed value can therefore clip a square surface in a short landscape card.
+    Projecting the eight padded limit corners at zoom 1 gives a stable scale
+    estimate for the current camera and actual canvas dimensions.
+    """
+    aspect = surface_box_aspect(x, y, z, min_z_ratio=min_z_ratio)
+    ax.set_box_aspect(aspect, zoom=1.0)
+    xlim, ylim, zlim = ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()
+    corners = np.array([
+        (xx, yy, zz)
+        for xx in xlim for yy in ylim for zz in zlim
+    ], dtype=float)
+    projected = np.column_stack(proj3d.proj_transform(
+        corners[:, 0], corners[:, 1], corners[:, 2], ax.get_proj())[:2])
+    screen = ax.transData.transform(projected)
+    projected_width = max(float(np.ptp(screen[:, 0])), 1.0)
+    projected_height = max(float(np.ptp(screen[:, 1])), 1.0)
+    canvas_width, canvas_height = ax.figure.canvas.get_width_height()
+    usable_width = max(float(canvas_width) - 2.0 * horizontal_padding_px, 1.0)
+    usable_height = max(float(canvas_height) - 2.0 * vertical_padding_px, 1.0)
+    zoom = min(float(max_zoom), usable_width / projected_width,
+               usable_height / projected_height)
+    zoom = max(0.65, float(zoom) * 0.97)
+    ax.set_box_aspect(aspect, zoom=zoom)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=3))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
+    ax.zaxis.set_major_locator(LinearLocator(3))
+    ax.tick_params(axis='both', labelsize=8, pad=2)
+    ax.zaxis.labelpad = 4
+    return aspect, zoom
 
 
 def pad_surface_limits(ax, x, y, z, horizontal_fraction=0.055,

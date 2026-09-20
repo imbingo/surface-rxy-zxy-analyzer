@@ -43,8 +43,8 @@ from .widgets import (
     MultiViewCanvas, ParallelismCanvas, GapMatchCanvas,
 )
 from .plotting import (
-    MAIN_3D_SCENE_ZOOM, pad_surface_limits, set_surface_box_aspect,
-    set_xy_equal_aspect,
+    MAIN_3D_SCENE_ZOOM, fit_surface_box_to_canvas, pad_surface_limits,
+    set_surface_box_aspect, set_xy_equal_aspect,
 )
 from .polynomial import fit_polynomial_surface, evaluate_polynomial_surface
 from .mixins.analysis import AnalysisMixin
@@ -489,6 +489,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         ]
         self._plot_3d_reset_cid = self.canvas.ax3d.figure.canvas.mpl_connect(
             'button_press_event', self.on_3d_canvas_click)
+        self._plot_3d_resize_cid = self.canvas.ax3d.figure.canvas.mpl_connect(
+            'resize_event', self.on_3d_canvas_resize)
         self._plot_scroll_cids = [
             ax.figure.canvas.mpl_connect('scroll_event', self.on_canvas_scroll)
             for ax in (self.canvas.ax_xy, self.canvas.ax_xz,
@@ -2594,9 +2596,12 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
         if len(detail_x) > 0:
             pad_surface_limits(self.canvas.ax3d, detail_x, detail_y, detail_z)
-            set_surface_box_aspect(
+            _, fitted_zoom = fit_surface_box_to_canvas(
                 self.canvas.ax3d, detail_x, detail_y, detail_z,
-                zoom=MAIN_3D_SCENE_ZOOM, z_tick_count=3, min_z_ratio=0.28)
+                max_zoom=MAIN_3D_SCENE_ZOOM, min_z_ratio=0.18)
+            self._last_3d_fit_data = (
+                np.asarray(detail_x), np.asarray(detail_y), np.asarray(detail_z))
+            self._last_3d_fitted_zoom = fitted_zoom
             # The enlarged scene needs a tighter Z-label offset to keep the
             # complete unit label inside the card at common 1366/1920 widths.
             self.canvas.ax3d.zaxis.labelpad = 4
@@ -2633,6 +2638,21 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.canvas.ax3d.set_xlim3d(xlim); self.canvas.ax3d.set_ylim3d(ylim)
         self.canvas.ax3d.set_zlim3d(zlim)
         self.canvas.ax3d.view_init(elev=elev, azim=azim)
+
+    def on_3d_canvas_resize(self, event):
+        """Refit the default 3D scene when its card or focus mode is resized."""
+        data = getattr(self, '_last_3d_fit_data', None)
+        if data is None or getattr(self, '_fitting_3d_canvas', False):
+            return
+        self._fitting_3d_canvas = True
+        try:
+            _, fitted_zoom = fit_surface_box_to_canvas(
+                self.canvas.ax3d, *data, max_zoom=MAIN_3D_SCENE_ZOOM,
+                min_z_ratio=0.18)
+            self._last_3d_fitted_zoom = fitted_zoom
+            event.canvas.draw_idle()
+        finally:
+            self._fitting_3d_canvas = False
 
     def update_plots_only(self, preserve_view=True):
         if self.df_raw is None or self.active_idx is None:

@@ -8,6 +8,7 @@
 - Added source-point XYZ hover readouts to XY, XZ and YZ projections, including displayed and original Z when processing changes the shown surface.
 - Made coordinate inspection opt-in with Ctrl to avoid continuous nearest-point searches during normal mouse movement.
 - Added 3D surface padding and expanded the 3D axes to the full card so material corners remain visible without shrinking the surface.
+- Replaced the fixed 3D zoom with camera- and canvas-aware fitting so the largest complete surface is shown after resize or focus changes.
 
 ## V4.7.4 — Wide XYZ import and 3D view improvements
 

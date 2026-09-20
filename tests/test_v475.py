@@ -88,6 +88,20 @@ class V475RegressionTests(unittest.TestCase):
         self.assertEqual(window.canvas.ax3d.elev, DEFAULT_3D_ELEVATION)
         self.assertEqual(window.canvas.ax3d.azim, DEFAULT_3D_AZIMUTH)
 
+    def test_3d_scene_zoom_is_fitted_to_landscape_canvas(self):
+        window = SurfaceAnalyzerPro()
+        self.addCleanup(window.close)
+        axis = np.linspace(-15.0, 15.0, 45)
+        x, y = np.meshgrid(axis, axis)
+        z = 0.45 + 1e-4 * x - 2e-4 * y
+        window.df_raw = __import__('pandas').DataFrame({
+            'X': x.ravel(), 'Y': y.ravel(), 'Z': z.ravel()})
+        window.manual_mask = np.ones(len(window.df_raw), dtype=bool)
+        window.active_idx = np.arange(len(window.df_raw))
+        window.draw_plots(x.ravel(), y.ravel(), z.ravel())
+        self.assertGreaterEqual(window._last_3d_fitted_zoom, 0.65)
+        self.assertLessEqual(window._last_3d_fitted_zoom, 1.40)
+
     def test_xy_xz_yz_hover_uses_source_coordinates_and_original_z(self):
         window = SurfaceAnalyzerPro()
         self.addCleanup(window.close)
