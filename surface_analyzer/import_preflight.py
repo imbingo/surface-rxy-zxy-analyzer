@@ -239,6 +239,14 @@ def sniff_text_file(path, cancel_event=None, policy=IMPORT_GUARD_POLICY):
 
 def validate_selected_layout(path, layout_mode, cancel_event=None,
                              policy=IMPORT_GUARD_POLICY):
+    """Run bounded safety checks without overriding the user's parser choice.
+
+    Layout sniffing remains useful diagnostic metadata, but generic XYZ,
+    Pixel-XY and matrix inputs can be ambiguous (especially wide point tables).
+    The selected parser is therefore authoritative and owns its structural
+    validation.  Explicit vendor signatures are protected by the import entry
+    point before this function is called.
+    """
     result = sniff_text_file(path, cancel_event, policy)
     selected = {
         "point_table": "Physical XYZ",
@@ -246,30 +254,7 @@ def validate_selected_layout(path, layout_mode, cancel_event=None,
         "height_matrix": "Z Matrix",
         "zygo_xyz": "Zygo XYZ",
     }.get(layout_mode, str(layout_mode))
-    kind = result["kind"]
-    if (layout_mode == 'point_table' and kind == 'Z Matrix' and
-            result.get('header_width') == result.get('common_width')):
-        kind = 'Physical XYZ point table'
-        result['kind'] = kind
-    if (layout_mode == 'height_matrix' and kind == 'unknown' and
-            int(result.get('common_width', 0)) >= policy.minimum_matrix_width and
-            float(result.get('width_stability', 0.0)) >= 0.70):
-        kind = 'Z Matrix'
-        result['kind'] = kind
-    if (layout_mode == 'height_matrix' and int(result.get('rows_checked', 0)) >= 8 and
-            float(result.get('width_stability', 1.0)) < 0.50):
-        raise ImportPreflightError(
-            selected, None, "矩阵列数持续严重不一致；" + result["detail"])
-    incompatible = {
-        "point_table": {"Z Matrix", "Pixel XY point table"},
-        "pixel_xy": {"Z Matrix", "Physical XYZ point table"},
-        "height_matrix": {"Physical XYZ point table", "Pixel XY point table"},
-    }
-    clearly_incompatible = kind in incompatible.get(layout_mode, set())
-    if layout_mode in ('height_matrix', 'pixel_xy') and kind == 'Physical XYZ point table':
-        clearly_incompatible = bool(result.get('xyz_header'))
-    if clearly_incompatible:
-        raise ImportPreflightError(selected, kind, result["detail"])
-    if kind == "unknown" and int(result.get('numeric_line_count', 0)) == 0:
+    if int(result.get('numeric_line_count', 0)) == 0:
         raise ImportPreflightError(selected, None, result["detail"])
+    result['selection_authoritative'] = True
     return result

@@ -1,5 +1,12 @@
 # Changelog
 
+## V4.7.5 — User-authoritative import and projection coordinate hover
+
+- Made the selected generic XYZ, Pixel XY or Z Matrix parser authoritative instead of blocking imports with ambiguous format inference.
+- Kept explicit Zygo and Precitec signatures protected by their vendor-aware import paths.
+- Changed the initial and reset 3D camera to the symmetric X/Y 45-degree view with positive Z upward.
+- Added source-point XYZ hover readouts to XY, XZ and YZ projections, including displayed and original Z when processing changes the shown surface.
+
 ## V4.7.4 — Wide XYZ import and 3D view improvements
 
 - Fixed wide Physical XYZ point tables being mistaken for Z Matrix data when coordinate columns are not the first three columns.

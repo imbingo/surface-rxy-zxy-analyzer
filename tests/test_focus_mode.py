@@ -21,7 +21,7 @@ class FocusModeTests(unittest.TestCase):
     def test_default_3d_camera_uses_engineering_45_degree_azimuth(self):
         canvas = self.window.canvas
         self.assertEqual(canvas.ax3d.elev, 30.0)
-        self.assertEqual(canvas.ax3d.azim, -45.0)
+        self.assertEqual(canvas.ax3d.azim, -135.0)
 
     def test_each_title_button_focuses_only_its_card(self):
         from PyQt6.QtCore import Qt

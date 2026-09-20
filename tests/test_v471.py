@@ -22,28 +22,28 @@ class ImportPreflightTests(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def test_physical_xyz_rejected_as_matrix(self):
+    def test_physical_xyz_sniff_does_not_override_matrix_selection(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self._file(directory, "points.csv", "X,Y,Z\n" +
                               "\n".join(f"{i},{i+1},{i/10}" for i in range(30)))
-            with self.assertRaisesRegex(ImportPreflightError, "Physical XYZ"):
-                validate_selected_layout(path, "height_matrix")
+            result = validate_selected_layout(path, "height_matrix")
+            self.assertTrue(result["selection_authoritative"])
 
-    def test_matrix_rejected_as_physical_xyz(self):
+    def test_matrix_sniff_does_not_override_physical_xyz_selection(self):
         with tempfile.TemporaryDirectory() as directory:
             text = "\n".join(",".join(str(row * 20 + col) for col in range(20))
                              for row in range(20))
             path = self._file(directory, "matrix.csv", text)
-            with self.assertRaisesRegex(ImportPreflightError, "Z Matrix"):
-                validate_selected_layout(path, "point_table")
+            result = validate_selected_layout(path, "point_table")
+            self.assertTrue(result["selection_authoritative"])
 
-    def test_pixel_xy_rejected_as_physical_xyz(self):
+    def test_pixel_xy_sniff_does_not_override_physical_xyz_selection(self):
         with tempfile.TemporaryDirectory() as directory:
             rows = ["PixelX,PixelY,Z"]
             rows += [f"{x},{y},{x+y}" for y in range(8) for x in range(8)]
             path = self._file(directory, "pixels.csv", "\n".join(rows))
-            with self.assertRaisesRegex(ImportPreflightError, "Pixel XY"):
-                validate_selected_layout(path, "point_table")
+            result = validate_selected_layout(path, "point_table")
+            self.assertTrue(result["selection_authoritative"])
 
     def test_wide_xyz_uses_semantic_columns_instead_of_matrix_width(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -63,8 +63,8 @@ class ImportPreflightTests(unittest.TestCase):
             self.assertEqual(result["xyz_mapping"], {"x": 2, "y": 4, "z": 6})
             self.assertEqual(result["xyz_valid_ratio"], 1.0)
             validate_selected_layout(path, "point_table")
-            with self.assertRaisesRegex(ImportPreflightError, "Physical XYZ"):
-                validate_selected_layout(path, "height_matrix")
+            self.assertTrue(validate_selected_layout(
+                path, "height_matrix")["selection_authoritative"])
 
     def test_wide_commented_xyz_header_is_detected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -84,13 +84,13 @@ class ImportPreflightTests(unittest.TestCase):
                 with self.subTest(name=name), self.assertRaises(ImportPreflightError):
                     validate_selected_layout(path, "point_table")
 
-    def test_unstable_columns_fail_fast(self):
+    def test_unstable_columns_are_left_to_selected_parser(self):
         with tempfile.TemporaryDirectory() as directory:
             rows = [",".join(str(i) for i in range(width))
                     for width in ([3, 8, 4, 11, 5, 9] * 20)]
             path = self._file(directory, "unstable.csv", "\n".join(rows))
-            with self.assertRaises(ImportPreflightError):
-                validate_selected_layout(path, "height_matrix")
+            result = validate_selected_layout(path, "height_matrix")
+            self.assertTrue(result["selection_authoritative"])
 
     def test_large_wrong_file_is_bounded_and_cancellable(self):
         with tempfile.TemporaryDirectory() as directory:

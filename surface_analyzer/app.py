@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.7.4."""
+"""Qt application shell for Surface Analyzer V4.7.5."""
 
 import sys
 import os
@@ -115,6 +115,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._high_order_inputs = None
         self._analysis_revision = 0
         self._lod_cache = LODCache()
+        self._projection_hover = {}
+        self._projection_hover_trees = {}
+        self._projection_hover_last_motion = 0.0
         self.last_import_note = ""        # 最近一次导入说明
         self.last_displayed_points = 0     # 最近一次绘图实际显示点数
         self.large_file_mode = 'standard'  # 大文件策略模式：fast / standard / precise / custom
@@ -487,6 +490,11 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             ax.figure.canvas.mpl_connect('scroll_event', self.on_canvas_scroll)
             for ax in (self.canvas.ax_xy, self.canvas.ax_xz,
                        self.canvas.ax_yz, self.canvas.ax3d)
+        ]
+        self._plot_hover_cids = [
+            ax.figure.canvas.mpl_connect(
+                'motion_notify_event', self.on_projection_hover)
+            for ax in (self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz)
         ]
         for ax in (self.canvas.ax_xy, self.canvas.ax_xz,
                    self.canvas.ax_yz, self.canvas.ax3d):
@@ -2298,6 +2306,117 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             ),
         }
 
+    def _clear_projection_hover(self, draw=False):
+        changed = False
+        for entry in getattr(self, '_projection_hover', {}).values():
+            annotation = entry.get('annotation')
+            if annotation is not None and annotation.get_visible():
+                annotation.set_visible(False)
+                changed = True
+        if draw and changed:
+            for canvas in {entry['axis'].figure.canvas
+                           for entry in self._projection_hover.values()}:
+                canvas.draw_idle()
+
+    def _configure_projection_hover(self, tx, ty, raw_z, display_z,
+                                    xy_indices, detail_indices, z_label):
+        """Bind visible projection points to their source rows for hover."""
+        self._projection_hover = {}
+        self._projection_hover_trees = {}
+        definitions = {
+            'XY': (self.canvas.ax_xy, np.asarray(xy_indices, dtype=int), tx, ty),
+            'XZ': (self.canvas.ax_xz, np.asarray(detail_indices, dtype=int), tx, display_z),
+            'YZ': (self.canvas.ax_yz, np.asarray(detail_indices, dtype=int), ty, display_z),
+        }
+        for view, (axis, indices, horizontal, vertical) in definitions.items():
+            if len(indices):
+                finite = (np.isfinite(horizontal[indices]) &
+                          np.isfinite(vertical[indices]) &
+                          np.isfinite(tx[indices]) & np.isfinite(ty[indices]) &
+                          np.isfinite(display_z[indices]) & np.isfinite(raw_z[indices]))
+                indices = indices[finite]
+            annotation = axis.annotate(
+                '', xy=(0.0, 0.0), xytext=(12, 12), textcoords='offset points',
+                ha='left', va='bottom', fontsize=8, color='#1f2933', zorder=30,
+                bbox=dict(boxstyle='round,pad=0.42', fc='white', ec='#2f6db0',
+                          lw=0.9, alpha=0.96),
+                arrowprops=dict(arrowstyle='-', color='#2f6db0', lw=0.8))
+            annotation.set_visible(False)
+            self._projection_hover[view] = {
+                'axis': axis, 'indices': indices,
+                'horizontal': np.asarray(horizontal),
+                'vertical': np.asarray(vertical),
+                'tx': np.asarray(tx), 'ty': np.asarray(ty),
+                'raw_z': np.asarray(raw_z), 'display_z': np.asarray(display_z),
+                'z_label': str(z_label), 'annotation': annotation,
+            }
+
+    @staticmethod
+    def _hover_transform_signature(axis):
+        return (tuple(map(float, axis.get_xlim())), tuple(map(float, axis.get_ylim())),
+                float(axis.figure.dpi), tuple(map(float, axis.bbox.bounds)))
+
+    def on_projection_hover(self, event):
+        """Show source XYZ for the nearest actually rendered projection point."""
+        now = time.perf_counter()
+        if now - getattr(self, '_projection_hover_last_motion', 0.0) < 0.03:
+            return
+        self._projection_hover_last_motion = now
+        axis_to_view = {
+            self.canvas.ax_xy: 'XY', self.canvas.ax_xz: 'XZ',
+            self.canvas.ax_yz: 'YZ',
+        }
+        view = axis_to_view.get(getattr(event, 'inaxes', None))
+        if (view is None or str(getattr(self, 'selection_mode', 'delete')).startswith('roi_')
+                or getattr(self, '_task_thread', None) is not None
+                or event.x is None or event.y is None):
+            self._clear_projection_hover(draw=True)
+            return
+        entry = getattr(self, '_projection_hover', {}).get(view)
+        if entry is None or len(entry['indices']) == 0:
+            self._clear_projection_hover(draw=True)
+            return
+        axis = entry['axis']
+        signature = self._hover_transform_signature(axis)
+        cached = self._projection_hover_trees.get(view)
+        if cached is None or cached[0] != signature:
+            idx = entry['indices']
+            screen_xy = axis.transData.transform(np.column_stack([
+                entry['horizontal'][idx], entry['vertical'][idx]]))
+            tree = cKDTree(screen_xy)
+            cached = (signature, tree)
+            self._projection_hover_trees[view] = cached
+        distance, local_index = cached[1].query(
+            [float(event.x), float(event.y)], distance_upper_bound=8.0)
+        if not np.isfinite(distance) or int(local_index) >= len(entry['indices']):
+            self._clear_projection_hover(draw=True)
+            return
+        source_index = int(entry['indices'][int(local_index)])
+        current_z = float(entry['display_z'][source_index])
+        raw_z = float(entry['raw_z'][source_index])
+        if view == 'XY':
+            anchor = (float(entry['tx'][source_index]), float(entry['ty'][source_index]))
+        elif view == 'XZ':
+            anchor = (float(entry['tx'][source_index]), current_z)
+        else:
+            anchor = (float(entry['ty'][source_index]), current_z)
+        lines = [
+            f"X: {entry['tx'][source_index]:.6g} mm",
+            f"Y: {entry['ty'][source_index]:.6g} mm",
+        ]
+        if entry['z_label'] == 'Z (mm)' and np.isclose(current_z, raw_z, rtol=0.0, atol=1e-15):
+            lines.append(f"Z: {current_z:.9g} mm")
+        else:
+            current_unit = 'µm' if 'µm' in entry['z_label'] else 'mm'
+            lines.append(f"当前显示 Z: {current_z:.9g} {current_unit}")
+            lines.append(f"原始 Z: {raw_z:.9g} mm")
+        self._clear_projection_hover(draw=False)
+        annotation = entry['annotation']
+        annotation.xy = anchor
+        annotation.set_text('\n'.join(lines))
+        annotation.set_visible(True)
+        axis.figure.canvas.draw_idle()
+
     def draw_plots(self, tx, ty, tz, roi_mask_all=None, preserve_view=False):
         self.xy_raster.reset()
         self._xy_raster_status = None
@@ -2364,6 +2483,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._update_import_status_label()
 
         plot_z_all, z_axis_label, z_short_label = self._get_plot_z(tx, ty, tz)
+        raw_z = tz
+        if self.df_raw is not None and len(self.df_raw) == len(tz):
+            raw_z = self.get_final_transformed_data(self.df_raw)[2]
         self._selection_plot_data = (tx, ty, plot_z_all)
         actual_display_mode = (getattr(self, 'display_surface_mode', 'raw')
                                if z_short_label != 'Z' else 'raw')
@@ -2404,6 +2526,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.canvas.title_xy.setText("XY 高斯低通后分布")
 
         if len(xy_x) == 0 and len(detail_x) == 0:
+            self._configure_projection_hover(
+                tx, ty, raw_z, plot_z_all, [], [], z_axis_label)
             set_xy_equal_aspect(self.canvas.ax_xy)
             self._draw_roi_overlays(self.canvas.ax_xy)
             self.canvas.ax_xy.relim()
@@ -2466,6 +2590,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.canvas.ax3d.zaxis.labelpad = 4
 
         self._draw_temp_selection_overlay(tx, ty, plot_z_all, display_limit)
+        self._configure_projection_hover(
+            tx, ty, raw_z, plot_z_all, xy_source_idx, detail_plot_idx,
+            z_axis_label)
 
         if view_state is None:
             self._remember_plot_home_state()

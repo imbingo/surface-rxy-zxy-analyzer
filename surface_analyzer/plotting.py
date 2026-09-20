@@ -11,7 +11,7 @@ from matplotlib.ticker import LinearLocator, MaxNLocator
 # than the neighbouring 2D projections.  This changes presentation only.
 MAIN_3D_SCENE_ZOOM = 1.40
 DEFAULT_3D_ELEVATION = 30.0
-DEFAULT_3D_AZIMUTH = -45.0
+DEFAULT_3D_AZIMUTH = -135.0
 
 
 def _finite_extent(values) -> float:
