@@ -48,6 +48,38 @@ class V475RegressionTests(unittest.TestCase):
                     self.assertIn('Y', window.df_raw.columns)
                     self.assertIn('Z', window.df_raw.columns)
 
+    def test_xy_first_two_and_thickness_seventh_ignore_intensity_columns(self):
+        headers = [
+            'X', 'Y', 'Intensity A', 'Intensity B', 'Quality', 'Signal',
+            'Thickness', 'Peak', 'SNR', 'Exposure', 'Status', 'Temperature',
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'wide_xy_thickness.csv'
+            rows = [','.join(headers)]
+            for index in range(30):
+                values = [
+                    index * .1, (index % 6) * .2, 100 + index,
+                    200 + index, 99, 500 + index, 400 + index * .01,
+                    700 + index, 50 + index, 10, 1, 23.5,
+                ]
+                rows.append(','.join(map(str, values)))
+            path.write_text('\n'.join(rows), encoding='utf-8')
+
+            window = SurfaceAnalyzerPro()
+            self.addCleanup(window.close)
+            window.input_layout_mode = 'point_table'
+            self.assertTrue(window.load_path(path))
+            self.assertEqual(
+                (window.cb_x_col.currentText(), window.cb_y_col.currentText(),
+                 window.cb_z_col.currentText()),
+                ('X', 'Y', 'Thickness'))
+            np.testing.assert_allclose(
+                window.df_raw[['X', 'Y', 'Z']].iloc[0].to_numpy(),
+                [0.0, 0.0, 0.4])
+            np.testing.assert_allclose(
+                window.df_raw[['X', 'Y', 'Z']].iloc[-1].to_numpy(),
+                [2.9, 1.0, 0.40029])
+
     def test_default_and_home_camera_use_confirmed_c_view(self):
         window = SurfaceAnalyzerPro()
         self.addCleanup(window.close)
