@@ -1,5 +1,13 @@
 # Changelog
 
+## V4.7.6 — CSV fast-parser column-integrity hotfix
+
+- Fixed silent one-column shifts in CSV and delimited point-table imports.
+- Added source-token to DataFrame column-integrity validation for the pandas fast parser.
+- Added automatic fallback to the robust line parser when fast-path field alignment is ambiguous.
+- Hardened trailing-delimiter handling without changing Excel import behavior.
+- Added regression tests for wide 12-column XYZ point tables, quoted rows, mixed trailing delimiters and parser equivalence.
+
 ## V4.7.5 — User-authoritative import and projection coordinate hover
 
 - Made the selected generic XYZ, Pixel XY or Z Matrix parser authoritative instead of blocking imports with ambiguous format inference.

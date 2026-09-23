@@ -339,6 +339,10 @@ class DataIOMixin:
             'detected_camera_res_um': None,
             'missing_points': 0,
             'bad_rows': 0,
+            'parser_engine': '',
+            'parser_integrity_checked': False,
+            'parser_integrity_status': 'not_applicable',
+            'parser_fast_fallback': '',
             'z_source_field': '',
             'z_source_unit': '',
             'header_source_line': None,
@@ -416,11 +420,26 @@ class DataIOMixin:
             text += f" | Topology: {info['topology_method']}"
         if info.get('topology_fallback_reason'):
             text += f" | Fallback: {info['topology_fallback_reason']}"
+        parser_engine = str(info.get('parser_engine') or '')
+        parser_detail = ''
+        if parser_engine:
+            parser_labels = {
+                'pandas_c': 'pandas C fast path',
+                'robust_line_parser': 'robust line parser',
+                'robust_fallback': 'robust fallback',
+            }
+            parser_detail = f"\n解析器: {parser_labels.get(parser_engine, parser_engine)}"
+            integrity = str(info.get('parser_integrity_status') or 'not_applicable')
+            integrity_labels = {'passed': '通过', 'fallback': '已回退',
+                                'not_applicable': '不适用'}
+            parser_detail += f" | 字段完整性: {integrity_labels.get(integrity, integrity)}"
+            if info.get('parser_fast_fallback'):
+                parser_detail += f"\nFast path 回退原因: {info['parser_fast_fallback']}"
         if hasattr(self, 'lbl_import_status'):
             self.lbl_import_status.setText(summary_text)
             self.lbl_import_status.setToolTip(
                 scale_detail + f'\n{layout_text} | {strategy} | 文件 {file_size_mb:.1f} MB'
-                + issue_text + header_text + '\n' + text)
+                + issue_text + header_text + parser_detail + '\n' + text)
         if hasattr(self, 'btn_bigfile_settings'):
             self.btn_bigfile_settings.setText(
                 f"导入策略 · {self._input_layout_short_label(layout_mode)}")
@@ -2672,7 +2691,67 @@ class DataIOMixin:
             raise ValueError("未读取到与已识别数据区匹配的点记录。")
         self.import_info['bad_rows'] = int(bad_rows)
         self.import_info['parser_engine'] = 'robust_line_parser'
+        self.import_info['parser_integrity_checked'] = False
+        self.import_info['parser_integrity_status'] = 'not_applicable'
         return pd.DataFrame(rows, columns=list(column_names))
+
+    @classmethod
+    def _canonical_point_tokens(cls, line, sep, ncols):
+        """Return one physical row using the point-table canonical-width rules."""
+        tokens = cls._split_text_line(line, sep)
+        expected = int(ncols)
+        # Empty fields beyond the semantic width are record terminators.  Keep
+        # an empty field inside the semantic width because it is real data.
+        while len(tokens) > expected and cls._is_missing_token(tokens[-1]):
+            tokens.pop()
+        if len(tokens) > expected:
+            raise ValueError('field_count_mismatch')
+        if len(tokens) < expected:
+            tokens.extend([''] * (expected - len(tokens)))
+        return [str(token) for token in tokens]
+
+    def _validate_fast_parser_column_integrity(
+            self, path, enc, sep, ncols, column_names, data_line_no, frame,
+            cancel_event=None):
+        """Verify source physical field i is still DataFrame column i."""
+        expected_rows = int(len(frame))
+        if list(frame.columns) != list(column_names) or frame.shape[1] != int(ncols):
+            return False, 'field_count_mismatch'
+        if not isinstance(frame.index, pd.RangeIndex) or not frame.index.equals(
+                pd.RangeIndex(start=0, stop=expected_rows, step=1)):
+            return False, 'column_integrity_mismatch'
+        targets = ({0, expected_rows - 1, expected_rows // 4,
+                    expected_rows // 2, (3 * expected_rows) // 4}
+                   if expected_rows else set())
+        logical_row = 0
+        with open(path, 'r', encoding=enc, errors='ignore') as handle:
+            for line_no, line in enumerate(handle):
+                self._check_cancel(cancel_event)
+                if line_no < int(data_line_no):
+                    continue
+                text = line.strip().lstrip('\ufeff')
+                if not text or text.startswith('#'):
+                    continue
+                try:
+                    tokens = self._canonical_point_tokens(text, sep, ncols)
+                except Exception as exc:
+                    reason = str(exc) if str(exc) else 'field_count_mismatch'
+                    return False, reason
+                if logical_row >= expected_rows:
+                    return False, 'field_count_mismatch'
+                if logical_row in targets:
+                    values = [str(value) for value in frame.iloc[logical_row].tolist()]
+                    aligned = all(
+                        source == parsed or (
+                            self._is_missing_token(source) and
+                            self._is_missing_token(parsed))
+                        for source, parsed in zip(tokens, values))
+                    if not aligned:
+                        return False, 'column_integrity_mismatch'
+                logical_row += 1
+        if logical_row != expected_rows:
+            return False, 'field_count_mismatch'
+        return True, 'passed'
 
     def _read_full_delimited_text(self, path, enc, sep, ncols, column_names,
                                   data_line_no, progress=None, cancel_event=None):
@@ -2709,7 +2788,7 @@ class DataIOMixin:
                 encoding_errors='ignore', header=None, names=list(column_names),
                 skiprows=int(data_line_no), comment='#', skip_blank_lines=True,
                 dtype=str, keep_default_na=False, na_filter=False,
-                on_bad_lines='error', chunksize=100_000)
+                on_bad_lines='error', chunksize=100_000, index_col=False)
             frames = []
             rows_read = 0
             for chunk in chunks:
@@ -2723,8 +2802,16 @@ class DataIOMixin:
                      pd.DataFrame(columns=list(column_names)))
             if frame.shape[1] != int(ncols):
                 raise ValueError('fast parser column count mismatch')
+            integrity_ok, integrity_status = self._validate_fast_parser_column_integrity(
+                path, enc, sep, ncols, column_names, data_line_no, frame,
+                cancel_event)
+            self.import_info['parser_integrity_checked'] = True
+            if not integrity_ok:
+                raise ValueError(integrity_status)
             self.import_info['bad_rows'] = 0
             self.import_info['parser_engine'] = 'pandas_c'
+            self.import_info['parser_integrity_status'] = 'passed'
+            self.import_info['parser_fast_fallback'] = ''
             if progress is not None:
                 progress(78, f"C解析器已读取点表: {len(frame):,} 行")
             perf_event('Parse', time.perf_counter()-started,
@@ -2733,13 +2820,20 @@ class DataIOMixin:
         except TaskCancelled:
             raise
         except Exception as exc:
-            self.import_info['parser_fast_fallback'] = type(exc).__name__
+            reason = str(exc) if str(exc) in {
+                'column_integrity_mismatch', 'field_count_mismatch',
+                'quote_mismatch'} else type(exc).__name__
+            self.import_info['parser_fast_fallback'] = reason
             frame = self._read_full_delimited_text_robust(
                 path, enc, sep, ncols, column_names, data_line_no,
                 progress, cancel_event)
+            self.import_info['parser_engine'] = 'robust_fallback'
+            self.import_info['parser_integrity_checked'] = True
+            self.import_info['parser_integrity_status'] = 'fallback'
+            self.import_info['parser_fast_fallback'] = reason
             perf_event('Parse', time.perf_counter()-started,
                        engine='robust_fallback', rows=len(frame),
-                       reason=type(exc).__name__)
+                       reason=reason)
             return frame
 
     def _enforce_full_text_row_limit(self, frame, path, enc, sep, ncols,
