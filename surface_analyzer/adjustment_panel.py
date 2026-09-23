@@ -19,6 +19,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from .widgets import NoWheelComboBox, NoWheelDoubleSpinBox
 from .adjustment import (Plane, SupportPoint, AdjustmentConfig, calculate_adjustment,
                          rad_to_urad, mm_to_um)
+from .dialog_paths import dialog_initial_path, remember_dialog_path
 
 
 def default_fixture():
@@ -333,8 +334,10 @@ class AdjustmentPanel(QWidget):
 
     def export_csv(self):
         if self.result is None:return
-        path,_=QFileDialog.getSaveFileName(self,'导出装调 CSV','adjustment.csv','CSV (*.csv)')
+        path,_=QFileDialog.getSaveFileName(
+            self,'导出装调 CSV',dialog_initial_path('export','adjustment.csv'),'CSV (*.csv)')
         if not path:return
+        remember_dialog_path('export',path)
         tmp=None
         try:
             with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8-sig',newline='',dir=Path(path).parent,delete=False) as f:

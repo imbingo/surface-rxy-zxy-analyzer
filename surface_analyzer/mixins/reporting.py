@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
+from ..dialog_paths import dialog_initial_path, remember_dialog_path
 from scipy.spatial import cKDTree
 
 from ..plotting import set_surface_box_aspect, set_xy_equal_aspect
@@ -138,9 +139,12 @@ class ReportingMixin:
         src = self.current_source_name if self.current_source_name not in (None, '', '--') else 'report'
         stem = Path(src).stem or 'report'
         default_name = f"Result_{stem}_{datetime.now():%Y%m%d_%H%M%S}.png"
-        path, _ = QFileDialog.getSaveFileName(self, "导出测量报告图", default_name, "PNG 图片 (*.png);;All Files (*)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出测量报告图", dialog_initial_path('export', default_name),
+            "PNG 图片 (*.png);;All Files (*)")
         if not path:
             return
+        remember_dialog_path('export', path)
         try:
             self._ensure_all_high_order_models()
             tx, ty, tz = self.get_final_transformed_data(self.df_raw)
@@ -183,8 +187,11 @@ class ReportingMixin:
             return
         if not self._confirm_estimated_metrics('导出CSV'):
             return
-        path, _ = QFileDialog.getSaveFileName(self, "导出", "Result_Data.csv", "CSV (*.csv)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出", dialog_initial_path('export', "Result_Data.csv"),
+            "CSV (*.csv)")
         if not path: return
+        remember_dialog_path('export', path)
         try:
             self._ensure_all_high_order_models()
             tx, ty, tz = self.get_final_transformed_data(self.df_raw)
@@ -354,13 +361,16 @@ class ReportingMixin:
                 "请先载入其中一个文件、调好参数(或导入Recipe)，再点批量处理。")
             return
         files, _ = QFileDialog.getOpenFileNames(
-            self, "批量选择测量数据 (可多选)", "",
+            self, "批量选择测量数据 (可多选)", dialog_initial_path('import'),
             "Data (*.csv *.txt *.tsv *.dat *.asc *.xyz *.xlsx *.xls *.xlsm);;All Files (*)")
         if not files:
             return
-        outdir = QFileDialog.getExistingDirectory(self, "选择结果输出文件夹", str(Path(files[0]).parent))
+        remember_dialog_path('import', files[0])
+        outdir = QFileDialog.getExistingDirectory(
+            self, "选择结果输出文件夹", dialog_initial_path('export'))
         if not outdir:
             return
+        remember_dialog_path('export', outdir, directory=True)
         p = self._capture_batch_params()
         confirm = (
             f"将批量处理 {len(files)} 个文件，沿用当前设置：\n\n"

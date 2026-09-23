@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QComb
                             QTreeWidget, QTreeWidgetItem, QHeaderView, QPushButton,
                             QLabel, QFileDialog, QMessageBox)
 from .recipe_library import atomic_json, read_recipe
+from .dialog_paths import dialog_initial_path, remember_dialog_path
 
 
 class RecipeLibraryDialog(QDialog):
@@ -102,7 +103,11 @@ class RecipeLibraryDialog(QDialog):
         self.selection_changed()
 
     def import_files(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, '导入到 Recipe 库', '', 'Recipe JSON (*.json)')
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, '导入到 Recipe 库', dialog_initial_path('import'),
+            'Recipe JSON (*.json)')
+        if paths:
+            remember_dialog_path('import', paths[0])
         failures = []
         for path in paths:
             try:
@@ -130,8 +135,11 @@ class RecipeLibraryDialog(QDialog):
         source = self.selected()
         if not source:
             return
-        path, _ = QFileDialog.getSaveFileName(self, '导出所选 Recipe', source.name, 'Recipe JSON (*.json)')
+        path, _ = QFileDialog.getSaveFileName(
+            self, '导出所选 Recipe', dialog_initial_path('export', source.name),
+            'Recipe JSON (*.json)')
         if path:
+            remember_dialog_path('export', path)
             try:
                 atomic_json(path, read_recipe(source))
                 self.notice.setText('已导出：' + path)

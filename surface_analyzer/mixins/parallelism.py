@@ -19,6 +19,7 @@ from matplotlib.patches import FancyBboxPatch, Rectangle as MplRectangle, Circle
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.widgets import RectangleSelector
+from ..dialog_paths import dialog_initial_path, remember_dialog_path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QFileDialog, QLabel, QSplitter, QGroupBox, QGridLayout, QMessageBox,
@@ -285,9 +286,12 @@ class ParallelismMixin:
         if self.parallel_base is None or self.parallel_measure is None or self.parallel_result is None:
             QMessageBox.warning(self, "暂无结果", "请先计算平行度。")
             return
-        path, _ = QFileDialog.getSaveFileName(self, "导出平行度CSV", "Parallelism_Result.csv", "CSV (*.csv)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出平行度CSV", dialog_initial_path('export', "Parallelism_Result.csv"),
+            "CSV (*.csv)")
         if not path:
             return
+        remember_dialog_path('export', path)
         try:
             b, m = self.parallel_base['metrics'], self.parallel_measure['metrics']
             rows = [
@@ -548,10 +552,12 @@ class ParallelismMixin:
             self.parallel_result = self._compute_parallel_result()
             self._update_parallel_result_ui()
         path, _ = QFileDialog.getSaveFileName(
-            self, "导出平行度报告图", self._parallel_report_default_name(),
+            self, "导出平行度报告图",
+            dialog_initial_path('export', self._parallel_report_default_name()),
             "PNG 图片 (*.png);;All Files (*)")
         if not path:
             return
+        remember_dialog_path('export', path)
         try:
             fig = self._render_parallel_report_figure()
             fig.savefig(path, dpi=150)

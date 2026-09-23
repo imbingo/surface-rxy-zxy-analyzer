@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSettings
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
+from ..dialog_paths import dialog_initial_path, remember_dialog_path
 
 
 
@@ -158,9 +159,12 @@ class RecipeMixin:
         return False
 
     def export_recipe(self):
-        path, _ = QFileDialog.getSaveFileName(self, "导出Recipe", "Surface_Rxy_ZXY.recipe.json", "Recipe JSON (*.json);;All Files (*)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出Recipe", dialog_initial_path('export', "Surface_Rxy_ZXY.recipe.json"),
+            "Recipe JSON (*.json);;All Files (*)")
         if not path:
             return
+        remember_dialog_path('export', path)
         try:
             from ..recipe_library import atomic_json
             atomic_json(path, self._current_recipe_dict())
@@ -173,9 +177,12 @@ class RecipeMixin:
             QMessageBox.critical(self, "Recipe导出失败", str(e))
 
     def import_recipe(self):
-        path, _ = QFileDialog.getOpenFileName(self, "导入Recipe", "", "Recipe JSON (*.json);;All Files (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入Recipe", dialog_initial_path('import'),
+            "Recipe JSON (*.json);;All Files (*)")
         if not path:
             return
+        remember_dialog_path('import', path)
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 recipe = json.load(f)

@@ -7,6 +7,7 @@
 - Added automatic fallback to the robust line parser when fast-path field alignment is ambiguous.
 - Hardened trailing-delimiter handling without changing Excel import behavior.
 - Added regression tests for wide 12-column XYZ point tables, quoted rows, mixed trailing delimiters and parser equivalence.
+- Remembered the most recently selected import and export directories across all file dialogs.
 
 ## V4.7.5 — User-authoritative import and projection coordinate hover
 

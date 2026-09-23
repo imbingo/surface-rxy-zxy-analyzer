@@ -40,6 +40,7 @@ from ..config import (MISSING_TEXT_TOKENS as _CONFIG_MISSING_TEXT_TOKENS,
                       PERFORMANCE_POLICY, perf_event)
 from ..delimited_text import detect_delimiter, tokenize_delimited_line
 from ..data_scale import scale_summary
+from ..dialog_paths import dialog_initial_path, remember_dialog_path
 from ..import_preflight import IMPORT_GUARD_POLICY, validate_selected_layout
 
 
@@ -4279,10 +4280,11 @@ class DataIOMixin:
 
     def load_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "载入数据", "",
+            self, "载入数据", dialog_initial_path('import'),
             "Data (*.csv *.txt *.tsv *.dat *.asc *.xyz *.xlsx *.xls *.xlsm);;All Files (*)")
         if not path:
             return False
+        remember_dialog_path('import', path)
         return self.load_path(path)
 
     def load_path(self, path, _parsed_payload=None):

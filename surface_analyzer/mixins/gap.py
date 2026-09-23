@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QFileDialog, QMessageBox
 from scipy.spatial import cKDTree
 
 from ..workers import TaskCancelled
+from ..dialog_paths import dialog_initial_path, remember_dialog_path
 from .analysis import AnalysisMixin
 
 
@@ -726,9 +727,12 @@ class GapAnalysisMixin:
         if self.gap_result is None:
             QMessageBox.warning(self, "暂无结果", "请先完成容差匹配并计算胶厚。")
             return
-        path, _ = QFileDialog.getSaveFileName(self, "导出胶厚 CSV", "Gap_Result.csv", "CSV (*.csv)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出胶厚 CSV", dialog_initial_path('export', "Gap_Result.csv"),
+            "CSV (*.csv)")
         if not path:
             return
+        remember_dialog_path('export', path)
         try:
             payload = self.gap_result
             metrics = self._gap_plane_metrics(payload)
@@ -852,10 +856,12 @@ class GapAnalysisMixin:
             QMessageBox.warning(self, "暂无结果", "请先完成容差匹配并计算胶厚。")
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "导出胶厚报告图", self._gap_report_default_name(),
+            self, "导出胶厚报告图",
+            dialog_initial_path('export', self._gap_report_default_name()),
             "PNG 图片 (*.png);;All Files (*)")
         if not path:
             return
+        remember_dialog_path('export', path)
         try:
             fig = self._render_gap_report_figure()
             fig.savefig(path, dpi=150)
