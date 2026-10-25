@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from ..dialog_paths import dialog_initial_path, remember_dialog_path
+from ..format_extensions import FormatRegistry
 from scipy.spatial import cKDTree
 
 from ..plotting import set_surface_box_aspect, set_xy_equal_aspect
@@ -64,6 +65,12 @@ class ReportingMixin:
                         f"{int(info.get('source_record_rows', 0) or 0):,}")
         lines = [f"识别格式: {source_format}",
                  f"源数据统计: 有效 {valid} | 缺测 {missing:,} | 坏行 {bad:,}{topology}"]
+        if info.get('format_extension_id'):
+            lines.append(f"格式扩展: {info['format_extension_id']} "
+                         f"v{info.get('format_extension_version')} | "
+                         f"Layer: {info.get('format_extension_layer', '')}")
+            if info.get('notes'):
+                lines.append(str(info['notes']))
         header_confidence = str(info.get('header_confidence') or '')
         if header_confidence:
             header_label = {'semantic': 'semantic', 'candidate': 'candidate',
@@ -362,7 +369,7 @@ class ReportingMixin:
             return
         files, _ = QFileDialog.getOpenFileNames(
             self, "批量选择测量数据 (可多选)", dialog_initial_path('import'),
-            "Data (*.csv *.txt *.tsv *.dat *.asc *.xyz *.xlsx *.xls *.xlsm);;All Files (*)")
+            FormatRegistry().file_filter())
         if not files:
             return
         remember_dialog_path('import', files[0])

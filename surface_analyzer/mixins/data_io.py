@@ -41,6 +41,7 @@ from ..config import (MISSING_TEXT_TOKENS as _CONFIG_MISSING_TEXT_TOKENS,
 from ..delimited_text import detect_delimiter, tokenize_delimited_line
 from ..data_scale import scale_summary
 from ..dialog_paths import dialog_initial_path, remember_dialog_path
+from ..format_extensions import FormatRegistry, ReadContext
 from ..import_preflight import IMPORT_GUARD_POLICY, validate_selected_layout
 
 
@@ -4003,6 +4004,67 @@ class DataIOMixin:
             self.last_import_note += f"。完整性警告：{completeness_warning}。"
         return frame
 
+    def _read_extension_table(self, entry, path, progress=None, cancel_event=None):
+        result = FormatRegistry().read(entry, path, ReadContext(progress, cancel_event))
+        self._check_cancel(cancel_event)
+        info = self.import_info
+        info.update({
+            'source_format': entry['name'], 'format_extension_id': entry['id'],
+            'format_extension_version': entry['version'], 'format_extension_api': 1,
+            'format_extension_layer': result.get('layer_id', ''),
+            'metadata': result.get('metadata', {}), 'notes': result.get('notes', ''),
+            'strategy': '格式扩展读取', 'parser_engine': entry['id'],
+            'header_auto_mapping': {'x': 0, 'y': 1, 'z': 2},
+            'header_unit_hints': {'x': 'mm', 'y': 'mm', 'z': 'mm'},
+            'count_mapping': ['X', 'Y', 'Z'],
+        })
+        if result['kind'] == 'height_matrix':
+            z = np.asarray(result['z'], dtype=float)
+            rows, cols = z.shape
+            valid = int(np.isfinite(z).sum())
+            stride = 1
+            limit = max(3, self._large_text_import_limit())
+            if getattr(self, 'auto_sample_large_text', True) and valid > limit:
+                stride = max(1, int(np.ceil(np.sqrt(z.size / limit))))
+                while ((rows + stride - 1) // stride) * ((cols + stride - 1) // stride) > limit:
+                    stride += 1
+            r, c = np.meshgrid(np.arange(0, rows, stride), np.arange(0, cols, stride), indexing='ij')
+            heights = z[r, c]
+            keep = np.isfinite(heights)
+            if not np.any(keep):
+                raise ValueError('规则采样未命中有效高度，请关闭自动抽样或提高上限后重试')
+            r, c, heights = r[keep], c[keep], heights[keep]
+            origin = result.get('origin_xy_mm', [0., 0.])
+            frame = pd.DataFrame({
+                'X': origin[0] + c * result['pitch_x_mm'],
+                'Y': origin[1] + r * result['pitch_y_mm'], 'Z': heights,
+                '_matrix_row': r, '_matrix_col': c,
+                '_topology_row': r // stride, '_topology_col': c // stride,
+            })
+            info.update({
+                'height_matrix': True, 'input_layout_mode': 'height_matrix',
+                'matrix_z_unit': 'mm', 'matrix_rows': rows, 'matrix_cols': cols,
+                'source_matrix_positions': int(z.size), 'source_record_rows': rows,
+                'source_valid_rows': valid, 'original_valid_points': valid,
+                'missing_points': int(z.size - valid),
+                'sampled': stride > 1, 'extrema_preserved': stride == 1,
+                'sample_method_key': 'stride' if stride > 1 else 'full',
+                'analysis_stride_n': stride,
+                'topology_method': 'sampled_matrix8' if stride > 1 else 'matrix8',
+                'sampling_pitch_x_um': result['pitch_x_mm'] * 1000,
+                'sampling_pitch_y_um': result['pitch_y_mm'] * 1000,
+                'sampling_pitch_source': '格式扩展文件元数据',
+            })
+        else:
+            frame = pd.DataFrame({k.upper(): np.asarray(result[k], dtype=float)
+                                  for k in ('x', 'y', 'z')})
+            frame = frame[np.isfinite(frame[['X', 'Y', 'Z']]).all(axis=1)].reset_index(drop=True)
+            info.update({'source_record_rows': len(result['z']),
+                         'source_valid_rows': len(frame), 'input_layout_mode': 'point_table'})
+        self._check_cancel(cancel_event)
+        self.last_import_note = info['notes']
+        return self._enforce_analysis_input_cap(frame, reader=entry['name'])
+
     def _read_table(self, path, progress=None, cancel_event=None):
         """鲁棒读取表格文件：
         - 文本类(.csv/.txt/.tsv/.dat/.asc/.xyz): 自动尝试 utf-8-sig/gbk/utf-16/latin-1；自动识别分隔符；
@@ -4017,6 +4079,13 @@ class DataIOMixin:
         if progress is not None:
             progress(5, "正在识别文件类型和编码")
         suffix = Path(path).suffix.lower()
+        # Extensions cannot override built-in text/Excel semantics.
+        if suffix and suffix not in self.TEXT_SUFFIXES + self.EXCEL_SUFFIXES:
+            entry = FormatRegistry().reader_for(suffix)
+            if entry:
+                return self._read_extension_table(entry, path, progress, cancel_event)
+            if suffix == '.plux':
+                raise ValueError('请安装并启用 Sensofar PLUX 格式扩展（主程序 V4.7.7 或更高）。')
         file_size = Path(path).stat().st_size
         layout_mode = getattr(self, 'input_layout_mode', 'point_table')
         if layout_mode not in ('point_table', 'pixel_xy', 'height_matrix', 'zygo_xyz'):
@@ -4281,7 +4350,7 @@ class DataIOMixin:
     def load_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "载入数据", dialog_initial_path('import'),
-            "Data (*.csv *.txt *.tsv *.dat *.asc *.xyz *.xlsx *.xls *.xlsm);;All Files (*)")
+            FormatRegistry().file_filter())
         if not path:
             return False
         remember_dialog_path('import', path)
@@ -4433,7 +4502,13 @@ class DataIOMixin:
             manual_indices = tuple(int(getattr(self, name, 0) or 0) - 1
                                    for name in ('import_x_col', 'import_y_col', 'import_z_col'))
             manual_mapping = all(index >= 0 for index in manual_indices)
-            if manual_mapping:
+            if self.import_info.get('format_extension_id'):
+                self.cb_x_col.setCurrentText('X')
+                self.cb_y_col.setCurrentText('Y')
+                self.cb_z_col.setCurrentText('Z')
+                for combo in (self.cb_x_unit, self.cb_y_unit, self.cb_z_unit):
+                    combo.setCurrentText('mm')
+            elif manual_mapping:
                 if len(set(manual_indices)) != 3 or max(manual_indices) >= len(cols):
                     raise ValueError("手动 X/Y/Z 列号必须互不重复且位于文件列范围内。")
                 self.cb_x_col.setCurrentIndex(manual_indices[0])
@@ -4557,6 +4632,14 @@ class DataIOMixin:
             self._show_status("当前无原始文件可映射（Gap 结果状态下映射已锁定）", 5000)
             return
         try:
+            if self.import_info.get('format_extension_id'):
+                # Reader API already returns physical mm. Stale CSV/Pixel
+                # overrides and Recipes must not rescale it a second time.
+                for combo, name in ((self.cb_x_col, 'X'), (self.cb_y_col, 'Y'),
+                                    (self.cb_z_col, 'Z')):
+                    combo.setCurrentText(name)
+                for combo in (self.cb_x_unit, self.cb_y_unit, self.cb_z_unit):
+                    combo.setCurrentText('mm')
             xc, yc, zc = self.cb_x_col.currentText(), self.cb_y_col.currentText(), self.cb_z_col.currentText()
             for name, col in (("X", xc), ("Y", yc), ("Z", zc)):
                 if col not in self.absolute_raw_df.columns:
@@ -4572,6 +4655,7 @@ class DataIOMixin:
                     self.import_info.get('mapping_z_col', inferred_names[2])]
             generic_pixel = (
                 getattr(self, 'input_layout_mode', 'point_table') == 'pixel_xy'
+                and not self.import_info.get('format_extension_id')
                 and self.import_info.get('source_format') != 'Zygo XYZ Data File - Format 1')
             temp_df = pd.DataFrame()
             temp_df['X'] = pd.to_numeric(self.absolute_raw_df[xc], errors='coerce')

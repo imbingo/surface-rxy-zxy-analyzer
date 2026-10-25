@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.7.6
+# Surface Rxy ZXY Analyzer V4.7.7
 
-面型及 Rxy 分析工具当前版本为 **V4.7.6 — CSV 列完整性修复**。本版修复尾分隔符触发的 CSV 静默错列，并为 fast parser 增加源字段完整性验证与 robust 自动回退。详见 [V4.7.6 发布说明](docs/RELEASE_NOTES_V4.7.6.md)。
+面型及 Rxy 分析工具当前版本为 **V4.7.7 — 可选文件格式扩展**。支持单独安装厂商 reader，首个可选包为 Sensofar PLUX。详见 [发布说明](docs/RELEASE_NOTES_V4.7.7.md) 与 [扩展接口](docs/FORMAT_EXTENSION_API.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.7.6.py`：V4.7.6 Python 启动入口。
-- `start_surface_analyzer_v4_7_6.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.7.7.py`：V4.7.7 Python 启动入口。
+- `start_surface_analyzer_v4_7_7.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,25 +14,25 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_7_6.bat
+start_surface_analyzer_v4_7_7.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_7_6.bat
+.\start_surface_analyzer_v4_7_7.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_7_6.bat --check
+.\start_surface_analyzer_v4_7_7.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.7.6.py
+python .\面型及Rxy分析工具V4.7.7.py
 python -m surface_analyzer
 ```
 

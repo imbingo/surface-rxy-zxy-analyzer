@@ -1,5 +1,13 @@
 # Changelog
 
+## V4.7.7 — Optional format extension API
+
+- Added versioned, independently installed file-reader extensions with manifest discovery, compatibility checks, enable/disable management and conflict detection.
+- Added standard millimetre height-matrix / XYZ contracts, cancellation and source/extension provenance at the existing transactional import boundary.
+- Added Sensofar PLUX extension 1.0.0 for the known single-height-layer ZIP/XML/float32 layout, preserving invalid pixels and matrix topology.
+- Kept vendor readers optional and outside the main installer; added a separate per-user PLUX installer and extension developer documentation.
+- Added synthetic format, units, hole-mask, import-cap, cancellation and compatibility tests. Real-instrument PLUX comparison remains pending.
+
 ## V4.7.6 — CSV fast-parser column-integrity hotfix
 
 - Fixed silent one-column shifts in CSV and delimited point-table imports.

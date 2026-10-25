@@ -1,4 +1,4 @@
-"""Qt application shell for Surface Analyzer V4.7.6."""
+"""Qt application shell for Surface Analyzer V4.7.7."""
 
 import sys
 import os
@@ -398,6 +398,11 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         recipe_save_menu = QMenu(self.btn_export_recipe)
         recipe_save_menu.addAction('保存当前参数到 Recipe 库', self.save_recipe_to_library)
         recipe_save_menu.addAction('导出当前参数到文件…', self.export_recipe)
+        def show_extensions():
+            from .extension_dialog import ExtensionDialog
+            ExtensionDialog(self).exec()
+        recipe_save_menu.addSeparator()
+        recipe_save_menu.addAction('格式扩展管理…', show_extensions)
         self.btn_export_recipe.setMenu(recipe_save_menu)
         layout_short = {
             'point_table': 'XYZ', 'pixel_xy': 'Pixel XY',
