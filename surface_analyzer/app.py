@@ -984,8 +984,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         ml.setVerticalSpacing(7)
         ml.setColumnStretch(1, 1)   # 列名下拉自适应拉伸；标签/单位列贴紧内容
         self.cb_x_col = NoWheelComboBox(); self.cb_y_col = NoWheelComboBox(); self.cb_z_col = NoWheelComboBox()
-        self.cb_x_unit = NoWheelComboBox(); self.cb_x_unit.addItems(["mm", "µm"])
-        self.cb_y_unit = NoWheelComboBox(); self.cb_y_unit.addItems(["mm", "µm"])
+        self.cb_x_unit = NoWheelComboBox(); self.cb_x_unit.addItems(["mm", "µm", "nm"])
+        self.cb_y_unit = NoWheelComboBox(); self.cb_y_unit.addItems(["mm", "µm", "nm"])
         self.cb_z_unit = NoWheelComboBox(); self.cb_z_unit.addItems(["mm", "µm", "nm"])
         for cb in (self.cb_x_col, self.cb_y_col, self.cb_z_col):
             cb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1006,6 +1006,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.btn_apply_map.setFixedHeight(33)
         self.btn_apply_map.clicked.connect(self.apply_mapping)
         ml.addWidget(self.btn_apply_map, 3, 0, 1, 4)
+        self.lbl_pixel_pitch = QLabel('像素尺寸：导入矩阵后显示实际 X/Y 间距及来源。')
+        self.lbl_pixel_pitch.setWordWrap(True)
+        self.lbl_pixel_pitch.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        ml.addWidget(self.lbl_pixel_pitch, 4, 0, 1, 4)
         ll.addWidget(map_group)
 
         # ---------- 3. 姿态变换 ----------

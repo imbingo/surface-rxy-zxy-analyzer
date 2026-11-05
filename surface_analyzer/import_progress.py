@@ -100,6 +100,12 @@ class ImportProgressDialog(QDialog):
         self.cancel_button.setEnabled(False)
         self.cancel_button.setText('正在应用数据…')
 
+    def finish_mapping_required(self):
+        """Reading succeeded; coordinate mapping is a normal pending UI step."""
+        self.finished_state = True
+        self.timer.stop()
+        self.accept()
+
     def finish(self, success=True, message=''):
         self.finished_state = True
         self.timer.stop()

@@ -48,11 +48,20 @@ class V455UnifiedImportHotfixTests(unittest.TestCase):
                 patch.object(QMessageBox, "critical", return_value=QMessageBox.StandardButton.Ok):
             return self.window.load_path(path)
 
-    def test_xyz_three_columns_default_but_extra_columns_require_mapping(self):
+    def test_xyz_without_semantic_header_requires_mapping_even_with_three_columns(self):
         self.window.input_layout_mode = "point_table"
         self.window.import_z_unit = "mm"
         simple = self._path("simple.xyz", "0 0 1\n1 0 2\n0 1 3\n")
         self.assertTrue(self._load(simple))
+        self.assertTrue(self.window.import_info['mapping_required'])
+        self.assertIsNone(self.window.df_raw)
+        for combo, column in ((self.window.cb_x_col, 'Col1'),
+                              (self.window.cb_y_col, 'Col2'),
+                              (self.window.cb_z_col, 'Col3')):
+            combo.setCurrentText(column)
+        self.window.cb_x_unit.setCurrentText('mm')
+        self.window.cb_y_unit.setCurrentText('mm')
+        self.assertTrue(self.window.apply_mapping())
         np.testing.assert_allclose(self.window.df_raw[["X", "Y", "Z"]].to_numpy(), [
             [0.0, 0.0, 1.0], [1.0, 0.0, 2.0], [0.0, 1.0, 3.0]])
 
@@ -68,7 +77,7 @@ class V455UnifiedImportHotfixTests(unittest.TestCase):
     def test_semantic_xyz_keeps_auxiliary_text_and_utf16(self):
         self.window.input_layout_mode = "point_table"
         path = self._path(
-            "aux.tsv",
+            "auxiliary.tsv",
             "# X [µm]\tY [μm]\tThickness [um]\tProbe\tStatus\n"
             "0\t0\t250\tP-1\tGOOD\n"
             "1000\t0\t251\tP-2\tGOOD\n"

@@ -85,13 +85,11 @@ class ReportingMixin:
             lines.append(header_text)
         if info.get('sampling_downgraded'):
             lines.append(f"采样降级: {info.get('sampling_downgrade_reason', '列语义不确定')}")
-        pitch_x = info.get('sampling_pitch_x_um')
-        pitch_y = info.get('sampling_pitch_y_um')
-        pitch_source = str(info.get('sampling_pitch_source') or '--')
+        from ..matrix_sampling import pixel_pitch_summary
         coordinate_parts = []
-        if info.get('input_layout_mode') in ('pixel_xy', 'height_matrix', 'zygo_xyz'):
-            coordinate_parts.append(
-                f"有效采样间距 X/Y={float(pitch_x):g}/{float(pitch_y):g} µm/点（{pitch_source}）")
+        pitch_text = pixel_pitch_summary(info)
+        if pitch_text:
+            coordinate_parts.append(pitch_text)
         camera = info.get('detected_camera_res_um')
         if camera is not None:
             coordinate_parts.append(f"CameraRes检测值 {float(camera):g} µm/点")
