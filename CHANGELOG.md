@@ -1,5 +1,15 @@
 # Changelog
 
+## V4.7.8 — Single-pass matrix import and explicit coordinate provenance
+
+- Combined matrix validation, source counts and bounded stride/grid sampling into one numeric scan.
+- Added strict fast numeric-row conversion with compatible fallback for quoted/missing fields.
+- Fixed sparse/wide matrix coverage by sizing nested stride lattices from matrix positions; preserve grid extrema during bounded merges.
+- Show actual original X/Y pixel pitch, source and sampled spacing in the mapping panel, status and reports.
+- Keep ambiguous XYZ tables pending for explicit distinct columns and per-axis units, including headerless three-column tables.
+- Fixed asynchronous pending-mapping imports incorrectly restoring the previous dataset.
+- Added regression tests and a reproducible 3999-row, approximately 600MB CSV comparison benchmark.
+
 ## V4.7.7 — Optional format extension API
 
 - Added versioned, independently installed file-reader extensions with manifest discovery, compatibility checks, enable/disable management and conflict detection.
