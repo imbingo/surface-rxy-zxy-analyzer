@@ -147,6 +147,7 @@ class V4ApiTests(unittest.TestCase):
             ]) + "\n", encoding="utf-8")
             window = SurfaceAnalyzerPro()
             window.input_layout_mode = "zygo_xyz"
+            window.pitch_source = "manual"
             window.height_matrix_pitch_x_um = 100.0
             window.height_matrix_pitch_y_um = 200.0
             frame = window._read_table(path)
