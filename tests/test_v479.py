@@ -125,6 +125,18 @@ class MainWindowFitTests(unittest.TestCase):
         window.on_3d_canvas_click(SimpleNamespace(button=1, dblclick=True, inaxes=None, canvas=axis.figure.canvas))
         axis.figure.canvas.draw()
         np.testing.assert_allclose(CanvasFitTests.screen_box(axis), before, atol=.1)
+        self.assertFalse(window.btn_toggle_parameters.icon().isNull())
+        # Context-only rejected heights must not determine the XY colour scale.
+        context_z = np.array([.001, .002, .003, 1000.])
+        window.xy_raster.bind(np.arange(4.), np.arange(4.), context_z, None,
+                              'height', z_limits=(.001, .003))
+        self.assertEqual(window.xy_raster.z_limits, (.001, .003))
+        from surface_analyzer.rendering.raster import build_xy_raster, raster_rgba
+        from matplotlib import colormaps
+        result = build_xy_raster(np.arange(4.), np.zeros(4), context_z,
+                                 (-.5,3.5,-.5,.5), (4,1))
+        rgba = raster_rgba(result, z_limits=window.xy_raster.z_limits)
+        np.testing.assert_allclose(rgba[0,1], colormaps['turbo'](.5))
         before_width = window.right_stack.width()
         current_tab = window.tabs.currentIndex()
         window.btn_toggle_parameters.click(); self.app.processEvents()
