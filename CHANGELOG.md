@@ -1,3 +1,9 @@
+# V4.7.10
+
+- 修复高 DPI 下 3D 自动适配混用逻辑和物理像素导致坐标框过小。
+- 滚轮同步缩放坐标框、刻度、参考平面与曲面，保持数据范围。
+- 3D 卡片空白处支持滚轮，双击复位重新适配当前画布。
+
 # Changelog
 
 ## V4.7.9 — Larger 3D home view
@@ -145,3 +151,5 @@
 - Fixed 3D selection marker occlusion without changing measurement coordinates.
 
 Earlier versions: see the versioned RELEASE_NOTES files and README history.
+
+- 顶栏新增左侧参数区收起/展开按钮；保留参数和当前页签，释放绘图宽度。

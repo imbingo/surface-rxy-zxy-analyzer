@@ -1385,6 +1385,7 @@ class ROIMixin:
             axis = self.canvas.ax3d
             axis.set_xlim3d(home[0]); axis.set_ylim3d(home[1]); axis.set_zlim3d(home[2])
             axis.view_init(elev=home[3], azim=home[4], roll=home[5])
+            self.on_3d_canvas_resize(event)
         else:
             event.inaxes.set_xlim(home[0])
             event.inaxes.set_ylim(home[1])
@@ -1396,7 +1397,7 @@ class ROIMixin:
         """Restore the initial 3D limits and camera on a left double-click."""
         button = getattr(getattr(event, 'button', None), 'value', getattr(event, 'button', None))
         if (button == 1 and bool(getattr(event, 'dblclick', False))
-                and getattr(event, 'inaxes', None) is self.canvas.ax3d):
+                and getattr(event, 'canvas', None) is self.canvas.ax3d.figure.canvas):
             self._restore_plot_home_view('3D', event)
 
     def on_canvas_click(self, event):
@@ -1445,6 +1446,8 @@ class ROIMixin:
     def on_canvas_scroll(self, event):
         """Zoom only the current view; this must not touch analysis state."""
         ax = getattr(event, 'inaxes', None)
+        if getattr(event, 'canvas', None) is self.canvas.ax3d.figure.canvas:
+            ax = self.canvas.ax3d
         if ax not in (self.canvas.ax_xy, self.canvas.ax_xz,
                       self.canvas.ax_yz, self.canvas.ax3d):
             return
@@ -1463,12 +1466,13 @@ class ROIMixin:
                     center + (high - center) * scale)
 
         if ax is self.canvas.ax3d:
-            for getter, setter in ((ax.get_xlim3d, ax.set_xlim3d),
-                                   (ax.get_ylim3d, ax.set_ylim3d),
-                                   (ax.get_zlim3d, ax.set_zlim3d)):
-                limits = getter()
-                center = (float(limits[0]) + float(limits[1])) / 2.0
-                setter(scaled_limits(limits, center))
+            # Magnify the camera box, not the data limits: the axes, ticks,
+            # reference plane and points must grow together.
+            aspect = np.asarray(ax.get_box_aspect(), dtype=float)
+            current_zoom = float(getattr(self, '_last_3d_fitted_zoom', 1.0))
+            zoom = float(np.clip(current_zoom / scale, .15, 8.0))
+            ax.set_box_aspect(aspect, zoom=zoom)
+            self._last_3d_fitted_zoom = zoom
         else:
             if event.xdata is None or event.ydata is None:
                 return

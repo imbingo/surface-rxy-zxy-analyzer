@@ -387,6 +387,14 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         dot = QLabel(); dot.setObjectName("brandDot"); dot.setFixedSize(10, 10)
         app_title = QLabel("面型及 Rxy 分析"); app_title.setObjectName("appTitle")
         ver_pill = QLabel(self.APP_VERSION); ver_pill.setObjectName("verPill")
+        self.btn_toggle_parameters = QPushButton("◀")
+        self.btn_toggle_parameters.setFixedSize(28, 28)
+        self.btn_toggle_parameters.setStyleSheet("padding: 0px; font-size: 16px;")
+        self.btn_toggle_parameters.setCheckable(True)
+        self.btn_toggle_parameters.setToolTip("收起左侧参数区")
+        self.btn_toggle_parameters.setAccessibleName("收起左侧参数区")
+        self.btn_toggle_parameters.toggled.connect(self._set_parameters_collapsed)
+        ab.addWidget(self.btn_toggle_parameters)
         ab.addWidget(dot); ab.addWidget(app_title); ab.addWidget(ver_pill)
         ab.addStretch()
 
@@ -2320,6 +2328,20 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             ),
         }
 
+    def _set_parameters_collapsed(self, collapsed):
+        """Free plot space without rebuilding controls or changing parameters."""
+        if collapsed:
+            self._parameter_panel_sizes = self.main_splitter.sizes()
+            self.tabs.hide()
+        else:
+            self.tabs.show()
+            sizes = getattr(self, '_parameter_panel_sizes', [440, 1400])
+            self.main_splitter.setSizes(sizes)
+        label = "展开左侧参数区" if collapsed else "收起左侧参数区"
+        self.btn_toggle_parameters.setText("▶" if collapsed else "◀")
+        self.btn_toggle_parameters.setToolTip(label)
+        self.btn_toggle_parameters.setAccessibleName(label)
+
     def _clear_projection_hover(self, draw=False):
         changed = False
         for entry in getattr(self, '_projection_hover', {}).values():
@@ -2449,6 +2471,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                        self.canvas.ax3d.get_zlim3d(), self.canvas.ax3d.elev,
                        self.canvas.ax3d.azim),
             }
+        saved_scene_zoom = (getattr(self, '_last_3d_fitted_zoom', None)
+                            if preserve_view else None)
         roi_active = self._roi_is_active()
         xy_plot_idx = (np.flatnonzero(self.manual_mask) if self.manual_mask is not None
                        else self.active_idx)
@@ -2621,6 +2645,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self._remember_plot_home_state()
         if view_state is not None:
             self._restore_plot_view_state(view_state)
+            if saved_scene_zoom is not None:
+                self.canvas.ax3d.set_box_aspect(
+                    self.canvas.ax3d.get_box_aspect(), zoom=saved_scene_zoom)
+                self._last_3d_fitted_zoom = saved_scene_zoom
         self.canvas.draw()
 
         if raster_enabled and len(xy_x):
