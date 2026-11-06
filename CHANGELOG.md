@@ -153,3 +153,5 @@
 Earlier versions: see the versioned RELEASE_NOTES files and README history.
 
 - 顶栏新增左侧参数区收起/展开按钮；保留参数和当前页签，释放绘图宽度。
+
+- XY 与 3D/XZ/YZ 共用分析点高度色标，避免全量背景中的被排除极端值压平 XY 色差；背景点仍保留。

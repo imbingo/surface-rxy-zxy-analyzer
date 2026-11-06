@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QLabel, QSplitter, QGroupBox, QGridLayout, QMessageBox,
     QScrollArea, QComboBox, QTabWidget, QDoubleSpinBox, QSpinBox, QCheckBox,
     QDialog, QDialogButtonBox, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
-    QStackedWidget, QSizeGrip, QProgressBar, QMenu,
+    QStackedWidget, QSizeGrip, QProgressBar, QMenu, QStyle,
 )
 from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSettings, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import (
@@ -387,7 +387,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         dot = QLabel(); dot.setObjectName("brandDot"); dot.setFixedSize(10, 10)
         app_title = QLabel("面型及 Rxy 分析"); app_title.setObjectName("appTitle")
         ver_pill = QLabel(self.APP_VERSION); ver_pill.setObjectName("verPill")
-        self.btn_toggle_parameters = QPushButton("◀")
+        self.btn_toggle_parameters = QPushButton()
+        self.btn_toggle_parameters.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft))
         self.btn_toggle_parameters.setFixedSize(28, 28)
         self.btn_toggle_parameters.setStyleSheet("padding: 0px; font-size: 16px;")
         self.btn_toggle_parameters.setCheckable(True)
@@ -2338,7 +2339,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             sizes = getattr(self, '_parameter_panel_sizes', [440, 1400])
             self.main_splitter.setSizes(sizes)
         label = "展开左侧参数区" if collapsed else "收起左侧参数区"
-        self.btn_toggle_parameters.setText("▶" if collapsed else "◀")
+        self.btn_toggle_parameters.setIcon(self.style().standardIcon(
+            QStyle.StandardPixmap.SP_ArrowRight if collapsed else QStyle.StandardPixmap.SP_ArrowLeft))
         self.btn_toggle_parameters.setToolTip(label)
         self.btn_toggle_parameters.setAccessibleName(label)
 
@@ -2655,7 +2657,14 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             roi_membership = (np.isin(xy_source_idx, roi_source_idx)
                               if roi_source_idx is not None else None)
             self.xy_raster.z_label = z_axis_label
-            self.xy_raster.bind(xy_x, xy_y, xy_z, roi_membership, xy_mode)
+            # Share the height range used by the 3D/XZ/YZ analysis points.
+            # XY retains the full context, whose excluded outliers must not
+            # flatten the colour contrast of the accepted measurement surface.
+            colour_z = detail_z[np.isfinite(detail_z)]
+            colour_limits = ((float(colour_z.min()), float(colour_z.max()))
+                             if colour_z.size else None)
+            self.xy_raster.bind(xy_x, xy_y, xy_z, roi_membership, xy_mode,
+                                z_limits=colour_limits)
             self._xy_raster_status = f'Raster 构建中 / 全量显示源 {len(xy_source_idx):,}'
             self._update_import_status_label()
 

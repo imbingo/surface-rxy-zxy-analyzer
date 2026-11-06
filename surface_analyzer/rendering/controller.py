@@ -54,11 +54,15 @@ class XYRasterController(QObject):
             self.ax.callbacks.disconnect(cid)
         self.callbacks = []
 
-    def bind(self, x, y, z, roi, mode):
+    def bind(self, x, y, z, roi, mode, z_limits=None):
         # Advanced-indexed arrays passed by caller are owned display snapshots.
         self.source = (x, y, z, roi)
         finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
         self.z_limits = (float(z[finite].min()), float(z[finite].max())) if finite.any() else (0., 1.)
+        if z_limits is not None:
+            low, high = map(float, z_limits)
+            if np.isfinite([low, high]).all() and low <= high:
+                self.z_limits = (low, high)
         self.mode = mode
         self.callbacks = [self.ax.callbacks.connect(name, self.request)
                           for name in ('xlim_changed', 'ylim_changed')]
