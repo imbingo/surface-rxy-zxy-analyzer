@@ -1,5 +1,12 @@
 # Changelog
 
+## V4.7.9 — Larger 3D home view
+
+- Fit against the final Axes3D transform and maximize the scene within the canvas with rendered label checks.
+- Prevent the full-width 3D surface from being clipped to the internal square axes rectangle.
+- Keep first draw, resize, focused 3D and Home fitting consistent without changing physical ranges or measurements.
+- Remove duplicated import details below column mapping; preserve bottom status and import settings details.
+
 ## V4.7.8 — Single-pass matrix import and explicit coordinate provenance
 
 - Combined matrix validation, source counts and bounded stride/grid sampling into one numeric scan.

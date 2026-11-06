@@ -1006,10 +1006,6 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.btn_apply_map.setFixedHeight(33)
         self.btn_apply_map.clicked.connect(self.apply_mapping)
         ml.addWidget(self.btn_apply_map, 3, 0, 1, 4)
-        self.lbl_pixel_pitch = QLabel('像素尺寸：导入矩阵后显示实际 X/Y 间距及来源。')
-        self.lbl_pixel_pitch.setWordWrap(True)
-        self.lbl_pixel_pitch.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        ml.addWidget(self.lbl_pixel_pitch, 4, 0, 1, 4)
         ll.addWidget(map_group)
 
         # ---------- 3. 姿态变换 ----------
@@ -2293,6 +2289,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             txs, tys, tzs, linestyle='None', marker='x', color='red',
             markersize=np.sqrt(50), markeredgewidth=2, zorder=10,
             label='_temp_selection_overlay')
+        self._temp_selection_overlay_artists['3D'].set_clip_box(self.canvas.ax3d.figure.bbox)
 
     def update_selection_overlay_only(self):
         """Selection is a foreground aid: never invalidate the XY source/cache."""
