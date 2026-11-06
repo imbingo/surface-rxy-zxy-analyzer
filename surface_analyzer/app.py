@@ -389,6 +389,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         ver_pill = QLabel(self.APP_VERSION); ver_pill.setObjectName("verPill")
         self.btn_toggle_parameters = QPushButton("◀")
         self.btn_toggle_parameters.setFixedSize(28, 28)
+        self.btn_toggle_parameters.setStyleSheet("padding: 0px; font-size: 16px;")
         self.btn_toggle_parameters.setCheckable(True)
         self.btn_toggle_parameters.setToolTip("收起左侧参数区")
         self.btn_toggle_parameters.setAccessibleName("收起左侧参数区")
