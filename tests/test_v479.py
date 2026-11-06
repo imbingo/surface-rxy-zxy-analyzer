@@ -125,6 +125,17 @@ class MainWindowFitTests(unittest.TestCase):
         window.on_3d_canvas_click(SimpleNamespace(button=1, dblclick=True, inaxes=None, canvas=axis.figure.canvas))
         axis.figure.canvas.draw()
         np.testing.assert_allclose(CanvasFitTests.screen_box(axis), before, atol=.1)
+        before_width = window.right_stack.width()
+        current_tab = window.tabs.currentIndex()
+        window.btn_toggle_parameters.click(); self.app.processEvents()
+        self.assertTrue(window.tabs.isHidden())
+        self.assertGreater(window.right_stack.width(), before_width)
+        self.assertEqual(window.btn_toggle_parameters.accessibleName(), '展开左侧参数区')
+        self.assertEqual(metrics, window.last_metrics)
+        window.btn_toggle_parameters.click(); self.app.processEvents()
+        self.assertFalse(window.tabs.isHidden())
+        self.assertEqual(window.tabs.currentIndex(), current_tab)
+        self.assertEqual(metrics, window.last_metrics)
         window.import_info.update(height_matrix=True, input_layout_mode='height_matrix',
                                   sampling_pitch_x_um=10, sampling_pitch_y_um=20,
                                   sampling_pitch_source='用户手动')

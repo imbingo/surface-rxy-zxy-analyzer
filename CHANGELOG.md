@@ -151,3 +151,5 @@
 - Fixed 3D selection marker occlusion without changing measurement coordinates.
 
 Earlier versions: see the versioned RELEASE_NOTES files and README history.
+
+- 顶栏新增左侧参数区收起/展开按钮；保留参数和当前页签，释放绘图宽度。
