@@ -2449,6 +2449,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                        self.canvas.ax3d.get_zlim3d(), self.canvas.ax3d.elev,
                        self.canvas.ax3d.azim),
             }
+        saved_scene_zoom = (getattr(self, '_last_3d_fitted_zoom', None)
+                            if preserve_view else None)
         roi_active = self._roi_is_active()
         xy_plot_idx = (np.flatnonzero(self.manual_mask) if self.manual_mask is not None
                        else self.active_idx)
@@ -2621,6 +2623,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self._remember_plot_home_state()
         if view_state is not None:
             self._restore_plot_view_state(view_state)
+            if saved_scene_zoom is not None:
+                self.canvas.ax3d.set_box_aspect(
+                    self.canvas.ax3d.get_box_aspect(), zoom=saved_scene_zoom)
+                self._last_3d_fitted_zoom = saved_scene_zoom
         self.canvas.draw()
 
         if raster_enabled and len(xy_x):

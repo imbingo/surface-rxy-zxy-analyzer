@@ -274,10 +274,12 @@ class V453InteractionAndBatchTests(unittest.TestCase):
         ax.set_xlim3d(0.0, 10.0); ax.set_ylim3d(0.0, 8.0); ax.set_zlim3d(0.0, 2.0)
         before = (ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d())
         elev, azim = ax.elev, ax.azim
+        box_before = ax.get_box_aspect().copy()
         window.on_canvas_scroll(SimpleNamespace(
             inaxes=ax, button='up', step=1, xdata=None, ydata=None,
             canvas=ax.figure.canvas))
-        self.assertNotEqual(before, (ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()))
+        self.assertEqual(before, (ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()))
+        self.assertGreater(np.linalg.norm(ax.get_box_aspect()), np.linalg.norm(box_before))
         self.assertEqual((elev, azim), (ax.elev, ax.azim))
         self.assertTrue(np.array_equal(state[0], window.active_idx))
         self.assertTrue(np.array_equal(state[1], window.manual_mask))

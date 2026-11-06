@@ -46,6 +46,19 @@ class CanvasFitTests(unittest.TestCase):
         self.assertTrue(ax._surface_home_labels_fit)
         self.assertEqual(limits, (ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()))
 
+    def test_high_dpi_matches_logical_scene_size(self):
+        bounds = []
+        for ratio in (1, 1.25, 1.5, 2):
+            fig, ax, xyz = self.scene(360, 230)
+            fig.canvas._set_device_pixel_ratio(ratio)
+            fit_surface_box_to_canvas(ax, *xyz, min_z_ratio=.18)
+            fig.canvas.draw()
+            screen = self.screen_box(ax) / ratio
+            bounds.append(np.ptp(screen, axis=0))
+            self.assertTrue(ax._surface_home_labels_fit)
+        for extent in bounds[1:]:
+            np.testing.assert_allclose(extent, bounds[0], rtol=.04)
+
     def test_wide_view_does_not_clip_surface_to_square_axes(self):
         fig, ax, xyz = self.scene()
         fit_surface_box_to_canvas(ax, *xyz, min_z_ratio=.18)
@@ -99,6 +112,19 @@ class MainWindowFitTests(unittest.TestCase):
             self.app.processEvents()
             self.assertTrue(axis._surface_home_fits)
         self.assertEqual(metrics, window.last_metrics)
+        axis = window.canvas.ax3d
+        original_limits = axis.get_xlim3d(), axis.get_ylim3d(), axis.get_zlim3d()
+        before = CanvasFitTests.screen_box(axis)
+        # Wheel must also work in the card whitespace outside square inaxes.
+        event = SimpleNamespace(inaxes=None, canvas=axis.figure.canvas, button='up', step=1)
+        window.on_canvas_scroll(event)
+        axis.figure.canvas.draw()
+        after = CanvasFitTests.screen_box(axis)
+        self.assertGreater(np.ptp(after[:,0]), np.ptp(before[:,0]) * 1.15)
+        self.assertEqual(original_limits, (axis.get_xlim3d(), axis.get_ylim3d(), axis.get_zlim3d()))
+        window.on_3d_canvas_click(SimpleNamespace(button=1, dblclick=True, inaxes=None, canvas=axis.figure.canvas))
+        axis.figure.canvas.draw()
+        np.testing.assert_allclose(CanvasFitTests.screen_box(axis), before, atol=.1)
         window.import_info.update(height_matrix=True, input_layout_mode='height_matrix',
                                   sampling_pitch_x_um=10, sampling_pitch_y_um=20,
                                   sampling_pitch_source='用户手动')

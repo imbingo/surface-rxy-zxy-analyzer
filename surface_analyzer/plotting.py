@@ -112,7 +112,12 @@ def fit_surface_box_to_canvas(
     # Apply that geometry *before* measuring pixels. Measuring the undrawn wide
     # rectangle and then drawing the square used to shrink the home view twice.
     ax.apply_aspect()
-    canvas_width, canvas_height = ax.figure.canvas.get_width_height()
+    # transData and renderer extents are in physical display pixels. Qt's
+    # get_width_height() defaults to logical pixels on high-DPI displays.
+    canvas_width, canvas_height = ax.figure.bbox.width, ax.figure.bbox.height
+    pixel_ratio = float(getattr(ax.figure.canvas, 'device_pixel_ratio', 1.0))
+    horizontal_padding_px *= pixel_ratio
+    vertical_padding_px *= pixel_ratio
     px = min(float(horizontal_padding_px), float(canvas_width) * .12)
     py = min(float(vertical_padding_px), float(canvas_height) * .12)
     safe_bounds = (px, float(canvas_width) - px, py, float(canvas_height) - py)
@@ -174,10 +179,10 @@ def fit_surface_box_to_canvas(
             break
         label_bounds = (min(box.x0 for box in boxes), max(box.x1 for box in boxes),
                         min(box.y0 for box in boxes), max(box.y1 for box in boxes))
-        overflows = (max(0., 6. - label_bounds[0]),
-                     max(0., label_bounds[1] - (canvas_width - 6.)),
-                     max(0., 6. - label_bounds[2]),
-                     max(0., label_bounds[3] - (canvas_height - 6.)))
+        overflows = (max(0., 6. * pixel_ratio - label_bounds[0]),
+                     max(0., label_bounds[1] - (canvas_width - 6. * pixel_ratio)),
+                     max(0., 6. * pixel_ratio - label_bounds[2]),
+                     max(0., label_bounds[3] - (canvas_height - 6. * pixel_ratio)))
         if not any(overflows) or refinement == 7:
             break
         left += overflows[0] + 1
