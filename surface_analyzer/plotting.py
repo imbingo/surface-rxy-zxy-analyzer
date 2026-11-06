@@ -7,12 +7,9 @@ from matplotlib.ticker import LinearLocator, MaxNLocator
 from mpl_toolkits.mplot3d import proj3d
 
 
-# The main 3D view uses a dedicated full-card canvas.  A larger scene zoom is
-# needed because mplot3d otherwise leaves substantially more internal whitespace
-# than the neighbouring 2D projections.  This changes presentation only.
-# The 3D axis now receives explicit data-limit padding, so the scene can use
-# the full-card scale without clipping the material's boundary markers.
-MAIN_3D_SCENE_ZOOM = 1.40
+# Search ceiling for the main view, not a fixed display multiplier. The fitter
+# measures the actual card and labels to choose the largest safe scene size.
+MAIN_3D_SCENE_ZOOM = 3.0
 DEFAULT_3D_ELEVATION = 30.0
 DEFAULT_3D_AZIMUTH = -135.0
 
@@ -94,15 +91,16 @@ def fit_surface_box_to_canvas(
     *,
     max_zoom: float = MAIN_3D_SCENE_ZOOM,
     min_z_ratio: float = 0.28,
-    horizontal_padding_px: float = 54.0,
-    vertical_padding_px: float = 42.0,
+    horizontal_padding_px: float = 36.0,
+    vertical_padding_px: float = 26.0,
 ):
     """Maximize a 3D scene while keeping its projected box inside the canvas.
 
     mplot3d's ``zoom`` is independent of the FigureCanvas aspect ratio.  A
     fixed value can therefore clip a square surface in a short landscape card.
-    Projecting the eight padded limit corners at zoom 1 gives a stable scale
-    estimate for the current camera and actual canvas dimensions.
+    Apply the final axes aspect before projecting the eight padded limit
+    corners, then maximize their scale within the actual canvas. Rendered
+    labels reserve additional space only where needed.
     """
     aspect = surface_box_aspect(x, y, z, min_z_ratio=min_z_ratio)
     xlim, ylim, zlim = ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()
@@ -110,57 +108,97 @@ def fit_surface_box_to_canvas(
         (xx, yy, zz)
         for xx in xlim for yy in ylim for zz in zlim
     ], dtype=float)
-    zoom = float(max_zoom)
-    safe_bounds = None
-    screen = None
-    # Validate the final projected pixels rather than assuming zoom is exactly
-    # linear. This makes the home view deterministic across Matplotlib builds,
-    # DPI settings and landscape card sizes.
-    for _ in range(6):
+    # Axes3D changes its active rectangle to a centred square at draw time.
+    # Apply that geometry *before* measuring pixels. Measuring the undrawn wide
+    # rectangle and then drawing the square used to shrink the home view twice.
+    ax.apply_aspect()
+    canvas_width, canvas_height = ax.figure.canvas.get_width_height()
+    px = min(float(horizontal_padding_px), float(canvas_width) * .12)
+    py = min(float(vertical_padding_px), float(canvas_height) * .12)
+    safe_bounds = (px, float(canvas_width) - px, py, float(canvas_height) - py)
+    left, right, bottom, top = safe_bounds
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=3))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
+    ax.zaxis.set_major_locator(LinearLocator(3))
+    ax.tick_params(axis='both', labelsize=8, pad=2)
+    ax.zaxis.labelpad = 4
+    # 3D collections otherwise keep the centred square axes clip box, cutting
+    # material edges off when the scene uses the wider FigureCanvas.
+    for artist in (*ax.collections, *ax.lines):
+        artist.set_clip_box(ax.figure.bbox)
+
+    def project(zoom):
         ax.set_box_aspect(aspect, zoom=zoom)
         projected = np.column_stack(proj3d.proj_transform(
             corners[:, 0], corners[:, 1], corners[:, 2], ax.get_proj())[:2])
-        screen = ax.transData.transform(projected)
-        canvas_width, canvas_height = ax.figure.canvas.get_width_height()
-        # Axes3D forces its active axes bbox to a centred square even when the
-        # FigureCanvas is a wide landscape card.  3D artists can render across
-        # the full canvas, so fitting against ax.bbox would waste both side
-        # regions and shrink the surface unnecessarily.
-        safe_bounds = (
-            horizontal_padding_px,
-            float(canvas_width) - horizontal_padding_px,
-            vertical_padding_px,
-            float(canvas_height) - vertical_padding_px,
-        )
-        left, right, bottom, top = safe_bounds
-        projected_width = max(float(np.ptp(screen[:, 0])), 1.0)
-        projected_height = max(float(np.ptp(screen[:, 1])), 1.0)
-        usable_width = max(right - left, 1.0)
-        usable_height = max(top - bottom, 1.0)
-        inside = (float(np.min(screen[:, 0])) >= left and
-                  float(np.max(screen[:, 0])) <= right and
-                  float(np.min(screen[:, 1])) >= bottom and
-                  float(np.max(screen[:, 1])) <= top)
-        if inside:
+        return ax.transData.transform(projected)
+
+    def fits(screen):
+        return bool(np.all(np.isfinite(screen)) and
+                    np.min(screen[:, 0]) >= left and np.max(screen[:, 0]) <= right and
+                    np.min(screen[:, 1]) >= bottom and np.max(screen[:, 1]) <= top)
+
+    label_bounds = None
+    for refinement in range(8):
+        # Search both up and down. The actual canvas and camera, rather than a
+        # fixed multiplier, determine how much space this scene can occupy.
+        upper = max(.05, float(max_zoom))
+        screen = project(upper)
+        if fits(screen):
+            zoom = upper
+        else:
+            lower = 0.0
+            for _ in range(16):
+                middle = (lower + upper) / 2
+                if fits(project(middle)):
+                    lower = middle
+                else:
+                    upper = middle
+            zoom = max(lower * .995, .001)
+            screen = project(zoom)
+
+        # Measure the rendered labels once per refinement, without repainting
+        # pixels. Ignore locator ticks outside the limits: Matplotlib does not
+        # draw them, and their stale text positions can be far off the canvas.
+        ax.figure.draw_without_rendering()
+        renderer = ax.figure.canvas.get_renderer()
+        boxes = []
+        for axis, limits in ((ax.xaxis, xlim), (ax.yaxis, ylim), (ax.zaxis, zlim)):
+            labels = [axis.label, axis.get_offset_text()]
+            low, high = sorted(limits)
+            labels.extend(tick.label1 for tick in axis.majorTicks
+                          if low <= tick.get_loc() <= high)
+            boxes.extend(label.get_window_extent(renderer) for label in labels
+                         if label.get_visible() and label.get_text())
+        if not boxes:
             break
-        correction = min(usable_width / projected_width,
-                         usable_height / projected_height)
-        zoom = max(0.55, zoom * min(0.96, correction * 0.94))
+        label_bounds = (min(box.x0 for box in boxes), max(box.x1 for box in boxes),
+                        min(box.y0 for box in boxes), max(box.y1 for box in boxes))
+        overflows = (max(0., 6. - label_bounds[0]),
+                     max(0., label_bounds[1] - (canvas_width - 6.)),
+                     max(0., 6. - label_bounds[2]),
+                     max(0., label_bounds[3] - (canvas_height - 6.)))
+        if not any(overflows) or refinement == 7:
+            break
+        left += overflows[0] + 1
+        right -= overflows[1] + 1
+        bottom += overflows[2] + 1
+        top -= overflows[3] + 1
+    safe_bounds = (left, right, bottom, top)
+    ax._surface_home_label_bounds = label_bounds
     ax._surface_home_screen_bounds = None if screen is None else (
         float(np.min(screen[:, 0])), float(np.max(screen[:, 0])),
         float(np.min(screen[:, 1])), float(np.max(screen[:, 1])))
     ax._surface_home_safe_bounds = safe_bounds
+    ax._surface_home_labels_fit = bool(label_bounds is None or (
+        label_bounds[0] >= 0 and label_bounds[1] <= canvas_width and
+        label_bounds[2] >= 0 and label_bounds[3] <= canvas_height))
     ax._surface_home_fits = bool(
         screen is not None and safe_bounds is not None and
         float(np.min(screen[:, 0])) >= safe_bounds[0] and
         float(np.max(screen[:, 0])) <= safe_bounds[1] and
         float(np.min(screen[:, 1])) >= safe_bounds[2] and
         float(np.max(screen[:, 1])) <= safe_bounds[3])
-    ax.xaxis.set_major_locator(MaxNLocator(nbins=3))
-    ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
-    ax.zaxis.set_major_locator(LinearLocator(3))
-    ax.tick_params(axis='both', labelsize=8, pad=2)
-    ax.zaxis.labelpad = 4
     return aspect, zoom
 
 

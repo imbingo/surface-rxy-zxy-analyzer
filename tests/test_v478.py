@@ -111,7 +111,7 @@ class ImportWorkflowTests(unittest.TestCase):
         self.assertIn('X=10 / Y=20 µm/像素', text)
         self.assertIn('用户手动', text)
         self.assertIn('点间距 X=200 / Y=400', text)
-        self.assertIn('X=10 / Y=20', self.window.lbl_pixel_pitch.text())
+        self.assertFalse(hasattr(self.window, 'lbl_pixel_pitch'))
         trace = '\n'.join(self.window._import_trace_text(self.window.import_info))
         self.assertIn('原始像素 X=10 / Y=20', trace)
         self.assertIn('点间距 X=200 / Y=400', trace)

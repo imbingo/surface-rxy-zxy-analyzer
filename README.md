@@ -1,11 +1,11 @@
-# Surface Rxy ZXY Analyzer V4.7.8
+# Surface Rxy ZXY Analyzer V4.7.9
 
-面型及 Rxy 分析工具当前版本为 **V4.7.8 — 大矩阵单遍导入与像素尺寸溯源**。矩阵校验与抽样合并为一次扫描，显示实际 X/Y 像素间距与来源；无法确定 XYZ 列时保留数据，等待手动选择列映射及单位。详见 [发布说明](docs/RELEASE_NOTES_V4.7.8.md)。可选厂商 reader 接口继续可用，参见 [扩展接口](docs/FORMAT_EXTENSION_API.md)。
+面型及 Rxy 分析工具当前版本为 **V4.7.9 — 更大的 3D 默认视图**。按实际画布和坐标标签放大 3D 立体框；导入详情保留在底部状态与导入策略中。详见 [发布说明](docs/RELEASE_NOTES_V4.7.9.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.7.8.py`：V4.7.8 Python 启动入口。
-- `start_surface_analyzer_v4_7_8.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
+- `面型及Rxy分析工具V4.7.9.py`：V4.7.9 Python 启动入口。
+- `start_surface_analyzer_v4_7_9.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
 - `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
 - `requirements.txt`：Python 依赖清单。
 
@@ -14,25 +14,25 @@
 Windows 推荐双击：
 
 ```text
-start_surface_analyzer_v4_7_8.bat
+start_surface_analyzer_v4_7_9.bat
 ```
 
 命令行运行：
 
 ```powershell
-.\start_surface_analyzer_v4_7_8.bat
+.\start_surface_analyzer_v4_7_9.bat
 ```
 
 只检查环境和模块导入：
 
 ```powershell
-.\start_surface_analyzer_v4_7_8.bat --check
+.\start_surface_analyzer_v4_7_9.bat --check
 ```
 
 也可以直接使用 Python 入口：
 
 ```powershell
-python .\面型及Rxy分析工具V4.7.8.py
+python .\面型及Rxy分析工具V4.7.9.py
 python -m surface_analyzer
 ```
 

@@ -415,10 +415,6 @@ class DataIOMixin:
             len(getattr(self, '_last_detail_plot_indices', [])) if frame is not None else None)
         summary_text = f'导入状态: {text}'
         pitch_text = self._pixel_pitch_summary()
-        if hasattr(self, 'lbl_pixel_pitch'):
-            self.lbl_pixel_pitch.setText(pitch_text or (
-                '已读取，待选择 X/Y/Z 列及各轴单位。' if info.get('mapping_required') else
-                'XYZ 物理点表：按各轴所选单位读取坐标，不使用像素尺寸。'))
         if getattr(self, '_xy_raster_status', None):
             summary_text = summary_text.split(' | XY显示')[0] + ' | XY ' + self._xy_raster_status + f' | 3D显示 {len(getattr(self, "_last_detail_plot_indices", [])):,}'
         if pitch_text:

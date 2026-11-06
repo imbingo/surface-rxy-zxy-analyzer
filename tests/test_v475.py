@@ -7,7 +7,7 @@ import numpy as np
 from PyQt6.QtWidgets import QApplication
 
 from surface_analyzer.app import SurfaceAnalyzerPro
-from surface_analyzer.plotting import DEFAULT_3D_AZIMUTH, DEFAULT_3D_ELEVATION
+from surface_analyzer.plotting import DEFAULT_3D_AZIMUTH, DEFAULT_3D_ELEVATION, MAIN_3D_SCENE_ZOOM
 
 
 class V475RegressionTests(unittest.TestCase):
@@ -100,7 +100,7 @@ class V475RegressionTests(unittest.TestCase):
         window.active_idx = np.arange(len(window.df_raw))
         window.draw_plots(x.ravel(), y.ravel(), z.ravel())
         self.assertGreaterEqual(window._last_3d_fitted_zoom, 0.55)
-        self.assertLessEqual(window._last_3d_fitted_zoom, 1.40)
+        self.assertLessEqual(window._last_3d_fitted_zoom, MAIN_3D_SCENE_ZOOM)
         self.assertTrue(window.canvas.ax3d._surface_home_fits)
         left, right, bottom, top = window.canvas.ax3d._surface_home_safe_bounds
         x0, x1, y0, y1 = window.canvas.ax3d._surface_home_screen_bounds
