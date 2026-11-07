@@ -1,40 +1,23 @@
-# Surface Rxy ZXY Analyzer V4.7.9
+# Surface Rxy ZXY Analyzer V5.0.0
 
-面型及 Rxy 分析工具当前版本为 **V4.7.9 — 更大的 3D 默认视图**。按实际画布和坐标标签放大 3D 立体框；导入详情保留在底部状态与导入策略中。详见 [发布说明](docs/RELEASE_NOTES_V4.7.9.md)。
+面型及 Rxy 分析工具 **V5.0 — 统一分析工作台**。独立模块导航、单层/膜厚/平行度参数页、四视图共享色标及导入策略页签。详见 [发布说明](docs/RELEASE_NOTES_V5.0.0.md)。
 
 ## 当前版本入口
 
-- `面型及Rxy分析工具V4.7.9.py`：V4.7.9 Python 启动入口。
-- `start_surface_analyzer_v4_7_9.bat`：Windows 推荐启动脚本，复用仓库内 `.venv`。
-- `surface_analyzer/`：模块化 GUI、分析、文件导入、ROI、Recipe、报告和公共接口实现。
-- `requirements.txt`：Python 依赖清单。
+- Windows 安装用户下载 GitHub Release 中的 `SurfaceRxyZxyAnalyzer_Setup_V5.0.0.exe`。
+- 源码用户双击 `start_surface_analyzer_v5_0_0.bat`，首次运行需要 Python 及依赖下载访问。
+- Python 入口为 `面型及Rxy分析工具V5.0.0.py`，也可执行 `python -m surface_analyzer`。
+- 环境检查执行 `start_surface_analyzer_v5_0_0.bat --check`。
+- 旧版本启动脚本仍可启动当前模块。
 
-## 运行
+## V5.0.0 重点
 
-Windows 推荐双击：
-
-```text
-start_surface_analyzer_v4_7_9.bat
-```
-
-命令行运行：
-
-```powershell
-.\start_surface_analyzer_v4_7_9.bat
-```
-
-只检查环境和模块导入：
-
-```powershell
-.\start_surface_analyzer_v4_7_9.bat --check
-```
-
-也可以直接使用 Python 入口：
-
-```powershell
-python .\面型及Rxy分析工具V4.7.9.py
-python -m surface_analyzer
-```
+- 左侧独立导航切换单层、膜厚、平行度，参数区支持独立收起与恢复。
+- 膜厚与平行度采用分组参数页，平行度提供基准面和测量面两个绘图区。
+- 导入策略采用数据布局、分析抽样、显示、高级解析四个页面。
+- XY 右侧共享色条覆盖全部未删除点的当前显示 Z，四视图与报告使用统一色标。
+- 点查询提示退出自动布局，支持按需启用及 Ctrl 临时查询。
+- ROI 区域列表使用启用开关，长文件名单行省略并提供完整名称提示。
 
 ## V4.7.6 重点
 

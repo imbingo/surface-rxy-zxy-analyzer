@@ -2,7 +2,7 @@
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPainter
-from PyQt6.QtWidgets import QLabel, QSizePolicy
+from PyQt6.QtWidgets import QLabel, QSizePolicy, QStatusBar
 
 
 class ImportStatusLabel(QLabel):
@@ -11,6 +11,14 @@ class ImportStatusLabel(QLabel):
         self.setWordWrap(False)
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # A stylesheet/layout refresh can re-show normal status widgets while
+        # QStatusBar is displaying a temporary message. Preserve that message.
+        bar = self.parentWidget()
+        if isinstance(bar, QStatusBar) and bar.currentMessage():
+            self.hide()
 
     def paintEvent(self, event):
         painter = QPainter(self)

@@ -110,8 +110,9 @@ class UITests(unittest.TestCase):
                 with patch.object(QMessageBox, 'critical'):
                     self.assertFalse(w.load_library_recipe(bad))
                 self.assertEqual(w.spin_thresh.value(), 7.25)
-                self.assertEqual(w.lbl_rx.objectName(), w.lbl_pv.objectName())
-                self.assertEqual(w.lbl_ry.objectName(), w.lbl_pv.objectName())
+                self.assertEqual(w.lbl_rx.objectName(), 'metricValue')
+                self.assertEqual(w.lbl_pv.objectName(), 'metricValueAccent')
+                self.assertEqual(w.lbl_ry.objectName(), 'metricValue')
         finally:
             w.close()
 

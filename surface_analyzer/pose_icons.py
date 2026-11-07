@@ -16,7 +16,7 @@ def pose_pixmap(key):
         '↶': 'M4 9h9a7 7 0 0 1 0 14 M9 4 4 9l5 5',
     }
     svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="{paths[key]}" fill="none" stroke="#52657a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-    pixmap = QPixmap(48, 48)
+    pixmap = QPixmap(60, 60)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     QSvgRenderer(QByteArray(svg.encode())).render(painter)
@@ -34,6 +34,35 @@ def focus_icon(restore=False):
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
            f'<path d="{path}" fill="none" stroke="#52657a" stroke-width="1.7" '
            'stroke-linecap="round" stroke-linejoin="round"/></svg>')
+    pixmap = QPixmap(54, 54)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    QSvgRenderer(QByteArray(svg.encode())).render(painter)
+    painter.end()
+    pixmap.setDevicePixelRatio(3)
+    return QIcon(pixmap)
+
+
+def workspace_icon(name, color="#52657a"):
+    """Use the pose toolbar's monochrome line style for workspace commands."""
+    paths = {
+        'surface': 'M3 8 15 3l6 13-12 5z M4 11l6-1 5 3 4 1',
+        'recipe': 'M5 2h10l4 4v16H5z M14 2v5h5 M8 11h8 M8 15h8 M8 19h5',
+        'layers': 'M12 3 2 8l10 5 10-5z M2 12l10 5 10-5 M2 16l10 5 10-5',
+        'parallel': 'M4 10 14 3 M4 17 21 5 M11 21l10-7',
+        'export': 'M12 15V2 M8 6l4-4 4 4 M5 8H3v13h18V8h-2',
+        'sidebar': 'M3 4h18v16H3z M8 4v16',
+        'grid': 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
+        '3d': 'M12 2 3 7v10l9 5 9-5V7z M3 7l9 5 9-5 M12 12v10 M7.5 4.5l9 5',
+        'xy': 'M4 3v17h17 M8 15l4-6 4 3 4-7',
+        'fit': 'M9 3H3v6 M15 3h6v6 M3 15v6h6 M21 15v6h-6 M8 8h8v8H8z',
+        'query': 'M12 2v5 M12 17v5 M2 12h5 M17 12h5 M12 5a7 7 0 1 0 0 14 7 7 0 1 0 0-14',
+        'open': 'M3 7V4h6l2 3h10v13H3z M3 10h18',
+        'save': 'M4 3h13l4 4v14H3V3z M7 3v6h10V3 M7 21v-8h10v8',
+    }
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+           f'<path d="{paths[name]}" fill="none" stroke="{color}" '
+           'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>')
     pixmap = QPixmap(54, 54)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)

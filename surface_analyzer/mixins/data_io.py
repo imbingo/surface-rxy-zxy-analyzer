@@ -476,8 +476,18 @@ class DataIOMixin:
         正常界面只保留右侧工具条按钮，避免占用左侧主控区。"""
         dlg = QDialog(self)
         dlg.setWindowTitle("文件导入 / 显示策略")
-        dlg.setMinimumWidth(580)
-        dlg.resize(620, 720)
+        dlg.setObjectName("importSettings")
+        available = self.screen().availableGeometry()
+        width, height = min(760, available.width() - 32), min(640, available.height() - 32)
+        dlg.setMinimumSize(min(620, width), min(480, height))
+        dlg.resize(width, height)
+        dlg.setStyleSheet("""
+            #importSettings { background: #f3f2f1; }
+            #importSettings QGroupBox { background: white; border: 1px solid #e1e4e7; border-radius: 8px; margin-top: 18px; padding-top: 10px; }
+            #importSettings QGroupBox::title { subcontrol-origin: margin; left: 12px; color: #2c3742; }
+            #importSettings QLabel { font-size: 13px; }
+            #importSettings QComboBox, #importSettings QSpinBox, #importSettings QDoubleSpinBox { min-height: 24px; }
+        """)
         dialog_layout = QVBoxLayout(dlg)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -518,10 +528,11 @@ class DataIOMixin:
         layout_grid.addWidget(spin_search_start, 2, 1)
         layout.addWidget(layout_group)
 
-        group = QGroupBox("Zeiss / TXT / ASC / XYZ 大文件策略")
+        group = QGroupBox("分析输入与抽样")
+        group.setObjectName("analysisSamplingGroup")
         grid = QGridLayout(group)
 
-        chk_auto = QCheckBox("超大文本自动抽样")
+        chk_auto = QCheckBox("自动抽样分析")
         chk_auto.setChecked(self.auto_sample_large_text)
         chk_auto.setToolTip("开启后，超过阈值的TXT/CSV/ASC/XYZ等文本文件不会全量读入，而是按设定采样方式预抽样，避免大文件卡死。")
         grid.addWidget(chk_auto, 0, 0, 1, 2)
@@ -628,6 +639,7 @@ class DataIOMixin:
 
         advanced_group = QGroupBox("高级解析覆盖")
         advanced_outer = QVBoxLayout(advanced_group)
+        advanced_outer.setContentsMargins(0, 0, 0, 0)
         advanced_toggle = QToolButton()
         advanced_toggle.setText("展开高级解析覆盖（Auto优先使用可靠表头）")
         advanced_toggle.setCheckable(True)
@@ -748,6 +760,15 @@ class DataIOMixin:
             spin_grid.setEnabled(cb_sample_method.currentData() == 'spatial_grid')
             sync_mode_from_values()
 
+        origin_label = advanced.itemAtPosition(8, 0).widget()
+        pitch_source_label = advanced.itemAtPosition(9, 0).widget()
+        threshold_label = grid.itemAtPosition(12, 0).widget()
+        format_rows = [(spin_pitch_x, grid.itemAtPosition(8, 0).widget()),
+                       (spin_pitch_y, grid.itemAtPosition(9, 0).widget()),
+                       (cb_matrix_z_unit, grid.itemAtPosition(10, 0).widget()),
+                       (spin_matrix_cols, grid.itemAtPosition(13, 0).widget()),
+                       (spin_matrix_rows, advanced.itemAtPosition(10, 0).widget())]
+
         def update_layout_controls(*_args):
             mode = str(cb_input_layout.currentData())
             uses_pitch = mode in ('pixel_xy', 'height_matrix', 'zygo_xyz')
@@ -759,6 +780,16 @@ class DataIOMixin:
             spin_matrix_rows.setEnabled(mode == 'height_matrix')
             spin_origin_x.setEnabled(mode == 'pixel_xy')
             spin_origin_y.setEnabled(mode == 'pixel_xy')
+            spin_origin_x.setVisible(mode == 'pixel_xy')
+            spin_origin_y.setVisible(mode == 'pixel_xy')
+            origin_label.setVisible(mode == 'pixel_xy')
+            cb_pitch_source.setVisible(uses_pitch)
+            pitch_source_label.setVisible(uses_pitch)
+            spin_matrix_threshold.setVisible(mode == 'height_matrix')
+            threshold_label.setVisible(mode == 'height_matrix')
+            for control, label in format_rows:
+                control.setVisible(control.isEnabled())
+                label.setVisible(control.isEnabled())
 
         cb_mode.currentIndexChanged.connect(apply_preset_from_combo)
         cb_input_layout.currentIndexChanged.connect(update_layout_controls)
@@ -786,7 +817,69 @@ class DataIOMixin:
         status.setStyleSheet("color: #7f8c8d; font-size: 11px;")
         layout.addWidget(status)
 
+        # Reuse the existing controls and acceptance path in four compact pages.
+        settings_tabs = QTabWidget()
+        settings_tabs.setObjectName("importSettingsTabs")
+        pages = []
+        for title in ("数据布局", "分析抽样", "显示", "高级解析"):
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(12, 12, 12, 12)
+            page_layout.setSpacing(14)
+            page_scroll = QScrollArea()
+            page_scroll.setWidgetResizable(True)
+            page_scroll.setFrameShape(QFrame.Shape.NoFrame)
+            page_scroll.setWidget(page)
+            settings_tabs.addTab(page_scroll, title)
+            pages.append(page_layout)
+        display_group = QGroupBox("绘图显示")
+        display_grid = QGridLayout(display_group)
+
+        def move_row(source, row, target, destination):
+            for index in range(source.count() - 1, -1, -1):
+                current_row, column, row_span, column_span = source.getItemPosition(index)
+                if current_row != row:
+                    continue
+                item = source.takeAt(index)
+                if item.widget() is not None:
+                    target.addWidget(item.widget(), destination, column, row_span, column_span)
+                elif item.layout() is not None:
+                    target.addLayout(item.layout(), destination, column, row_span, column_span)
+
+        for old_row, new_row in ((8, 3), (9, 4), (10, 5), (13, 6)):
+            move_row(grid, old_row, layout_grid, new_row)
+        move_row(grid, 7, display_grid, 0)
+        for old_row, new_row in ((8, 7), (9, 8), (10, 9)):
+            move_row(advanced, old_row, layout_grid, new_row)
+        for form in (layout_grid, grid, display_grid, advanced):
+            form.setContentsMargins(14, 12, 14, 14)
+            form.setColumnMinimumWidth(0, 156)
+            form.setColumnStretch(1, 1)
+            form.setHorizontalSpacing(12)
+            form.setVerticalSpacing(12)
+        for explanation in (layout_note, mode_note, note, status):
+            explanation.setStyleSheet("color: #64748b; font-size: 12px;")
+        pages[0].addWidget(layout_group)
+        pages[1].addWidget(group)
+        pages[2].addWidget(display_group)
+        pages[2].addWidget(status)
+        pages[3].addWidget(advanced_group)
+        advanced_toggle.setChecked(True)
+        advanced_toggle.hide()
+        for page_layout in pages:
+            page_layout.addStretch()
+        for name, control in (("inputLayout", cb_input_layout), ("pitchX", spin_pitch_x),
+                              ("pitchY", spin_pitch_y), ("matrixZUnit", cb_matrix_z_unit),
+                              ("bodyStart", spin_search_start)):
+            control.setObjectName(name)
+        dialog_layout.removeWidget(scroll)
+        scroll.hide()
+        dialog_layout.insertWidget(0, settings_tabs, 1)
+        update_layout_controls()
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         dialog_layout.addWidget(buttons)

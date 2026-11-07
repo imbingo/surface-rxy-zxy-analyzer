@@ -14,6 +14,19 @@ DEFAULT_3D_ELEVATION = 30.0
 DEFAULT_3D_AZIMUTH = -135.0
 
 
+def display_color_limits(values):
+    """Return one finite, nonzero display range, including for flat surfaces."""
+    values = np.asarray(values)
+    finite = values[np.isfinite(values)]
+    if not finite.size:
+        return None
+    low, high = float(finite.min()), float(finite.max())
+    if low == high:
+        padding = max(abs(low) * 1e-9, 1e-9)
+        return low - padding, high + padding
+    return low, high
+
+
 def _finite_extent(values) -> float:
     array = np.asarray(values, dtype=float).ravel()
     finite = array[np.isfinite(array)]

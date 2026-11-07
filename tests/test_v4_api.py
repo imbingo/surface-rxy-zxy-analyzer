@@ -13,7 +13,7 @@ import pandas as pd
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import (
-    QApplication, QMessageBox, QDialog, QGroupBox, QLabel, QToolButton, QWidget,
+    QApplication, QMessageBox, QDialog, QGroupBox, QLabel, QToolButton, QWidget, QComboBox, QSpinBox, QDoubleSpinBox, QTabWidget,
 )
 
 from surface_analyzer import AnalysisOptions, analyze_file, analyze_xyz, compare_plane_results
@@ -106,7 +106,7 @@ class V4ApiTests(unittest.TestCase):
         window.import_search_start_row = 123
         window.input_layout_mode = "height_matrix"
         recipe = window._current_recipe_dict()
-        self.assertEqual(APP_VERSION, "V4.7.10")
+        self.assertEqual(APP_VERSION, "V5.0.0")
         self.assertEqual(recipe["schema_version"], 9)
         self.assertEqual(recipe["input"]["search_start_row"], 123)
         self.assertNotIn("data_start_row", recipe["input"])
@@ -263,13 +263,10 @@ class V4ApiTests(unittest.TestCase):
             layout_group = next(group for group in dialog.findChildren(QGroupBox)
                                 if group.title() == "文件数据布局")
             layout_combo = layout_group.layout().itemAtPosition(0, 1).widget()
-            strategy_group = next(group for group in dialog.findChildren(QGroupBox)
-                                  if group.title() == "Zeiss / TXT / ASC / XYZ 大文件策略")
-            grid = strategy_group.layout()
-            pitch_x = grid.itemAtPosition(8, 1).widget()
-            pitch_y = grid.itemAtPosition(9, 1).widget()
-            matrix_unit = grid.itemAtPosition(10, 1).widget()
-            labels = [label.text() for label in strategy_group.findChildren(QLabel)]
+            pitch_x = dialog.findChild(QDoubleSpinBox, "pitchX")
+            pitch_y = dialog.findChild(QDoubleSpinBox, "pitchY")
+            matrix_unit = dialog.findChild(QComboBox, "matrixZUnit")
+            labels = [label.text() for label in dialog.findChildren(QLabel)]
             layout_labels = [label.text() for label in layout_group.findChildren(QLabel)]
             search_start = layout_group.layout().itemAtPosition(2, 1).widget()
             observed["layouts"] = [layout_combo.itemData(i) for i in range(layout_combo.count())]
@@ -298,27 +295,18 @@ class V4ApiTests(unittest.TestCase):
         self.assertFalse(observed["zygo_search_enabled"])
         window.close()
 
-    def test_advanced_import_settings_are_collapsed_by_default(self):
+    def test_advanced_import_settings_have_a_dedicated_page(self):
         window = SurfaceAnalyzerPro()
-        observed = {}
-
         def inspect_dialog(dialog):
-            advanced = next(group for group in dialog.findChildren(QGroupBox)
-                            if group.title() == "高级解析覆盖")
-            body = advanced.findChild(QWidget, "advancedParsingBody")
-            toggle = advanced.findChild(QToolButton)
-            observed["hidden"] = body.isHidden()
-            observed["has_toggle"] = toggle is not None
-            if toggle is not None:
-                toggle.click()
-            observed["hidden_after_expand"] = body.isHidden()
+            tabs = dialog.findChild(QTabWidget, "importSettingsTabs")
+            self.assertEqual([tabs.tabText(i) for i in range(tabs.count())],
+                             ['数据布局', '分析抽样', '显示', '高级解析'])
+            body = dialog.findChild(QWidget, "advancedParsingBody")
+            self.assertFalse(body.isHidden())
+            self.assertEqual(tabs.currentIndex(), 0)
             return QDialog.DialogCode.Rejected
-
         with patch.object(QDialog, "exec", inspect_dialog):
             window.show_bigfile_settings_dialog()
-        self.assertTrue(observed["hidden"])
-        self.assertTrue(observed["has_toggle"])
-        self.assertFalse(observed["hidden_after_expand"])
         window.close()
 
     def test_v430_origin_tile_tracks_pipeline_state(self):

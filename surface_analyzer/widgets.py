@@ -22,9 +22,9 @@ from PyQt6.QtWidgets import (
     QFileDialog, QLabel, QSplitter, QGroupBox, QGridLayout, QMessageBox,
     QScrollArea, QComboBox, QTabWidget, QDoubleSpinBox, QSpinBox, QCheckBox,
     QDialog, QDialogButtonBox, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
-    QStackedWidget, QSizeGrip, QToolButton,
+    QStackedWidget, QSizeGrip, QToolButton, QStyle, QStyleOption, QStyledItemDelegate, QStyleOptionViewItem,
 )
-from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSize, QRectF, pyqtSignal
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
 
@@ -34,6 +34,136 @@ from .plotting import (
 )
 from .pose_icons import focus_icon
 
+
+
+class ProjectionToolbar(QWidget):
+    """Wrap the display selector below the two command groups when necessary."""
+    def __init__(self, groups, parent=None):
+        super().__init__(parent)
+        self.groups = groups
+        self.grid = QGridLayout(self)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(8)
+        self.wrapped = None
+        self._relayout()
+
+    def _relayout(self):
+        wrapped = self.width() < sum(group.sizeHint().width() for group in self.groups) + 24
+        if wrapped == self.wrapped:
+            return
+        self.wrapped = wrapped
+        for group in self.groups:
+            self.grid.removeWidget(group)
+        self.grid.addWidget(self.groups[0], 0, 0)
+        self.grid.addWidget(self.groups[1], 0, 1)
+        self.grid.addWidget(self.groups[2], 1 if wrapped else 0, 0 if wrapped else 2,
+                            1, 2 if wrapped else 1)
+        self.grid.setColumnStretch(1, 1 if wrapped else 0)
+        self.grid.setColumnStretch(2, 0 if wrapped else 1)
+        self.grid.setColumnStretch(3, 0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._relayout()
+
+
+class ROIRegionDelegate(QStyledItemDelegate):
+    """Paint enabled state as a switch while preserving Qt's check-state model."""
+    @staticmethod
+    def switch_rect(rect):
+        return QRectF(rect.right() - 43, rect.center().y() - 9, 32, 18)
+
+    def sizeHint(self, option, index):
+        hint = super().sizeHint(option, index)
+        hint.setHeight(44)
+        return hint
+
+    def paint(self, painter, option, index):
+        styled = QStyleOptionViewItem(option)
+        self.initStyleOption(styled, index)
+        text = styled.text
+        styled.text = ''
+        styled.features &= ~QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator
+        style = styled.widget.style() if styled.widget else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, styled, painter, styled.widget)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        text_rect = option.rect.adjusted(12, 0, -54, 0)
+        painter.setFont(styled.font)
+        painter.setPen(QColor('#243b50' if styled.state & QStyle.StateFlag.State_Selected else '#343d48'))
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                         styled.fontMetrics.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width()))
+        enabled = index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked.value
+        switch = self.switch_rect(option.rect)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor('#4779a6' if enabled else '#c8ced4'))
+        painter.drawRoundedRect(switch, 9, 9)
+        painter.setBrush(QColor('#ffffff'))
+        knob_x = switch.right() - 16 if enabled else switch.left() + 2
+        painter.drawEllipse(QRectF(knob_x, switch.top() + 2, 14, 14))
+        painter.restore()
+
+    def editorEvent(self, event, model, option, index):
+        if not index.flags() & Qt.ItemFlag.ItemIsEnabled:
+            return False
+        toggle = False
+        if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
+            if event.button() != Qt.MouseButton.LeftButton or not self.switch_rect(option.rect).contains(event.position()):
+                return False
+            if event.type() == QEvent.Type.MouseButtonPress:
+                return True
+            toggle = True
+        elif event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Space:
+            toggle = True
+        if toggle:
+            checked = index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked.value
+            return model.setData(index, Qt.CheckState.Unchecked if checked else Qt.CheckState.Checked,
+                                 Qt.ItemDataRole.CheckStateRole)
+        return False
+
+
+class WorkspaceTabs(QTabWidget):
+    """Keep the three workspace choices evenly distributed over the inspector."""
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.tabBar().setExpanding(True)
+        self.tabBar().setFixedWidth(self.width())
+
+
+class SourceLabel(QLabel):
+    """Keep the full source identity while painting a single elided line."""
+    textChanged = pyqtSignal(str)
+
+    def __init__(self, text='', parent=None):
+        super().__init__(text, parent)
+        self.setWordWrap(False)
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setToolTip(text)
+
+    def setText(self, text):
+        super().setText(text)
+        self.setToolTip(text)
+        self.textChanged.emit(text)
+
+    def sizeHint(self):
+        return QSize(0, self.fontMetrics().height() + 18)
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        option = QStyleOption()
+        option.initFrom(self)
+        self.style().drawPrimitive(QStyle.PrimitiveElement.PE_Widget, option, painter, self)
+        rect = self.contentsRect().adjusted(9, 0, -9, 0)
+        text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideMiddle,
+                                           max(0, rect.width()))
+        painter.setPen(self.palette().color(self.foregroundRole()))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+        painter.end()
 
 
 class NoWheelSpinBox(QSpinBox):
@@ -67,10 +197,10 @@ class MultiViewCanvas(QWidget):
         plt.rcParams.update({
             'figure.facecolor': '#ffffff', 'axes.facecolor': '#ffffff',
             'axes.edgecolor': '#d8dee4', 'axes.linewidth': 0.8,
-            'axes.labelcolor': '#5b6672', 'axes.labelsize': 9,
+            'axes.labelcolor': '#5b6672', 'axes.labelsize': 10,
             'grid.color': '#edf0f3', 'grid.linewidth': 0.7,
             'xtick.color': '#9aa4ae', 'ytick.color': '#9aa4ae',
-            'xtick.labelsize': 8, 'ytick.labelsize': 8,
+            'xtick.labelsize': 9, 'ytick.labelsize': 9,
         })
         grid = QGridLayout(self)
         grid.setContentsMargins(0, 0, 0, 0)
@@ -117,7 +247,7 @@ class MultiViewCanvas(QWidget):
         for i, card in enumerate(self._cards):
             self._grid.addWidget(card, i // columns, i % columns)
         self._grid.setColumnStretch(1, 1 if columns == 2 else 0)
-        self.setMinimumHeight(1320 if columns == 1 else 660)
+        self.setMinimumHeight(1040 if columns == 1 else 460)
 
     def set_focused_view(self, view=None):
         if view is not None and view not in self._card_by_view:
@@ -188,12 +318,51 @@ class MultiViewCanvas(QWidget):
             fig = Figure(constrained_layout=True)
             ax = fig.add_subplot(111, projection=projection)
         canvas = FigureCanvas(fig)
-        v.addWidget(canvas, 1)
+        if view == 'XY':
+            content = QHBoxLayout()
+            content.setContentsMargins(0, 0, 0, 0)
+            content.setSpacing(0)
+            content.addWidget(canvas, 1)
+            self.colorbar_figure = Figure(figsize=(1.04, 3))
+            self.colorbar_axis = self.colorbar_figure.add_axes([.08, .14, .22, .72])
+            self.colorbar_axis.set_visible(False)
+            self.colorbar_canvas = FigureCanvas(self.colorbar_figure)
+            self.colorbar_canvas.setFixedWidth(104)
+            self.colorbar_canvas.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Ignored)
+            content.addWidget(self.colorbar_canvas)
+            v.addLayout(content, 1)
+        else:
+            v.addWidget(canvas, 1)
         eff = QGraphicsDropShadowEffect(card)
         eff.setBlurRadius(20); eff.setXOffset(0); eff.setYOffset(3)
         eff.setColor(QColor(18, 28, 40, 30))
         card.setGraphicsEffect(eff)
         return ax, canvas, card, tlabel, focus
+
+    def set_color_scale(self, limits, label, flat_value=None):
+        from matplotlib.colorbar import ColorbarBase
+        from matplotlib.colors import Normalize
+        from matplotlib.ticker import ScalarFormatter, MaxNLocator, FuncFormatter
+        self.colorbar_axis.clear()
+        self.colorbar_axis.set_visible(limits is not None)
+        self.shared_colorbar = None
+        if limits is not None:
+            bar = ColorbarBase(self.colorbar_axis, cmap='turbo', norm=Normalize(*limits))
+            bar.set_label(label, fontsize=9, labelpad=6)
+            if flat_value is not None:
+                bar.set_ticks([flat_value])
+            else:
+                bar.locator = MaxNLocator(nbins=5)
+            if flat_value is not None:
+                bar.formatter = FuncFormatter(lambda value, position: f'{value:.9g}')
+            else:
+                formatter = ScalarFormatter(useOffset=False)
+                formatter.set_powerlimits((-3, 3))
+                bar.formatter = formatter
+            bar.update_ticks()
+            bar.ax.tick_params(labelsize=8)
+            self.shared_colorbar = bar
+        self.colorbar_canvas.draw_idle()
 
     def set_titles(self, mode='raw'):
         if mode != 'raw':
@@ -226,7 +395,7 @@ class ParallelismCanvas(FigureCanvas):
         self.ax_measure = self.fig.add_subplot(122, projection='3d')
         super().__init__(self.fig)
         self.setParent(parent)
-        self.setMinimumHeight(360)
+        self.setMinimumHeight(260)
         self.plot_records(None, None)
 
     def _empty_axis(self, ax, title):

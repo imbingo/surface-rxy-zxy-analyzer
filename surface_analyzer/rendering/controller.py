@@ -92,7 +92,7 @@ class XYRasterController(QObject):
         size = (max(1, min(side, round(self.ax.bbox.width))),
                 max(1, min(side, round(self.ax.bbox.height))))
         return (self.source_version, self.mode, tuple(xs+ys), size,
-                self.owner.canvas.focused_view == 'XY')
+                self.owner.canvas.focused_view == 'XY', tuple(self.z_limits))
 
     def start(self):
         if self.source is None:

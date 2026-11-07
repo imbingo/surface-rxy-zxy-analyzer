@@ -856,6 +856,7 @@ class ROIMixin:
             if idx >= 0:
                 self.cb_roi_select.setCurrentIndex(idx)
         self.cb_roi_select.blockSignals(False)
+        self._sync_roi_region_list()
         active = self._roi_is_active()
         if effective_roi_mask is not None:
             self.last_roi_keep_count = int(np.asarray(effective_roi_mask, dtype=bool).sum())
@@ -1389,7 +1390,8 @@ class ROIMixin:
         else:
             event.inaxes.set_xlim(home[0])
             event.inaxes.set_ylim(home[1])
-        event.canvas.draw_idle()
+        if view != '3D' or getattr(self, '_last_3d_fit_data', None) is None:
+            event.canvas.draw_idle()
         self.statusBar().showMessage(f"{view} 视图已恢复原始大小", 3000)
         return True
 

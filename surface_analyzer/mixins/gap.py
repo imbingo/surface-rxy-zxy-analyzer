@@ -56,11 +56,11 @@ class GapAnalysisMixin:
         self.lbl_base1_status.setText(self._gap_layer_status(self.data_base1))
         self.lbl_base2_status.setText(self._gap_layer_status(self.data_base2, "可选空置"))
         self.lbl_stack_status.setStyleSheet(
-            f"color: {'#475569' if self.data_stack is not None else '#c0392b'}; font-weight: bold;")
+            f"color: {'#475569' if self.data_stack is not None else '#c0392b'}; font-weight: 400;")
         self.lbl_base1_status.setStyleSheet(
-            f"color: {'#2563eb' if self.data_base1 is not None else '#c0392b'}; font-weight: bold;")
+            f"color: {'#2563eb' if self.data_base1 is not None else '#c0392b'}; font-weight: 400;")
         self.lbl_base2_status.setStyleSheet(
-            f"color: {'#7c3aed' if self.data_base2 is not None else '#7f8c8d'}; font-weight: bold;")
+            f"color: {'#7c3aed' if self.data_base2 is not None else '#7f8c8d'}; font-weight: 400;")
 
     def _sync_gap_action_state(self):
         busy = getattr(self, '_task_thread', None) is not None

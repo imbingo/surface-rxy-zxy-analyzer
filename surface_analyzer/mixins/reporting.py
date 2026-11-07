@@ -753,8 +753,13 @@ class ReportingMixin:
         dz = plot_z_all[detail_idx]
         ox, oy, oz = tx[overview_idx], ty[overview_idx], plot_z_all[overview_idx]
 
-        sc = {'c': dz, 'cmap': 'turbo', 's': 14, 'alpha': 0.85, 'edgecolors': 'none'}
-        ax3d.scatter(dx, dy, dz, **sc)
+        from ..plotting import display_color_limits
+        from matplotlib.colors import Normalize
+        finite_overview = np.isfinite(ox) & np.isfinite(oy) & np.isfinite(oz)
+        color_limits = display_color_limits(oz[finite_overview]) or (0., 1.)
+        sc = {'c': dz, 'cmap': 'turbo', 's': 14, 'alpha': 1., 'edgecolors': 'none',
+              'vmin': color_limits[0], 'vmax': color_limits[1]}
+        ax3d.scatter(dx, dy, dz, depthshade=False, **sc)
         ax3d.plot(tx[required],ty[required],plot_z_all[required],linestyle='None',
                   marker='o',markerfacecolor='none',markeredgecolor='#c2410c',markersize=7,zorder=9)
         ax3d.set_title(ttl3d); ax3d.set_xlabel("X (mm)"); ax3d.set_ylabel("Y (mm)"); ax3d.set_zlabel(zlab)
@@ -771,7 +776,7 @@ class ReportingMixin:
             size = (min(side,max(1,int(min(width,height*aspect)))),
                     min(side,max(1,int(min(height,width/aspect)))))
             r = build_xy_display(ox,oy,oz,(xmin-padx,xmax+padx,ymin-pady,ymax+pady),size,membership)
-            ax_xy.imshow(raster_rgba(r,xy_mode),origin='lower',extent=r.extent,interpolation='nearest')
+            ax_xy.imshow(raster_rgba(r,xy_mode,z_limits=color_limits),origin='lower',extent=r.extent,interpolation='nearest')
             # Keep the effective ROI height-coloured in exported reports.  The
             # overview still shows the surrounding source domain, but only
             # bins containing excluded points (and no retained points) are
@@ -782,10 +787,8 @@ class ReportingMixin:
                 excluded_only = (r.count > 0) & (r.roi_count == 0)
                 overlay[excluded_only] = [.42,.45,.50,.88]
             ax_xy.imshow(overlay,origin='lower',extent=r.extent,interpolation='nearest')
-            m_xy = ScalarMappable(norm=Normalize(*r.z_limits),cmap='turbo')
+            m_xy = ScalarMappable(norm=Normalize(*color_limits),cmap='turbo')
         else:
-            finite_z = oz[np.isfinite(oz)]
-            color_limits = (finite_z.min(), finite_z.max()) if len(finite_z) else (0., 1.)
             xy_indices = spatial_lod_indices(tx,ty,overview_idx,MAX_DETAIL_POINTS,
                                              critical_indices(tx,ty,plot_z_all,overview_idx))
             m_xy = ax_xy.scatter(tx[xy_indices], ty[xy_indices], c=plot_z_all[xy_indices],
@@ -818,9 +821,14 @@ class ReportingMixin:
             ax3d.plot_surface(xx, yy, zz, color='#3498db', alpha=0.3, edgecolor='none')
             set_surface_box_aspect(ax3d, dx, dy, dz, zoom=0.82, z_tick_count=3)
             # 颜色条：标明散点配色对应的高度/残差量级
-            cbar = fig.colorbar(m_xy, ax=[ax_xz, ax_yz], location='bottom',
-                                shrink=0.65, aspect=40, pad=0.20)
+            cbar = fig.colorbar(m_xy, ax=ax_xy, location='right',
+                                shrink=0.80, aspect=28, pad=0.04)
             cbar.set_label(zlab, fontsize=10)
+            if finite_overview.any() and np.ptp(oz[finite_overview]) == 0:
+                from matplotlib.ticker import FuncFormatter
+                cbar.set_ticks([float(oz[finite_overview][0])])
+                cbar.formatter = FuncFormatter(lambda value, position: f'{value:.9g}')
+                cbar.update_ticks()
             cbar.ax.tick_params(labelsize=8)
 
         # 顶部：元信息（较小字号）
