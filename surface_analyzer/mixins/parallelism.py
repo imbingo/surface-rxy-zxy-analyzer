@@ -123,6 +123,12 @@ class ParallelismMixin:
         if hasattr(self, 'lbl_parallel_base_status'):
             self.lbl_parallel_base_status.setText(self._slot_status_text(self.parallel_base))
             self.lbl_parallel_measure_status.setText(self._slot_status_text(self.parallel_measure))
+            for label, record in ((self.lbl_parallel_base_status, self.parallel_base),
+                                  (self.lbl_parallel_measure_status, self.parallel_measure)):
+                label.setStyleSheet(self.SLOT_EMPTY_STYLE if record is None
+                                    else "color: #475569; font-weight: 400;")
+            if hasattr(self, '_sync_status_widgets'):
+                self._sync_status_widgets()
         if hasattr(self, 'parallel_canvas'):
             self.parallel_canvas.plot_records(self.parallel_base, self.parallel_measure)
         self._update_parallel_result_ui()
