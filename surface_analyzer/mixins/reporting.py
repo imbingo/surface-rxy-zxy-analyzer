@@ -50,6 +50,8 @@ class ReportingMixin:
     @staticmethod
     def _import_trace_text(import_info):
         info = import_info or {}
+        derived_trace = [f"派生列: {d['name']} = {d['expression']} [{d['unit']}]"
+                         for d in info.get('derived_columns', [])]
         source_format = str(info.get('source_format') or '--')
         from ..data_scale import source_counts
         valid = source_counts(info)[1].text()
@@ -65,6 +67,7 @@ class ReportingMixin:
                         f"{int(info.get('source_record_rows', 0) or 0):,}")
         lines = [f"识别格式: {source_format}",
                  f"源数据统计: 有效 {valid} | 缺测 {missing:,} | 坏行 {bad:,}{topology}"]
+        lines.extend(derived_trace)
         if info.get('format_extension_id'):
             lines.append(f"格式扩展: {info['format_extension_id']} "
                          f"v{info.get('format_extension_version')} | "
@@ -173,6 +176,7 @@ class ReportingMixin:
                 self.n_filtered, pipeline_text, filter_text, self.import_info,
                 getattr(self, 'display_surface_mode', 'raw'),
                 render_config={'xy_mode': self.canvas.xy_mode.currentData(),
+                               'color_scale_mode': self.cb_color_scale.currentData(),
                                'xy_raster_max_side': 1200},
                 roi_info=self._roi_report_info(
                     tx, ty, raw_tz, matrix_rc=self._matrix_rc_for_current_data(),
@@ -330,6 +334,8 @@ class ReportingMixin:
         pipeline = list(self.transform_pipeline)
         return {
             'x_col': self.cb_x_col.currentText(),
+            'derived_columns': copy.deepcopy(getattr(self, 'derived_columns', [])),
+            'worksheet': copy.deepcopy(getattr(self, 'worksheet_data', None)),
             'y_col': self.cb_y_col.currentText(),
             'z_col': self.cb_z_col.currentText(),
             'x_unit': self.cb_x_unit.currentText(),
@@ -351,6 +357,7 @@ class ReportingMixin:
             'filter_text': filter_text,
             'display_surface_mode': getattr(self, 'display_surface_mode', 'raw'),
             'render_config': {'xy_mode': self.canvas.xy_mode.currentData(),
+                              'color_scale_mode': self.cb_color_scale.currentData(),
                               'xy_raster_max_side': 1200},
             'display_detrended': self.display_detrended,
             'roi_enabled': bool(self.roi_enabled),
@@ -544,6 +551,16 @@ class ReportingMixin:
                     progress(int(file_index * 100 / total_files), f"正在处理 {file_index + 1}/{total_files}: {name}")
                 try:
                     df_raw = self._read_table(path)
+                    if params.get('worksheet'):
+                        from ..worksheet import Worksheet
+                        sheet = Worksheet(df_raw, params['worksheet'])
+                        df_raw = sheet.evaluate(cancel_event)
+                        self.import_info['derived_columns'] = sheet.descriptors()
+                        self.import_info['worksheet'] = params['worksheet']
+                    elif params.get('derived_columns'):
+                        from ..data_preview import derive_columns
+                        df_raw = derive_columns(df_raw, params['derived_columns'], cancel_event)
+                        self.import_info['derived_columns'] = params['derived_columns']
                     import_info_snap = dict(self.import_info)
                     for col in (params['x_col'], params['y_col'], params['z_col']):
                         if col not in df_raw.columns:
@@ -753,12 +770,15 @@ class ReportingMixin:
         dz = plot_z_all[detail_idx]
         ox, oy, oz = tx[overview_idx], ty[overview_idx], plot_z_all[overview_idx]
 
-        from ..plotting import display_color_limits
+        from ..plotting import color_scale_domains
         from matplotlib.colors import Normalize
         finite_overview = np.isfinite(ox) & np.isfinite(oy) & np.isfinite(oz)
-        color_limits = display_color_limits(oz[finite_overview]) or (0., 1.)
+        scales = color_scale_domains(tx,ty,plot_z_all,overview_idx,active_idx,
+                                     bool(roi_info.get('enabled')),render_config['color_scale_mode'])
+        color_limits = scales['global_limits'] or (0.,1.)
+        detail_limits = scales['detail_limits'] or color_limits
         sc = {'c': dz, 'cmap': 'turbo', 's': 14, 'alpha': 1., 'edgecolors': 'none',
-              'vmin': color_limits[0], 'vmax': color_limits[1]}
+              'vmin': detail_limits[0], 'vmax': detail_limits[1]}
         ax3d.scatter(dx, dy, dz, depthshade=False, **sc)
         ax3d.plot(tx[required],ty[required],plot_z_all[required],linestyle='None',
                   marker='o',markerfacecolor='none',markeredgecolor='#c2410c',markersize=7,zorder=9)
@@ -823,13 +843,24 @@ class ReportingMixin:
             # 颜色条：标明散点配色对应的高度/残差量级
             cbar = fig.colorbar(m_xy, ax=ax_xy, location='right',
                                 shrink=0.80, aspect=28, pad=0.04)
-            cbar.set_label(zlab, fontsize=10)
+            cbar.set_label('全局 · '+zlab, fontsize=10)
             if finite_overview.any() and np.ptp(oz[finite_overview]) == 0:
                 from matplotlib.ticker import FuncFormatter
                 cbar.set_ticks([float(oz[finite_overview][0])])
                 cbar.formatter = FuncFormatter(lambda value, position: f'{value:.9g}')
                 cbar.update_ticks()
             cbar.ax.tick_params(labelsize=8)
+            if scales['local'] and scales['detail_limits'] is not None:
+                from matplotlib.cm import ScalarMappable
+                local_bar = fig.colorbar(ScalarMappable(norm=Normalize(*detail_limits),cmap='turbo'),
+                                         ax=ax3d,location='right',shrink=.80,aspect=28,pad=.04)
+                local_bar.set_label('当前 ROI · '+zlab,fontsize=10)
+                local_bar.ax.tick_params(labelsize=8)
+                if scales['detail_flat'] is not None:
+                    from matplotlib.ticker import FuncFormatter
+                    local_bar.set_ticks([scales['detail_flat']])
+                    local_bar.formatter = FuncFormatter(lambda value,position:f'{value:.9g}')
+                    local_bar.update_ticks()
 
         # 顶部：元信息（较小字号）
         quality = self._metric_quality_from_import(import_info)

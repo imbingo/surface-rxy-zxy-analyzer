@@ -153,7 +153,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             'point_table', 'pixel_xy', 'height_matrix', 'zygo_xyz') else 'point_table'
         had_layout_setting = self.settings.contains("input_layout_mode")
         self.pitch_source = str(self.settings.value(
-            "pitch_source", "manual" if had_layout_setting else "auto"))
+            "pitch_source", "auto"))
         self.use_system_frame = str(self.settings.value("use_system_frame", "false")).lower() in ("1", "true", "yes")
         self.recent_files = [str(x) for x in self.settings.value("recent_files", [], type=list)]
         self.roi_enabled = False           # 人工/Smart ROI 保留区域开关
@@ -179,8 +179,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             'stride_n': self.large_text_stride_n,
             'height_matrix': False,
             'source_format': '--',
-            'sampling_pitch_x_um': self.height_matrix_pitch_x_um,
-            'sampling_pitch_y_um': self.height_matrix_pitch_y_um,
+            'sampling_pitch_x_um': None,
+            'sampling_pitch_y_um': None,
             'sampling_pitch_source': '--',
             'missing_points': 0,
             'bad_rows': 0,
@@ -554,7 +554,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
         self.sidebar_shell = QWidget()
         self.sidebar_shell.setMinimumWidth(280)
-        self.sidebar_shell.setMaximumWidth(380)
+        self.sidebar_shell.setMaximumWidth(480)
         self.sidebar_layout = QVBoxLayout(self.sidebar_shell)
         self.sidebar_layout.setContentsMargins(0, 0, 0, 0)
         self.sidebar_layout.setSpacing(9)
@@ -571,7 +571,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.tabs.tabBar().hide()
         self.sidebar_layout.addWidget(self.tabs)
         self.tabs.setMinimumWidth(280)
-        self.tabs.setMaximumWidth(380)
+        self.tabs.setMaximumWidth(480)
         tab_main = QWidget()
         self.setup_main_tab(tab_main)
         self.tabs.addTab(tab_main, "单层")
@@ -669,6 +669,13 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         splitter.setStretchFactor(1, 4)
         splitter.setChildrenCollapsible(False)
         self.main_splitter = splitter
+        try:
+            saved_width = int(self.settings.value('ui/parameter_width', 0))
+            self._preferred_parameter_width = max(280,min(480,saved_width)) if saved_width else None
+        except (TypeError,ValueError):
+            self._preferred_parameter_width = None
+        splitter.splitterMoved.connect(self._remember_parameter_width)
+        QTimer.singleShot(0,self._apply_parameter_width)
         self.module_rail = QWidget()
         self.module_rail.setObjectName("moduleRail")
         self.module_rail.setFixedWidth(72)
@@ -1084,6 +1091,14 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.lbl_surface_residual_metrics.setMaximumWidth(180)
         head.addWidget(display_label)
         head.addWidget(self.cb_surface_display)
+        self.cb_color_scale = NoWheelComboBox()
+        self.cb_color_scale.addItem('自动','auto')
+        self.cb_color_scale.addItem('全局统一','global')
+        self.cb_color_scale.setFixedWidth(104)
+        self.cb_color_scale.setToolTip('自动：有 ROI 时 XY 使用全局色标，3D/XZ/YZ 共用当前 ROI 色标；全局统一：四图使用同一全局范围。')
+        self.cb_color_scale.currentIndexChanged.connect(lambda _: self.update_plots_only(preserve_view=True))
+        head.addWidget(QLabel('色标范围'))
+        head.addWidget(self.cb_color_scale)
         cards = QGridLayout()
         cards.setSpacing(13)
         cards.setContentsMargins(4, 2, 4, 4)
@@ -1139,6 +1154,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.lbl_surface_residual_metrics.setText("暂无可用结果")
         if hasattr(self, 'canvas'):
             self.canvas.set_color_scale(None, 'Z (mm)')
+            self.canvas.set_color_scale(None, 'Z (mm)',detail=True)
 
     def _step_header(self, num, text, hint=None, active=False):
         """编号分步标题：序号徽章 + 标题 + 可选提示 + 分隔线。"""
@@ -1252,6 +1268,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         ll.setSpacing(9)
 
         data_layout = ll
+        ll.addWidget(self._step_header(0, "导入策略"))
+        ll.addWidget(self.btn_bigfile_settings)
 
         # ---------- 1. 载入数据（批量处理紧邻）----------
         ll.addWidget(self._step_header(1, "数据文件", active=True))
@@ -1275,6 +1293,12 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.lbl_source.setWordWrap(False)
 
         ll.addWidget(self.lbl_source)
+
+        self.btn_data_preview = QPushButton("数据预览与派生")
+        self.btn_data_preview.setFixedHeight(34)
+        self.btn_data_preview.setToolTip("查看分析输入、源文件和矩阵位置；用公式生成新 Z，保留源文件不变。")
+        self.btn_data_preview.clicked.connect(self.open_data_preview)
+        ll.addWidget(self.btn_data_preview)
 
         self.btn_batch = QPushButton("批量处理 · 多选文件 → 每个出报告图")
         self.btn_batch.setFixedHeight(34)
@@ -1320,8 +1344,6 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         ml.addWidget(self.btn_apply_map, 3, 0, 1, 4)
         ll.addWidget(map_group)
 
-        data_layout.addWidget(self._step_header(0, "导入策略"))
-        data_layout.addWidget(self.btn_bigfile_settings)
         file_layout.addWidget(self.btn_recent_files)
         data_layout.addWidget(self._step_header(0, "批量与重置"))
         self.btn_batch.setText("批量处理")
@@ -2792,12 +2814,38 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.sidebar_header.addWidget(self.btn_toggle_parameters)
             self.sidebar_shell.show()
             self.tabs.show()
-            sizes = getattr(self, '_parameter_panel_sizes', [300, 1228])
-            self.main_splitter.setSizes(sizes)
+            self._apply_parameter_width()
         label = "展开左侧参数区" if collapsed else "收起左侧参数区"
         self.btn_toggle_parameters.setIcon(workspace_icon("sidebar"))
         self.btn_toggle_parameters.setToolTip(label)
         self.btn_toggle_parameters.setAccessibleName(label)
+
+    @staticmethod
+    def _default_parameter_width(window_width):
+        return int(round(np.interp(window_width,[1366,1600,1920,2560],[320,360,400,420])))
+
+    def _apply_parameter_width(self):
+        if not hasattr(self,'main_splitter') or self.sidebar_shell.isHidden():
+            return
+        width = self._preferred_parameter_width or self._default_parameter_width(self.width())
+        self.main_splitter.setSizes([width,max(1,self.main_splitter.width()-width)])
+
+    def _remember_parameter_width(self, position, index):
+        if self.sidebar_shell.isHidden():
+            return
+        width = self.main_splitter.sizes()[0]
+        if width >= 280:
+            self._preferred_parameter_width = max(280,min(480,width))
+            self.settings.setValue('ui/parameter_width',self._preferred_parameter_width)
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        if hasattr(self,'main_splitter'):
+            QTimer.singleShot(0,self._apply_parameter_width)
+
+    def showEvent(self,event):
+        super().showEvent(event)
+        self._apply_parameter_width()
 
     def _clear_projection_hover(self, draw=False):
         changed_canvases = set()
@@ -2995,14 +3043,15 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._update_import_status_label()
 
         plot_z_all, z_axis_label, z_short_label = self._get_plot_z(tx, ty, tz)
-        valid_color_indices = xy_source_idx[
-            np.isfinite(tx[xy_source_idx]) & np.isfinite(ty[xy_source_idx]) &
-            np.isfinite(plot_z_all[xy_source_idx])]
-        color_values = plot_z_all[valid_color_indices]
-        limits = display_color_limits(color_values)
-        self._shared_color_limits = limits or (0., 1.)
-        flat_value = float(color_values[0]) if color_values.size and np.ptp(color_values) == 0 else None
-        self.canvas.set_color_scale(limits, z_axis_label, flat_value)
+        from .plotting import color_scale_domains
+        scales = color_scale_domains(tx,ty,plot_z_all,xy_source_idx,self.active_idx,
+                                     roi_active,self.cb_color_scale.currentData())
+        self._shared_color_limits = scales['global_limits'] or (0.,1.)
+        self._detail_color_limits = scales['detail_limits'] or self._shared_color_limits
+        self._color_scale_domains = scales
+        self.canvas.set_color_scale(scales['global_limits'],'全局 · '+z_axis_label,scales['global_flat'])
+        self.canvas.set_color_scale(scales['detail_limits'] if scales['local'] else None,
+                                    '当前 ROI · '+z_axis_label,scales['detail_flat'],detail=True)
         raw_z = tz
         if self.df_raw is not None and len(self.df_raw) == len(tz):
             raw_z = self.get_final_transformed_data(self.df_raw)[2]
@@ -3071,6 +3120,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.canvas.ax_xy.set_ylim(ymin-pady, ymax+pady)
         set_xy_equal_aspect(self.canvas.ax_xy)
         self._draw_roi_overlays(self.canvas.ax_xy, view='XY')
+        sc_params = dict(sc_params,vmin=self._detail_color_limits[0],vmax=self._detail_color_limits[1])
         if len(detail_x) > 0:
             self.canvas.ax3d.scatter(detail_x, detail_y, detail_z, c=detail_z, depthshade=False, **sc_params)
             self.canvas.ax_xz.scatter(detail_x, detail_z, c=detail_z, **sc_params)

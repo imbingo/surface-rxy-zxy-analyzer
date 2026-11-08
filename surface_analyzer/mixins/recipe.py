@@ -6,12 +6,14 @@ import re
 import mmap
 import json
 import tempfile
+import copy
 from collections import deque
 from pathlib import Path
 from datetime import datetime
 
 import pandas as pd
 import numpy as np
+from ..workers import TaskCancelled
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.patches import FancyBboxPatch, Rectangle as MplRectangle, Circle as MplCircle
@@ -80,6 +82,9 @@ class RecipeMixin:
             except (OSError, ValueError) as exc:
                 self._show_status(f'Recipe 已加载，但最近使用记录未保存：{exc}', 8000)
             return True
+        except TaskCancelled:
+            self._show_status('已取消 Recipe 公式回放，当前分析保持不变。',5000)
+            return False
         except Exception as exc:
             QMessageBox.critical(self, 'Recipe 加载失败', str(exc))
             return False
@@ -88,7 +93,9 @@ class RecipeMixin:
         """导出当前界面参数，不包含测量数据本身。"""
         return {
             'recipe_type': 'SurfaceRxyZxyAnalyzerRecipe',
-            'schema_version': 9,
+            'schema_version': (11 if getattr(self, 'worksheet_data', None) else 10) if getattr(self, 'derived_columns', []) else 9,
+            'worksheet': copy.deepcopy(getattr(self, 'worksheet_data', None)) if getattr(self, 'derived_columns', []) else None,
+            'derived_columns': list(getattr(self, 'derived_columns', [])),
             'adjustment_config': self.adjustment_panel.fixture(),
             'app_version': self.APP_VERSION,
             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -116,6 +123,7 @@ class RecipeMixin:
                 'pitch_source': str(getattr(self, 'pitch_source', 'manual')),
             },
             'display': {
+                'color_scale_mode': self.cb_color_scale.currentData(),
                 'xy_mode': self.canvas.xy_mode.currentData(),
                 'xy_raster_max_side': 1200,
                 'surface_mode': str(getattr(self, 'display_surface_mode', 'raw')),
@@ -191,6 +199,8 @@ class RecipeMixin:
                 if ret != QMessageBox.StandardButton.Yes:
                     return
             self.apply_recipe(recipe, path_hint=Path(path).name)
+        except TaskCancelled:
+            self._show_status('已取消 Recipe 公式回放，当前分析保持不变。',5000)
         except Exception as e:
             QMessageBox.critical(self, "Recipe导入失败", str(e))
 
@@ -200,11 +210,16 @@ class RecipeMixin:
             schema_version = int(recipe.get('schema_version', 1) or 1)
         except (TypeError, ValueError, OverflowError):
             schema_version = 1
-        if schema_version > 9:
+        if schema_version > 11:
             raise ValueError(
-                f"该 Recipe schema {schema_version} 高于当前支持的 schema 9，"
+                f"该 Recipe schema {schema_version} 高于当前支持的 schema 11，"
                 "为避免覆盖未知字段，已停止加载。")
         from ..adjustment_panel import validate_fixture, default_fixture
+        # Validate formula/source compatibility before changing workspace settings.
+        prepared_frame = None
+        if self.absolute_raw_df is not None:
+            base = self.absolute_raw_df.drop(columns=[d['name'] for d in getattr(self, 'derived_columns', [])], errors='ignore')
+            prepared_frame = self._prepare_derived_frame(base, recipe.get('derived_columns', []), recipe.get('worksheet'))
         from ..rendering.settings import validate_display
         render_display = validate_display(recipe.get('display', {}) or {})
         adjustment = validate_fixture(recipe.get('adjustment_config', default_fixture()))
@@ -229,7 +244,9 @@ class RecipeMixin:
         self.pixel_origin_x = float(input_config.get('pixel_origin_x', getattr(self, 'pixel_origin_x', 0.0)) or 0.0)
         self.pixel_origin_y = float(input_config.get('pixel_origin_y', getattr(self, 'pixel_origin_y', 0.0)) or 0.0)
         # Recipes predating this field used the on-screen Pitch as an explicit manual value.
-        self.pitch_source = str(input_config.get('pitch_source', 'manual') or 'manual')
+        legacy_pitch = recipe.get('large_file', {}) or {}
+        explicit_pitch = any(k in legacy_pitch for k in ('sampling_pitch_x_um','sampling_pitch_y_um','matrix_pitch_x_um','matrix_pitch_y_um'))
+        self.pitch_source = str(input_config.get('pitch_source') or ('manual' if explicit_pitch else 'auto'))
         QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer").setValue(
             "pitch_source", self.pitch_source)
         units = recipe.get('units', {}) or {}
@@ -237,6 +254,7 @@ class RecipeMixin:
         self._safe_set_combo_text(self.cb_y_unit, units.get('y_unit'))
         self._safe_set_combo_text(self.cb_z_unit, units.get('z_unit'))
         mapping = recipe.get('column_mapping', {}) or {}
+        self._materialize_derived_columns(recipe.get('derived_columns', []), recipe.get('worksheet'), prepared_frame)
         applied_cols = []
         if self.cb_x_col.count() > 0 and self._safe_set_combo_text(self.cb_x_col, mapping.get('x_col')):
             applied_cols.append('X')
@@ -313,8 +331,6 @@ class RecipeMixin:
         self.import_info['stride_n'] = self.large_text_stride_n
         self.import_info['matrix_pitch_x_um'] = self.height_matrix_pitch_x_um
         self.import_info['matrix_pitch_y_um'] = self.height_matrix_pitch_y_um
-        self.import_info['sampling_pitch_x_um'] = self.height_matrix_pitch_x_um
-        self.import_info['sampling_pitch_y_um'] = self.height_matrix_pitch_y_um
         self.import_info['matrix_z_unit'] = self.height_matrix_z_unit
         self.import_info['search_start_row'] = self.import_search_start_row
         gap = recipe.get('gap', {}) or {}
@@ -355,6 +371,9 @@ class RecipeMixin:
         self.canvas.xy_mode.setCurrentIndex(self.canvas.xy_mode.findData(render_display['xy_mode']))
         self.canvas.xy_mode.blockSignals(False)
         self.canvas.xy_resolution.setCurrentIndex(0)
+        self.cb_color_scale.blockSignals(True)
+        self.cb_color_scale.setCurrentIndex(self.cb_color_scale.findData(render_display['color_scale_mode']))
+        self.cb_color_scale.blockSignals(False)
         self.display_detrended = surface_mode != 'raw'
         self._update_surface_display_metrics()
         roi = recipe.get('roi', {}) or {}

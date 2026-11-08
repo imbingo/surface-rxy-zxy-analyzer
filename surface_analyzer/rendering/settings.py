@@ -10,4 +10,7 @@ def validate_display(data):
     side = int(data.get('xy_raster_max_side', 1200))
     if side not in (600, 800, 1200):
         raise ValueError('XY最大分辨率须为600、800或1200')
-    return {'xy_mode': mode, 'xy_raster_max_side': side}
+    color_mode = data.get('color_scale_mode', 'auto')
+    if color_mode not in ('auto', 'global'):
+        raise ValueError('色标范围必须为自动或全局统一')
+    return {'xy_mode': mode, 'xy_raster_max_side': side, 'color_scale_mode': color_mode}

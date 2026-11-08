@@ -21,6 +21,7 @@ class SharedColorScaleTests(unittest.TestCase):
 
     def test_roi_and_display_sampling_use_full_undeleted_range(self):
         w=SurfaceAnalyzerPro();self.addCleanup(w.close)
+        w.cb_color_scale.setCurrentIndex(w.cb_color_scale.findData('global'))
         x,y=np.meshgrid(np.arange(3.),np.arange(3.));x=x.ravel();y=y.ravel()
         z=1.+x*.001+y*.002;z[-1]=100.
         w.df_raw=pd.DataFrame(dict(X=x,Y=y,Z=z));w._df_version+=1

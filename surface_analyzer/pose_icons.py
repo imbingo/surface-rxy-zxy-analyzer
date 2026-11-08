@@ -46,7 +46,7 @@ def focus_icon(restore=False):
 def workspace_icon(name, color="#52657a"):
     """Use the pose toolbar's monochrome line style for workspace commands."""
     paths = {
-        'surface': 'M3 8 15 3l6 13-12 5z M4 11l6-1 5 3 4 1',
+        'surface': 'M5 5C10 1 14 10 21 6 M3 10C9 5 14 15 20 11 M2 15C8 10 13 20 19 16 M9 4C6 8 6 12 5 14 M17 7C14 11 14 15 13 18',
         'recipe': 'M5 2h10l4 4v16H5z M14 2v5h5 M8 11h8 M8 15h8 M8 19h5',
         'layers': 'M12 3 2 8l10 5 10-5z M2 12l10 5 10-5 M2 16l10 5 10-5',
         'parallel': 'M4 10 14 3 M4 17 21 5 M11 21l10-7',

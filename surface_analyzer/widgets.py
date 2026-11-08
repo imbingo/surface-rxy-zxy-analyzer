@@ -318,18 +318,23 @@ class MultiViewCanvas(QWidget):
             fig = Figure(constrained_layout=True)
             ax = fig.add_subplot(111, projection=projection)
         canvas = FigureCanvas(fig)
-        if view == 'XY':
+        if view in ('XY', '3D'):
             content = QHBoxLayout()
             content.setContentsMargins(0, 0, 0, 0)
             content.setSpacing(0)
             content.addWidget(canvas, 1)
-            self.colorbar_figure = Figure(figsize=(1.04, 3))
-            self.colorbar_axis = self.colorbar_figure.add_axes([.08, .14, .22, .72])
-            self.colorbar_axis.set_visible(False)
-            self.colorbar_canvas = FigureCanvas(self.colorbar_figure)
-            self.colorbar_canvas.setFixedWidth(104)
-            self.colorbar_canvas.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Ignored)
-            content.addWidget(self.colorbar_canvas)
+            bar_figure = Figure(figsize=(1.04, 3))
+            bar_axis = bar_figure.add_axes([.08, .14, .22, .72])
+            bar_axis.set_visible(False)
+            bar_canvas = FigureCanvas(bar_figure)
+            bar_canvas.setFixedWidth(104)
+            bar_canvas.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Ignored)
+            prefix = '' if view == 'XY' else 'detail_'
+            for name, value in (('colorbar_figure',bar_figure),('colorbar_axis',bar_axis),('colorbar_canvas',bar_canvas)):
+                setattr(self,prefix+name,value)
+            if view == '3D':
+                bar_canvas.hide()
+            content.addWidget(bar_canvas)
             v.addLayout(content, 1)
         else:
             v.addWidget(canvas, 1)
@@ -339,15 +344,20 @@ class MultiViewCanvas(QWidget):
         card.setGraphicsEffect(eff)
         return ax, canvas, card, tlabel, focus
 
-    def set_color_scale(self, limits, label, flat_value=None):
+    def set_color_scale(self, limits, label, flat_value=None, *, detail=False):
         from matplotlib.colorbar import ColorbarBase
         from matplotlib.colors import Normalize
         from matplotlib.ticker import ScalarFormatter, MaxNLocator, FuncFormatter
-        self.colorbar_axis.clear()
-        self.colorbar_axis.set_visible(limits is not None)
-        self.shared_colorbar = None
+        prefix = 'detail_' if detail else ''
+        axis = getattr(self,prefix+'colorbar_axis')
+        canvas = getattr(self,prefix+'colorbar_canvas')
+        axis.clear()
+        axis.set_visible(limits is not None)
+        if detail:
+            canvas.setVisible(limits is not None)
+        setattr(self,'detail_colorbar' if detail else 'shared_colorbar',None)
         if limits is not None:
-            bar = ColorbarBase(self.colorbar_axis, cmap='turbo', norm=Normalize(*limits))
+            bar = ColorbarBase(axis, cmap='turbo', norm=Normalize(*limits))
             bar.set_label(label, fontsize=9, labelpad=6)
             if flat_value is not None:
                 bar.set_ticks([flat_value])
@@ -361,8 +371,8 @@ class MultiViewCanvas(QWidget):
                 bar.formatter = formatter
             bar.update_ticks()
             bar.ax.tick_params(labelsize=8)
-            self.shared_colorbar = bar
-        self.colorbar_canvas.draw_idle()
+            setattr(self,'detail_colorbar' if detail else 'shared_colorbar',bar)
+        canvas.draw_idle()
 
     def set_titles(self, mode='raw'):
         if mode != 'raw':

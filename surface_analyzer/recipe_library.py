@@ -20,8 +20,26 @@ def validate_recipe(data):
         schema = int(data.get('schema_version', 1) or 1)
     except (ValueError, TypeError, OverflowError):
         raise ValueError('Recipe schema_version 必须是有效整数') from None
-    if not 1 <= schema <= 9:
-        raise ValueError(f'不支持 Recipe schema {schema}；当前支持 1–9')
+    if not 1 <= schema <= 11:
+        raise ValueError(f'不支持 Recipe schema {schema}；当前支持 1–11')
+    worksheet = data.get('worksheet')
+    if worksheet is not None:
+        if schema < 11 or not isinstance(worksheet, dict):
+            raise ValueError('单元格公式工作表必须使用 Recipe schema 11')
+        from .worksheet import Worksheet
+        import pandas as pd
+        cols = worksheet.get('columns', [])
+        if not isinstance(cols, list) or any(not isinstance(c, dict) for c in cols):
+            raise ValueError('工作表列结构无效')
+        source_names = [c['source'] for c in cols if isinstance(c.get('source'), str)]
+        Worksheet(pd.DataFrame(columns=source_names), worksheet).validate()
+    derived = data.get('derived_columns', [])
+    if not isinstance(derived, list) or len(derived) > 24 or any(
+            not isinstance(d, dict) or not all(isinstance(d.get(k), str) for k in ('name', 'expression', 'unit'))
+            for d in derived):
+        raise ValueError('Recipe 派生列必须为有效的公式对象列表（最多 24 个）')
+    if derived and schema < 10:
+        raise ValueError('包含派生列的 Recipe 必须使用 schema 10，以防旧版本忽略公式')
     for key in ('column_mapping', 'units', 'filter', 'input', 'display', 'roi',
                 'manual_deletion', 'large_file', 'gap', 'library_metadata'):
         if key in data and not isinstance(data[key], dict):

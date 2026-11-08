@@ -29,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="surface-analyzer", description=f"面型及Rxy分析工具 {APP_VERSION}")
     parser.add_argument("--check", action="store_true", help="检查依赖和模块导入后退出")
     parser.add_argument("--check-adjustment", action="store_true", help="隔离设置运行装调页面自检后退出")
+    parser.add_argument("--check-workspace", action="store_true", help="隔离设置验证派生列、ROI 色标和报告后退出")
     parser.add_argument("--input", help="启动 GUI 后自动载入文件，或作为无界面分析输入")
     parser.add_argument("--headless", action="store_true", help="不打开 GUI，输出 JSON 结果")
     parser.add_argument("--output-json", help="无界面分析 JSON 输出路径；省略时写到标准输出")
@@ -170,6 +171,9 @@ def _run_gui(input_path: str | None) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.check_workspace:
+        from .workspace_smoke import run
+        return run(args.output_json)
     if args.check_adjustment:
         from .adjustment_smoke import run
         return run(args.output_json)

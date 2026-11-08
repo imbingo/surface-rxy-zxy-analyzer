@@ -27,6 +27,26 @@ def display_color_limits(values):
     return low, high
 
 
+def color_scale_domains(x, y, z, overview_indices, final_indices, roi_active=False, mode='auto'):
+    """Display-only domains, before LOD; deleted points cannot enter either."""
+    x, y, z = np.asarray(x), np.asarray(y), np.asarray(z)
+    overview = np.asarray(overview_indices, dtype=int)
+    overview = overview[np.isfinite(x[overview]) & np.isfinite(y[overview]) & np.isfinite(z[overview])]
+    local = bool(roi_active and mode == 'auto')
+    final = np.asarray(final_indices, dtype=int)
+    eligible = np.zeros(len(z), dtype=bool)
+    eligible[overview] = True
+    final = final[eligible[final]]
+    def scale(indices):
+        values = z[indices]
+        return (display_color_limits(values),
+                float(values[0]) if values.size and np.ptp(values) == 0 else None)
+    global_limits, global_flat = scale(overview)
+    detail_limits, detail_flat = scale(final) if local else (global_limits, global_flat)
+    return dict(global_limits=global_limits, detail_limits=detail_limits,
+                global_flat=global_flat, detail_flat=detail_flat, local=local)
+
+
 def _finite_extent(values) -> float:
     array = np.asarray(values, dtype=float).ravel()
     finite = array[np.isfinite(array)]

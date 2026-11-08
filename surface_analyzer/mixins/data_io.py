@@ -54,6 +54,118 @@ _NORMALIZED_MISSING_TOKENS = frozenset(
 
 
 class DataIOMixin:
+    def _resolve_matrix_pitch(self, metadata):
+        if str(getattr(self, 'pitch_source', 'auto')) == 'manual':
+            x, y = float(self.height_matrix_pitch_x_um), float(self.height_matrix_pitch_y_um)
+            source = '用户手动'
+        else:
+            fields = set(metadata.get('detected_fields', []))
+            missing = [axis for axis in ('X', 'Y')
+                       if 'XY校准' not in fields and f'Pitch {axis}' not in fields]
+            if missing:
+                raise ValueError('Auto 未识别到可靠的 '+ '/'.join(missing) + ' Pitch；请在导入策略中选择手动输入并填写实际采样间距。')
+            x, y = float(metadata['pitch_x_um']), float(metadata['pitch_y_um'])
+            source = '可靠文件metadata'
+        if not np.isfinite([x,y]).all() or min(x,y) <= 0:
+            raise ValueError('Pitch 必须为有限的正数，请检查文件校准信息或手动设置。')
+        return x,y,source
+
+    def open_data_preview(self):
+        if getattr(self, '_task_thread', None) is not None:
+            self._show_status('请等待当前任务完成后预览。', 4000)
+            return
+        if self.absolute_raw_df is None:
+            self._show_status('请先载入数据文件。', 4000)
+            return
+        from ..worksheet_dialog import DataPreviewDialog
+        DataPreviewDialog(self).exec()
+
+    def _prepare_derived_frame(self, base, definitions, worksheet=None):
+        from ..data_preview import derive_columns
+        if worksheet:
+            from ..worksheet import Worksheet
+            sheet = Worksheet(base, worksheet)
+            calculate = lambda progress,cancel: sheet.evaluate(cancel,progress)
+        else:
+            calculate = lambda progress,cancel: derive_columns(base, definitions, cancel)
+        if (worksheet or definitions) and self.isVisible():
+            from ..workers import run_cancelable_dialog
+            return run_cancelable_dialog(self, '正在回放数据公式', calculate)
+        return calculate(None,None)
+
+    def _materialize_derived_columns(self, definitions, worksheet=None, prepared_frame=None):
+        previous = getattr(self, 'derived_columns', [])
+        if self.absolute_raw_df is not None:
+            base = self.absolute_raw_df.drop(columns=[d['name'] for d in previous], errors='ignore')
+            frame = prepared_frame if prepared_frame is not None else self._prepare_derived_frame(base,definitions,worksheet)
+            self.absolute_raw_df = frame
+            for combo in (self.cb_x_col, self.cb_y_col, self.cb_z_col):
+                current = combo.currentText()
+                combo.blockSignals(True)
+                combo.clear()
+                combo.addItems([str(c) for c in frame.columns])
+                combo.setCurrentText(current)
+                combo.blockSignals(False)
+        self.derived_columns = copy.deepcopy(definitions)
+        self.worksheet_data = copy.deepcopy(worksheet)
+        self.import_info['derived_columns'] = copy.deepcopy(definitions)
+        self.import_info['worksheet'] = copy.deepcopy(worksheet)
+
+    def _commit_derived_preview(self, frame, definitions, target, unit, mapping=None, worksheet=None):
+        # Validate the complete mapping before replacing any analysis state.
+        x, y = self.cb_x_col.currentText(), self.cb_y_col.currentText()
+        if mapping is not None:
+            x, y = mapping[0][0], mapping[1][0]
+        if x not in frame or y not in frame or len({x, y, target}) != 3:
+            QMessageBox.warning(self, '需要列映射', '请先选择不同的 X、Y 列，再应用派生 Z。')
+            return False
+        valid = np.isfinite(frame[[x, y, target]].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=float)).all(axis=1)
+        if valid.sum() < 3:
+            QMessageBox.warning(self, '有效点不足', 'X、Y、派生 Z 同时有效的点少于 3 个，当前数据未修改。')
+            return False
+        fields = ('absolute_raw_df', 'derived_columns', 'worksheet_data', 'df_raw', 'manual_mask',
+                  'active_idx', 'last_metrics', 'current_coeffs', 'import_info',
+                  'temp_selected_mask', 'manual_delete_operations', '_manual_delete_mask_history',
+                  'pending_delete_operation', 'n_filtered', 'last_sigma_summary',
+                  'last_spatial_filter_summary', '_analysis_z_full', 'high_order_models',
+                  '_trans_cache_key', '_trans_cache_data', 'parallel_result', '_parallel_revision')
+        old = {key: getattr(self, key, None) for key in fields}
+        old['import_info'] = copy.deepcopy(self.import_info)
+        combos = (self.cb_x_col, self.cb_y_col, self.cb_z_col, self.cb_x_unit, self.cb_y_unit, self.cb_z_unit)
+        values = [cb.currentText() for cb in combos]
+        self.absolute_raw_df = frame
+        self.derived_columns = copy.deepcopy(definitions)
+        self.worksheet_data = copy.deepcopy(worksheet)
+        self.import_info = copy.deepcopy(self.import_info)
+        self.import_info['derived_columns'] = copy.deepcopy(definitions)
+        self.import_info['worksheet'] = copy.deepcopy(worksheet)
+        for combo in (self.cb_x_col, self.cb_y_col, self.cb_z_col):
+            current = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems([str(c) for c in frame.columns])
+            combo.setCurrentText(current)
+            combo.blockSignals(False)
+        self.cb_z_col.setCurrentText(target)
+        self.cb_z_unit.setCurrentText(unit)
+        if mapping is not None:
+            for col_combo, unit_combo, (column, units) in zip(
+                    (self.cb_x_col, self.cb_y_col), (self.cb_x_unit, self.cb_y_unit), mapping):
+                col_combo.setCurrentText(column)
+                unit_combo.setCurrentText(units)
+        if self.apply_mapping(preserve_analysis_settings=True):
+            return True
+        for key, value in old.items():
+            setattr(self, key, value)
+        for combo in (self.cb_x_col, self.cb_y_col, self.cb_z_col):
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems([str(c) for c in self.absolute_raw_df.columns])
+            combo.blockSignals(False)
+        for combo, value in zip(combos, values):
+            combo.setCurrentText(value)
+        return False
+
     TEXT_SUFFIXES = ('.csv', '.txt', '.tsv', '.dat', '.asc', '.xyz')
     EXCEL_SUFFIXES = ('.xlsx', '.xls', '.xlsm')
 
@@ -340,8 +452,8 @@ class DataIOMixin:
             'stride_n': self.large_text_stride_n,
             'height_matrix': False,
             'source_format': '--',
-            'sampling_pitch_x_um': self.height_matrix_pitch_x_um,
-            'sampling_pitch_y_um': self.height_matrix_pitch_y_um,
+            'sampling_pitch_x_um': None,
+            'sampling_pitch_y_um': None,
             'sampling_pitch_source': '--',
             'detected_camera_res_um': None,
             'missing_points': 0,
@@ -703,7 +815,7 @@ class DataIOMixin:
         cb_pitch_source.addItem("Auto（可靠文件值优先）", "auto")
         cb_pitch_source.addItem("手动输入", "manual")
         cb_pitch_source.setCurrentIndex(max(0, cb_pitch_source.findData(
-            getattr(self, 'pitch_source', 'manual'))))
+            getattr(self, 'pitch_source', 'auto'))))
         advanced.addWidget(cb_pitch_source, 9, 1)
         advanced.addWidget(QLabel("矩阵行数:"), 10, 0)
         spin_matrix_rows = NoWheelSpinBox(); spin_matrix_rows.setRange(0, 100_000)
@@ -772,8 +884,9 @@ class DataIOMixin:
         def update_layout_controls(*_args):
             mode = str(cb_input_layout.currentData())
             uses_pitch = mode in ('pixel_xy', 'height_matrix', 'zygo_xyz')
-            spin_pitch_x.setEnabled(uses_pitch)
-            spin_pitch_y.setEnabled(uses_pitch)
+            manual_pitch = uses_pitch and cb_pitch_source.currentData() == 'manual'
+            spin_pitch_x.setEnabled(manual_pitch)
+            spin_pitch_y.setEnabled(manual_pitch)
             cb_matrix_z_unit.setEnabled(mode == 'height_matrix')
             spin_search_start.setEnabled(mode != 'zygo_xyz')
             spin_matrix_cols.setEnabled(mode == 'height_matrix')
@@ -793,6 +906,8 @@ class DataIOMixin:
 
         cb_mode.currentIndexChanged.connect(apply_preset_from_combo)
         cb_input_layout.currentIndexChanged.connect(update_layout_controls)
+        cb_pitch_source.currentIndexChanged.connect(update_layout_controls)
+        cb_pitch_source.setToolTip('Auto 只使用可靠文件校准值；未识别到 X/Y Pitch 时要求手动补充，不使用历史默认值。')
         chk_auto.toggled.connect(sync_mode_from_values)
         cb_sample_method.currentIndexChanged.connect(update_grid_enabled)
         spin_grid.valueChanged.connect(sync_mode_from_values)
@@ -920,8 +1035,6 @@ class DataIOMixin:
             self.import_info['stride_n'] = self.large_text_stride_n
             self.import_info['matrix_pitch_x_um'] = self.height_matrix_pitch_x_um
             self.import_info['matrix_pitch_y_um'] = self.height_matrix_pitch_y_um
-            self.import_info['sampling_pitch_x_um'] = self.height_matrix_pitch_x_um
-            self.import_info['sampling_pitch_y_um'] = self.height_matrix_pitch_y_um
             self.import_info['matrix_z_unit'] = self.height_matrix_z_unit
             self.import_info['search_start_row'] = self.import_search_start_row
             self.import_info['matrix_requested_cols'] = self.height_matrix_cols
@@ -1615,6 +1728,12 @@ class DataIOMixin:
                 metadata['pitch_x_um'] = value * factor
                 metadata['pitch_y_um'] = value * factor
                 metadata['detected_fields'].append('XY校准')
+            if value is not None and any(word in lowered for word in ('pitch','pixel size','pixel spacing','采样间距','像素尺寸')):
+                factor = 0.001 if 'nm' in lowered else (1000.0 if 'mm' in lowered else 1.0)
+                for axis in ('x','y'):
+                    if re.search(r'(^|[^a-z])'+axis+r'([^a-z]|$)', lowered):
+                        metadata[f'pitch_{axis}_um'] = value*factor
+                        metadata['detected_fields'].append('Pitch '+axis.upper())
             if ('单位' in normalized or 'unit' in lowered) and ('高度' in normalized or 'z' in lowered):
                 if re.search(r'(^|\W)mm(\W|$)', lowered): metadata['z_unit'] = 'mm'
                 elif re.search(r'(^|\W)(um|µm)(\W|$)', lowered): metadata['z_unit'] = 'µm'
@@ -1683,15 +1802,7 @@ class DataIOMixin:
         if expected_cols is not None and values.shape[1] != int(expected_cols):
             raise ValueError(
                 f"Excel Z Matrix 列数与表头冲突：声明 {int(expected_cols)}，实际 {values.shape[1]}。")
-        if str(getattr(self, 'pitch_source', 'manual')) == 'manual':
-            pitch_x = float(self.height_matrix_pitch_x_um)
-            pitch_y = float(self.height_matrix_pitch_y_um)
-            pitch_source = '用户手动'
-        else:
-            pitch_x = float(metadata['pitch_x_um'])
-            pitch_y = float(metadata['pitch_y_um'])
-            pitch_source = ('可靠文件metadata' if 'XY校准' in metadata.get('detected_fields', [])
-                            else '用户默认')
+        pitch_x, pitch_y, pitch_source = self._resolve_matrix_pitch(metadata)
         z_override = str(getattr(self, 'import_z_unit', 'auto'))
         z_unit = z_override if z_override != 'auto' else str(metadata['z_unit'])
         valid_points = int(np.isfinite(values).sum())
@@ -2600,16 +2711,7 @@ class DataIOMixin:
         manual_rows = int(getattr(self, 'height_matrix_rows', 0) or 0)
         layout['expected_rows'] = declared_rows
         layout['expected_rows_hard'] = manual_rows if manual_rows > 0 else None
-        if str(getattr(self, 'pitch_source', 'manual')) == 'manual':
-            pitch_x = float(self.height_matrix_pitch_x_um)
-            pitch_y = float(self.height_matrix_pitch_y_um)
-            pitch_source = '用户手动'
-        else:
-            pitch_x = float(metadata['pitch_x_um'])
-            pitch_y = float(metadata['pitch_y_um'])
-            pitch_source = ('可靠文件metadata' if any(field in metadata.get('detected_fields', [])
-                                                    for field in ('Pitch X', 'Pitch Y', 'XY校准'))
-                            else '用户默认')
+        pitch_x, pitch_y, pitch_source = self._resolve_matrix_pitch(metadata)
         z_override = str(getattr(self, 'import_z_unit', 'auto'))
         z_unit = z_override if z_override != 'auto' else str(metadata['z_unit'])
         invalid_values = tuple(metadata.get('invalid_values') or ())
@@ -4515,7 +4617,7 @@ class DataIOMixin:
             previous_info = copy.deepcopy(getattr(self, 'import_info', {}))
             previous_note = str(getattr(self, 'last_import_note', ''))
             state_names = (
-                'absolute_raw_df', 'df_raw', 'manual_mask', 'temp_selected_mask',
+                'absolute_raw_df', 'derived_columns', 'worksheet_data', 'df_raw', 'manual_mask', 'temp_selected_mask',
                 'manual_delete_operations', '_manual_delete_mask_history',
                 'pending_delete_operation', 'active_idx', 'transform_pipeline',
                 'current_coeffs', 'current_source_name', 'n_filtered', 'last_metrics',
@@ -4652,6 +4754,10 @@ class DataIOMixin:
                 self.last_import_note = str(_parsed_payload['last_import_note'])
 
             self.current_source_name = Path(path).name
+            self.derived_columns = []
+            self.worksheet_data = None
+            if self.pending_recipe is not None:
+                self._materialize_derived_columns(self.pending_recipe.get('derived_columns', []), self.pending_recipe.get('worksheet'))
             self.lbl_source.setText(f"当前数据: {self.current_source_name}")
 
             cols = [str(c) for c in self.absolute_raw_df.columns]
@@ -4813,13 +4919,19 @@ class DataIOMixin:
             self._show_status("当前无原始文件可映射（Gap 结果状态下映射已锁定）", 5000)
             return
         try:
+            derived_z = self.cb_z_col.currentText() in {d['name'] for d in getattr(self, 'derived_columns', [])}
             if self.import_info.get('format_extension_id'):
                 # Reader API already returns physical mm. Stale CSV/Pixel
                 # overrides and Recipes must not rescale it a second time.
-                for combo, name in ((self.cb_x_col, 'X'), (self.cb_y_col, 'Y'),
-                                    (self.cb_z_col, 'Z')):
+                columns = [(self.cb_x_col, 'X'), (self.cb_y_col, 'Y')]
+                if not derived_z:
+                    columns.append((self.cb_z_col, 'Z'))
+                for combo, name in columns:
                     combo.setCurrentText(name)
-                for combo in (self.cb_x_unit, self.cb_y_unit, self.cb_z_unit):
+                units = [self.cb_x_unit, self.cb_y_unit]
+                if not derived_z:
+                    units.append(self.cb_z_unit)
+                for combo in units:
                     combo.setCurrentText('mm')
             xc, yc, zc = self.cb_x_col.currentText(), self.cb_y_col.currentText(), self.cb_z_col.currentText()
             if len({xc, yc, zc}) != 3:
@@ -4888,7 +5000,8 @@ class DataIOMixin:
                 # Zygo专用解析器已经生成mm坐标，且标准正文Z固定为µm。
                 self.cb_x_unit.setCurrentText('mm')
                 self.cb_y_unit.setCurrentText('mm')
-                self.cb_z_unit.setCurrentText('µm')
+                if not derived_z:
+                    self.cb_z_unit.setCurrentText('µm')
             x_unit = self.cb_x_unit.currentText()
             y_unit = self.cb_y_unit.currentText()
             z_unit = self.cb_z_unit.currentText()

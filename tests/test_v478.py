@@ -120,9 +120,8 @@ class ImportWorkflowTests(unittest.TestCase):
         self.window.input_layout_mode = 'height_matrix'
         self.window.pitch_source = 'auto'
         path = self.write('units.csv', 'Z Unit,mm\n1,4,7,2\n2,5,8,3\n4,6,9,5\n')
-        self.window._read_table(path)
-        self.assertEqual(self.window.import_info['sampling_pitch_source'], '用户默认')
-        self.assertIn('用户默认', self.window._pixel_pitch_summary())
+        with self.assertRaisesRegex(ValueError, 'Auto 未识别到可靠.*Pitch'):
+            self.window._read_table(path)
 
     def test_grid_import_preserves_late_extrema_in_single_pass(self):
         self.window.input_layout_mode = 'height_matrix'

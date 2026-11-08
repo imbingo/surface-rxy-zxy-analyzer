@@ -103,3 +103,36 @@ def sha256_file_dialog(parent, path):
     if state["error"]:
         raise RuntimeError(state["error"])
     return state["value"]
+
+
+def run_cancelable_dialog(parent, title, fn):
+    """Synchronous caller interface with computation off the Qt UI thread."""
+    dialog = QProgressDialog(title, '取消', 0, 100, parent)
+    dialog.setWindowTitle(title)
+    dialog.setMinimumDuration(200)
+    dialog.setAutoClose(False)
+    dialog.setAutoReset(False)
+    state = {'value': None, 'error': '', 'cancelled': False}
+    thread = QThread(parent)
+    worker = FunctionWorker(fn)
+    worker.moveToThread(thread)
+    loop = QEventLoop(parent)
+    worker.progress.connect(lambda value, text: (dialog.setValue(value), dialog.setLabelText(text)))
+    worker.succeeded.connect(lambda value: state.update(value=value))
+    worker.failed.connect(lambda error: state.update(error=error))
+    worker.cancelled.connect(lambda: state.update(cancelled=True))
+    worker.finished.connect(thread.quit)
+    worker.finished.connect(loop.quit)
+    dialog.canceled.connect(lambda: worker.cancel_event.set())
+    thread.started.connect(worker.run)
+    thread.start()
+    loop.exec()
+    thread.wait()
+    dialog.close()
+    worker.deleteLater()
+    thread.deleteLater()
+    if state['cancelled']:
+        raise TaskCancelled()
+    if state['error']:
+        raise ValueError(state['error'])
+    return state['value']
