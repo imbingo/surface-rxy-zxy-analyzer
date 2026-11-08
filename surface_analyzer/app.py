@@ -40,7 +40,7 @@ from .config import (
 )
 from .widgets import (
     NoWheelSpinBox, NoWheelDoubleSpinBox, NoWheelComboBox, SourceLabel, WorkspaceTabs, ROIRegionDelegate, ProjectionToolbar,
-    MultiViewCanvas, ParallelismCanvas, GapMatchCanvas,
+    MultiViewCanvas, ParallelismCanvas, GapMatchCanvas, EmptyStateOverlay,
 )
 from .plotting import (
     MAIN_3D_SCENE_ZOOM, fit_surface_box_to_canvas, pad_surface_limits, display_color_limits,
@@ -66,6 +66,7 @@ from .pose_icons import workspace_icon, pose_pixmap
 class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, ParallelismMixin, RecipeMixin, ROIMixin, ReportingMixin, QMainWindow):
     background_status = pyqtSignal(str, int)
     APP_VERSION = APP_VERSION
+    SLOT_EMPTY_STYLE = "color: #7b8590; font-weight: 400;"
     DISPLAY_POINT_LIMIT = DISPLAY_POINT_LIMIT
     LARGE_TEXT_FILE_BYTES = LARGE_TEXT_FILE_BYTES
     LARGE_TEXT_IMPORT_LIMIT = LARGE_TEXT_IMPORT_LIMIT
@@ -281,7 +282,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             #metricTitleAccent { color: #2f6db0; font-family: 'Microsoft YaHei UI'; font-size: 11px; font-weight: 600; }
             #metricValue { color: #14202c; font-family: 'Consolas','Microsoft YaHei UI'; font-size: 20px; font-weight: bold; }
             #metricValueAccent { color: #2f6db0; font-family: 'Consolas','Microsoft YaHei UI'; font-size: 20px; font-weight: bold; }
-            #metricUnit { color: #aab2ba; font-size: 10px; }
+            #metricUnit { color: #7e8893; font-size: 11px; }
             #plotCard { background: #ffffff; border: 1px solid #e9edf1; border-radius: 12px; }
             #plotDot { background: #2f6db0; border-radius: 4px; }
             #plotTitle { color: #2b333c; font-size: 12px; font-weight: bold; }
@@ -294,7 +295,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                                     subcontrol-position: top right; width: 16px; border: none; }
             QSpinBox::down-button, QDoubleSpinBox::down-button { subcontrol-origin: border;
                                     subcontrol-position: bottom right; width: 16px; border: none; }
-            #mutedNote { color: #9aa4ae; font-size: 11px; }
+            #mutedNote { color: #6b7682; font-size: 12px; }
             #pipelineNote { color: #6b7682; font-family: 'Consolas','Microsoft YaHei'; font-size: 11px;
                             background: #f6f8fa; border: 1px solid #eef1f4; border-radius: 6px; padding: 5px 8px; }
             #sourceNote { color: #3a444e; font-size: 12px; font-weight: bold;
@@ -322,7 +323,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 "QComboBox::down-arrow { image: url(%s); width: 11px; height: 11px; margin-right: 5px; }"
                 "QSpinBox::up-arrow, QDoubleSpinBox::up-arrow { image: url(%s); width: 9px; height: 9px; }"
                 "QSpinBox::down-arrow, QDoubleSpinBox::down-arrow { image: url(%s); width: 9px; height: 9px; }"
-            ) % (down, up, down))
+                "#topImport::menu-arrow { image: url(%s); width: 11px; height: 11px; }"
+            ) % (down, up, down, down))
 
     @staticmethod
     def _make_arrow_png(direction='down', color='#8a949e', size=22):
@@ -341,16 +343,34 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             cx = size / 2.0
             if direction == 'down':
                 a, b, c = QPointF(pad, size * 0.40), QPointF(cx, size * 0.62), QPointF(size - pad, size * 0.40)
+            elif direction == 'right':
+                a, b, c = QPointF(size * 0.40, pad), QPointF(size * 0.62, cx), QPointF(size * 0.40, size - pad)
             else:
                 a, b, c = QPointF(pad, size * 0.60), QPointF(cx, size * 0.38), QPointF(size - pad, size * 0.60)
             p.drawLine(a, b)
             p.drawLine(b, c)
             p.end()
-            path = os.path.join(tempfile.gettempdir(), f'sra_chevron_{direction}.png')
+            path = os.path.join(tempfile.gettempdir(), f'sra_chevron_{direction}_{color.lstrip("#")}.png')
             pm.save(path)
             return path.replace('\\', '/')
         except Exception:
             return None
+
+    def _chevron_icon(self, direction, color='#55606b'):
+        cache = self.__dict__.setdefault('_chevron_icons', {})
+        key = (direction, color)
+        if key not in cache:
+            path = self._make_arrow_png(direction, color=color)
+            cache[key] = QIcon(path) if path else QIcon()
+        return cache[key]
+
+    def _set_disclosure(self, button, expanded):
+        icon = self._chevron_icon('down' if expanded else 'right')
+        if icon.isNull():
+            button.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        else:
+            button.setIcon(icon)
+            button.setIconSize(QSize(14, 14))
 
     def _add_shadow(self, widget, blur=22, dy=4, alpha=38):
         """给卡片挂柔和投影，营造模块化悬浮质感（理想车机 / Apple 风）。
@@ -539,8 +559,10 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.lbl_import_status = ImportStatusLabel("导入状态: --")
         # Normal status widgets return automatically after temporary messages expire.
         self.statusBar().addWidget(self.lbl_import_status, 1)
-        self.statusBar().messageChanged.connect(
-            lambda message: self.lbl_import_status.setVisible(not bool(message)))
+        self.lbl_module_status = ImportStatusLabel("")
+        self.statusBar().addWidget(self.lbl_module_status, 1)
+        self.lbl_module_status.hide()
+        self.statusBar().messageChanged.connect(lambda _message: self._sync_status_widgets())
 
         # ---------- 主体：左控制面板 | 右（结果条 + 工具条 + 四视图）----------
         body = QWidget()
@@ -653,6 +675,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 tip += "；按住 Ctrl 移到数据点可查看 XYZ"
             ax.figure.canvas.setToolTip(tip)
         right_layout.addWidget(self.canvas, 1)
+        self.empty_state = EmptyStateOverlay(self.canvas)
+        self.empty_state.open_requested.connect(self.load_file)
 
         self.right_stack = QStackedWidget()
         main_scroll = QScrollArea()
@@ -871,6 +895,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.roi_region_list.addItem(item)
         self.roi_region_list.setCurrentRow(self.cb_roi_select.currentIndex())
         self.roi_region_list.blockSignals(False)
+        has_roi = bool(self.roi_shapes)
+        self.btn_roi_delete.setEnabled(has_roi)
+        self.btn_roi_clear.setEnabled(has_roi)
 
     def _on_roi_list_item_changed(self, item):
         index = self.cb_roi_select.findData(item.data(Qt.ItemDataRole.UserRole))
@@ -1231,7 +1258,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 toggle.setObjectName("sectionToggle")
                 toggle.setText(widget.property("sectionTitle"))
                 toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-                toggle.setArrowType(Qt.ArrowType.DownArrow)
+                self._set_disclosure(toggle, True)
                 toggle.setCheckable(True)
                 toggle.setChecked(True)
                 toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1241,8 +1268,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 section_layout.setContentsMargins(0, 0, 0, 0)
                 section_layout.setSpacing(7)
                 toggle.toggled.connect(content.setVisible)
-                toggle.toggled.connect(lambda checked, button=toggle: button.setArrowType(
-                    Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow))
+                toggle.toggled.connect(lambda checked, button=toggle: self._set_disclosure(button, checked))
                 shell.addWidget(toggle)
                 shell.addWidget(content)
                 widget.hide()
@@ -1275,7 +1301,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         ll.addWidget(self._step_header(1, "数据文件", active=True))
         file_layout = QHBoxLayout()
         file_layout.setSpacing(8)
-        self.btn_open = QPushButton("更换文件")
+        self.btn_open = QPushButton("打开文件")
         self.btn_open.setObjectName("accentBtn")
         self.btn_open.setFixedHeight(38)
         self.btn_open.clicked.connect(self.load_file)
@@ -1739,7 +1765,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         grp_stack = QGroupBox("1. 堆叠总成（固定基准 / 灰色）")
         gl_stack = QVBoxLayout(grp_stack)
         gl_stack.setContentsMargins(8, 6, 8, 7); gl_stack.setSpacing(4)
-        self.lbl_stack_status = QLabel("尚未设置"); self.lbl_stack_status.setStyleSheet("color: #c0392b; font-weight: bold;")
+        self.lbl_stack_status = QLabel("尚未设置"); self.lbl_stack_status.setStyleSheet(self.SLOT_EMPTY_STYLE)
         self.lbl_stack_status.setWordWrap(True)
         btn_set_stack = self.btn_set_gap_stack = QPushButton("将当前数据设为【堆叠总成】"); btn_set_stack.setFixedHeight(32)
         btn_set_stack.setObjectName("accentSoftBtn")
@@ -1750,7 +1776,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         grp_base1 = QGroupBox("2. 单片 1（蓝色 / 可拖动）")
         gl_base1 = QVBoxLayout(grp_base1)
         gl_base1.setContentsMargins(8, 6, 8, 7); gl_base1.setSpacing(4)
-        self.lbl_base1_status = QLabel("尚未设置"); self.lbl_base1_status.setStyleSheet("color: #c0392b; font-weight: bold;")
+        self.lbl_base1_status = QLabel("尚未设置"); self.lbl_base1_status.setStyleSheet(self.SLOT_EMPTY_STYLE)
         self.lbl_base1_status.setWordWrap(True)
         row_base1 = QHBoxLayout()
         btn_set_base1 = self.btn_set_gap_base1 = QPushButton("将当前数据设为【单片 1】"); btn_set_base1.setFixedHeight(32)
@@ -1846,7 +1872,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         for group in (grp_stack, grp_base1, grp_base2):
             group.setObjectName("layerCard")
         for button in (btn_set_stack, btn_set_base1, btn_set_base2):
-            button.setText("替换为当前数据")
+            button.setText("写入当前数据")
         row_base1.removeWidget(self.btn_gap_select_base1)
         registration_page.layout().insertWidget(1, self.btn_gap_select_base1)
         hl_b2.removeWidget(self.btn_gap_select_base2)
@@ -1877,6 +1903,27 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             action.triggered.connect(lambda checked=False, export=callback: export())
             action.setEnabled(ready and self._task_thread is None)
 
+    def _module_status_text(self, index):
+        def state(record):
+            return "已写入" if record is not None else "未设置"
+        if index == getattr(self, 'math_tab_index', -1):
+            return (f"膜厚 · 堆叠总成 {state(getattr(self, 'data_stack', None))}"
+                    f" · 单片 1 {state(getattr(self, 'data_base1', None))}"
+                    f" · 单片 2 {state(getattr(self, 'data_base2', None))}（选填）")
+        if index == getattr(self, 'parallel_tab_index', -1):
+            return (f"平行度 · 基准面 {state(getattr(self, 'parallel_base', None))}"
+                    f" · 测量面 {state(getattr(self, 'parallel_measure', None))}")
+        return ""
+
+    def _sync_status_widgets(self):
+        if not hasattr(self, 'lbl_module_status') or not hasattr(self, 'tabs'):
+            return
+        message = bool(self.statusBar().currentMessage())
+        module_text = self._module_status_text(self.tabs.currentIndex())
+        self.lbl_module_status.setText(module_text)
+        self.lbl_module_status.setVisible(not message and bool(module_text))
+        self.lbl_import_status.setVisible(not message and not module_text)
+
     def _on_tab_changed(self, index):
         for target, button in enumerate(getattr(self, 'module_buttons', [])):
             button.setChecked(target == index)
@@ -1894,6 +1941,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
                 self.right_stack.setCurrentIndex(2)
             else:
                 self.right_stack.setCurrentIndex(0)
+        self._sync_status_widgets()
 
     def setup_parallel_tab(self, parent_widget):
         scroll = QScrollArea()
@@ -1918,9 +1966,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         gl_ref.setContentsMargins(2, 2, 2, 2)
         gl_ref.setSpacing(6)
         self.lbl_parallel_base_status = QLabel("尚未设置")
-        self.lbl_parallel_base_status.setObjectName("sourceNote")
+        self.lbl_parallel_base_status.setStyleSheet(self.SLOT_EMPTY_STYLE)
         self.lbl_parallel_base_status.setWordWrap(True)
-        btn_ref = QPushButton("设当前数据为基准面")
+        btn_ref = QPushButton("写入当前数据")
         btn_ref.setObjectName("accentSoftBtn")
         btn_ref.setFixedHeight(35)
         btn_ref.clicked.connect(lambda: self.set_parallel_surface('base'))
@@ -1934,9 +1982,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         gl_meas.setContentsMargins(2, 2, 2, 2)
         gl_meas.setSpacing(6)
         self.lbl_parallel_measure_status = QLabel("尚未设置")
-        self.lbl_parallel_measure_status.setObjectName("sourceNote")
+        self.lbl_parallel_measure_status.setStyleSheet(self.SLOT_EMPTY_STYLE)
         self.lbl_parallel_measure_status.setWordWrap(True)
-        btn_meas = QPushButton("设当前数据为测量面")
+        btn_meas = QPushButton("写入当前数据")
         btn_meas.setObjectName("accentSoftBtn")
         btn_meas.setFixedHeight(35)
         btn_meas.clicked.connect(lambda: self.set_parallel_surface('measure'))
@@ -3079,7 +3127,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         for ax in (self.canvas.ax_xy, self.canvas.ax_xz, self.canvas.ax_yz):
             ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
             ax.spines['left'].set_color('#d8dee4'); ax.spines['bottom'].set_color('#d8dee4')
-            ax.tick_params(colors='#9aa4ae', labelsize=8)
+            ax.tick_params(colors='#6b7682', labelsize=8)
         # 3D 子图：背景面改浅色、网格变淡
         a3 = self.canvas.ax3d
         # Metrology surfaces are easier to inspect in orthographic projection:
@@ -3087,7 +3135,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         a3.set_proj_type('ortho')
         for pane in (a3.xaxis.pane, a3.yaxis.pane, a3.zaxis.pane):
             pane.set_facecolor('#fbfcfd'); pane.set_edgecolor('#e6eaee'); pane.set_alpha(1.0)
-        a3.tick_params(colors='#9aa4ae', labelsize=7)
+        a3.tick_params(colors='#6b7682', labelsize=7)
 
         self.canvas.set_titles(actual_display_mode)
         if self.cb_filter.currentIndex() == 4 and actual_display_mode == 'raw':

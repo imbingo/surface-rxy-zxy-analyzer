@@ -559,6 +559,10 @@ class DataIOMixin:
             parser_detail += f" | 字段完整性: {integrity_labels.get(integrity, integrity)}"
             if info.get('parser_fast_fallback'):
                 parser_detail += f"\nFast path 回退原因: {info['parser_fast_fallback']}"
+        if hasattr(self, 'empty_state'):
+            self.empty_state.setVisible(frame is None)
+        if hasattr(self, 'btn_open'):
+            self.btn_open.setText("打开文件" if frame is None else "更换文件")
         if hasattr(self, 'lbl_import_status'):
             self.lbl_import_status.setText(summary_text)
             self.lbl_import_status.setToolTip(
@@ -755,7 +759,7 @@ class DataIOMixin:
         advanced_toggle = QToolButton()
         advanced_toggle.setText("展开高级解析覆盖（Auto优先使用可靠表头）")
         advanced_toggle.setCheckable(True)
-        advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self._set_disclosure(advanced_toggle, False)
         advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         advanced_outer.addWidget(advanced_toggle)
         advanced_body = QWidget()
@@ -826,8 +830,7 @@ class DataIOMixin:
 
         def toggle_advanced(checked):
             advanced_body.setVisible(checked)
-            advanced_toggle.setArrowType(
-                Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+            self._set_disclosure(advanced_toggle, checked)
 
         advanced_toggle.toggled.connect(toggle_advanced)
 

@@ -199,7 +199,7 @@ class MultiViewCanvas(QWidget):
             'axes.edgecolor': '#d8dee4', 'axes.linewidth': 0.8,
             'axes.labelcolor': '#5b6672', 'axes.labelsize': 10,
             'grid.color': '#edf0f3', 'grid.linewidth': 0.7,
-            'xtick.color': '#9aa4ae', 'ytick.color': '#9aa4ae',
+            'xtick.color': '#6b7682', 'ytick.color': '#6b7682',
             'xtick.labelsize': 9, 'ytick.labelsize': 9,
         })
         grid = QGridLayout(self)
@@ -410,7 +410,7 @@ class ParallelismCanvas(FigureCanvas):
 
     def _empty_axis(self, ax, title):
         ax.clear()
-        ax.set_title(title)
+        ax.set_title(title, fontsize=11, color='#46505a')
         ax.text2D(0.5, 0.5, "等待写入数据", transform=ax.transAxes,
                   ha='center', va='center', color='#8a94a3')
         ax.set_axis_off()
@@ -613,7 +613,6 @@ class GapMatchCanvas(FigureCanvas):
         ax = self.ax
         ax.clear()
         if stack is None and base1 is None and base2 is None:
-            ax.set_title("多层胶厚 XY 配准")
             ax.text(0.5, 0.5, "依次写入堆叠总成、单片 1 / 单片 2 后显示 XY 点云",
                     transform=ax.transAxes, ha='center', va='center', color='#8a94a3')
             ax.set_axis_off()
@@ -622,7 +621,7 @@ class GapMatchCanvas(FigureCanvas):
             return
 
         ax.set_axis_on()
-        ax.set_title(f"多层胶厚 XY 配准 | 对齐判定: |ΔXY| ≤ {float(tolerance):.3f} mm", fontsize=11)
+        ax.set_title(f"对齐判定: |ΔXY| ≤ {float(tolerance):.3f} mm", fontsize=10, color='#46505a')
         ax.set_xlabel("X (mm)")
         ax.set_ylabel("Y (mm)")
         ax.grid(True, linestyle='-', linewidth=0.6, color='#edf0f3')
@@ -693,3 +692,57 @@ class GapMatchCanvas(FigureCanvas):
             float(diag.get('tolerance', 0.05)) if diag else 0.05,
             self._active_layer, diag,
         )
+
+
+class EmptyStateOverlay(QFrame):
+    """Centered hint shown over the plot grid until a file is loaded."""
+    open_requested = pyqtSignal()
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setObjectName("emptyState")
+        self.setStyleSheet(
+            "#emptyState { background: rgba(255,255,255,0.96); border: 1px dashed #c4d3e2; border-radius: 16px; }"
+            "#emptyStateTitle { color: #202830; font-size: 18px; font-weight: 600; }"
+            "#emptyStateBody { color: #5b6672; font-size: 13px; }"
+            "#emptyStateFormats { color: #7b8590; font-size: 12px; }")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(36, 28, 36, 28)
+        layout.setSpacing(10)
+        title = QLabel("尚未载入数据")
+        title.setObjectName("emptyStateTitle")
+        body = QLabel("将数据文件拖入窗口，或点击下方按钮选择文件")
+        body.setObjectName("emptyStateBody")
+        formats = QLabel("支持 XYZ 点表、Z 矩阵、Zygo、Precitec、Excel 等格式")
+        formats.setObjectName("emptyStateFormats")
+        button = QPushButton("打开文件")
+        button.setObjectName("accentBtn")
+        button.setFixedSize(150, 38)
+        button.clicked.connect(self.open_requested.emit)
+        for label in (title, body, formats):
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(label)
+        layout.addSpacing(6)
+        layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
+        parent.installEventFilter(self)
+        self._reposition()
+
+    def eventFilter(self, obj, event):
+        if obj is self.parentWidget() and event.type() == QEvent.Type.Resize:
+            self._reposition()
+        return False
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._reposition()
+        self.raise_()
+
+    def _reposition(self):
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        self.adjustSize()
+        size = self.sizeHint()
+        self.setGeometry((parent.width() - size.width()) // 2,
+                         (parent.height() - size.height()) // 2,
+                         size.width(), size.height())
