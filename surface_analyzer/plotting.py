@@ -27,11 +27,17 @@ def display_color_limits(values):
     return low, high
 
 
-def color_scale_domains(x, y, z, overview_indices, final_indices, roi_active=False, mode='auto'):
+def color_scale_domains(x, y, z, overview_indices, final_indices, roi_active=False, mode='auto', analysis_indices=None):
     """Display-only domains, before LOD; deleted points cannot enter either."""
     x, y, z = np.asarray(x), np.asarray(y), np.asarray(z)
     overview = np.asarray(overview_indices, dtype=int)
     overview = overview[np.isfinite(x[overview]) & np.isfinite(y[overview]) & np.isfinite(z[overview])]
+    # Exclude only rejected points from the region actually analysed. ROI-outside
+    # points remain valid overview context; do not rerun filtering on that region.
+    if analysis_indices is not None:
+        rejected = np.setdiff1d(np.asarray(analysis_indices, dtype=int),
+                                np.asarray(final_indices, dtype=int))
+        overview = overview[~np.isin(overview, rejected)]
     local = bool(roi_active and mode == 'auto')
     final = np.asarray(final_indices, dtype=int)
     eligible = np.zeros(len(z), dtype=bool)

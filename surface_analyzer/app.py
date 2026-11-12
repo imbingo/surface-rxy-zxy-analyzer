@@ -3092,8 +3092,11 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
 
         plot_z_all, z_axis_label, z_short_label = self._get_plot_z(tx, ty, tz)
         from .plotting import color_scale_domains
+        analysis_indices = (xy_source_idx[roi_mask_all[xy_source_idx]]
+                            if roi_active and roi_mask_all is not None else xy_source_idx)
         scales = color_scale_domains(tx,ty,plot_z_all,xy_source_idx,self.active_idx,
-                                     roi_active,self.cb_color_scale.currentData())
+                                     roi_active,self.cb_color_scale.currentData(),
+                                     analysis_indices=analysis_indices if self.n_filtered else None)
         self._shared_color_limits = scales['global_limits'] or (0.,1.)
         self._detail_color_limits = scales['detail_limits'] or self._shared_color_limits
         self._color_scale_domains = scales

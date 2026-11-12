@@ -31,6 +31,74 @@ class ColorDomainTests(unittest.TestCase):
         w.roi_shapes=[dict(id=1,type='rectangle',view='XY',cx=-1.2,cy=0.,width=1.5,height=4.2,enabled=True)]
         w.update_analysis()
 
+    def test_filtered_spikes_update_gui_and_report_and_restore(self):
+        w = self.w
+        w.clear_rois(update=False)
+        w.roi_enabled = False
+        x, y = w.df_raw.X.to_numpy(), w.df_raw.Y.to_numpy()
+        z = .25 + .0001*x + .0002*y
+        z[-1] = 1.
+        w.df_raw['Z'] = z
+        w._df_version += 1
+        w.spin_thresh.setValue(50.)
+        w.update_analysis()
+        self.assertEqual(w._shared_color_limits[1], 1.)
+        for mode in (1, 2, 3):
+            with self.subTest(mode=mode):
+                w.cb_filter.setCurrentIndex(mode)
+                self.assertNotIn(len(z)-1, w.active_idx)
+                expected = (float(z[w.active_idx].min()), float(z[w.active_idx].max()))
+                self.assertEqual(w._shared_color_limits, expected)
+                self.assertEqual(w.xy_raster.z_limits, expected)
+                fig = w._render_report_figure(
+                    'filtered', x, y, z, w.active_idx,
+                    w.compute_plane_metrics(x[w.active_idx], y[w.active_idx], z[w.active_idx]),
+                    w.n_filtered, '原始状态', w.cb_filter.currentText(), {},
+                    overview_idx=np.flatnonzero(w.manual_mask))
+                bars = [a._colorbar for a in fig.axes if hasattr(a, '_colorbar')]
+                self.assertEqual(bars[0].mappable.get_clim(), expected)
+                fig.clear()
+        w.cb_filter.setCurrentIndex(0)
+        self.assertEqual(w._shared_color_limits[1], 1.)
+
+    def test_filter_exclusion_keeps_unanalysed_roi_context(self):
+        x = np.arange(5.)
+        z = np.array([0., 1., 100., 20., 500.])
+        for mode in ('auto', 'global'):
+            scales = color_scale_domains(
+                x, x, z, np.arange(4), np.array([0, 1]), True, mode,
+                analysis_indices=np.array([0, 1, 2]))
+            self.assertEqual(scales['global_limits'], (0., 20.))
+            self.assertEqual(scales['detail_limits'],
+                             (0., 1.) if mode == 'auto' else (0., 20.))
+
+    def test_roi_filter_updates_report_without_removing_outside_context(self):
+        w = self.w
+        z = w.df_raw.Z.to_numpy(copy=True)
+        spike = int(w.active_idx[len(w.active_idx)//2])
+        z[-1] = 2.
+        z[spike] = 100.
+        w.df_raw['Z'] = z
+        w._df_version += 1
+        w.cb_filter.setCurrentIndex(1)
+        self.assertNotIn(spike, w.active_idx)
+        self.assertEqual(w._shared_color_limits[1], 2.)
+        self.assertLess(w._detail_color_limits[1], 1.)
+        x, y, z = w.get_final_transformed_data(w.df_raw)
+        mask = w._get_effective_roi_mask_cached(x, y, z, matrix_rc=None)
+        for mode in ('auto', 'global'):
+            fig = w._render_report_figure(
+                'ROI-filter', x, y, z, w.active_idx,
+                w.compute_plane_metrics(x[w.active_idx], y[w.active_idx], z[w.active_idx]),
+                w.n_filtered, '原始状态', w.cb_filter.currentText(), {},
+                overview_idx=np.flatnonzero(w.manual_mask), roi_mask_all=mask,
+                render_config={'color_scale_mode': mode})
+            bars = [a._colorbar for a in fig.axes if hasattr(a, '_colorbar')]
+            self.assertEqual(bars[0].mappable.get_clim(), w._shared_color_limits)
+            if mode == 'auto':
+                self.assertEqual(bars[1].mappable.get_clim(), w._detail_color_limits)
+            fig.clear()
+
     def test_auto_roi_local_clim_and_global_uniform_option(self):
         w=self.w
         z=w.df_raw.Z.to_numpy()
