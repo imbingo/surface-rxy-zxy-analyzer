@@ -773,8 +773,13 @@ class ReportingMixin:
         from ..plotting import color_scale_domains
         from matplotlib.colors import Normalize
         finite_overview = np.isfinite(ox) & np.isfinite(oy) & np.isfinite(oz)
+        roi_active = bool(roi_info.get('enabled'))
+        analysis_indices = (overview_idx[np.asarray(roi_mask_all, dtype=bool)[overview_idx]]
+                            if roi_active and roi_mask_all is not None else
+                            (None if roi_active else overview_idx))
         scales = color_scale_domains(tx,ty,plot_z_all,overview_idx,active_idx,
-                                     bool(roi_info.get('enabled')),render_config['color_scale_mode'])
+                                     roi_active,render_config['color_scale_mode'],
+                                     analysis_indices=analysis_indices if n_filtered else None)
         color_limits = scales['global_limits'] or (0.,1.)
         detail_limits = scales['detail_limits'] or color_limits
         sc = {'c': dz, 'cmap': 'turbo', 's': 14, 'alpha': 1., 'edgecolors': 'none',

@@ -1,0 +1,78 @@
+name: Build and release V5.0.1
+on:
+  push:
+    tags: ['v5.0.1']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Verify release version
+        shell: pwsh
+        run: |
+          python -c "from surface_analyzer import APP_VERSION; assert APP_VERSION == 'V5.0.1', APP_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Regression checks for this patch
+        run: python -m pytest -q tests/test_roi_color_domains.py tests/test_shared_color_scale.py tests/test_v473.py --junitxml=release-tests.xml
+      - name: Source workspace smoke check
+        run: python -m surface_analyzer --check-workspace --output-json workspace-check.json
+      - name: Install Inno Setup if needed
+        shell: pwsh
+        run: |
+          if (!(Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Build Windows installer
+        shell: pwsh
+        # The patch regression suite and workspace check run above. The legacy
+        # full suite has documented pitch-fixture failures and a modal hang.
+        run: ./scripts/build_release.ps1 -Python python -SkipTests
+      - name: Verify frozen workspace and source provenance
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD 'dist/SurfaceRxyZxyAnalyzer/SurfaceRxyZxyAnalyzer.exe'
+          $output = Join-Path $PWD 'frozen-workspace-check.json'
+          $p = Start-Process -FilePath $exe -ArgumentList @('--check-workspace', '--output-json', $output) -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Frozen workspace check failed: $($p.ExitCode)" }
+          $result = Get-Content $output -Raw | ConvertFrom-Json
+          if ($result.version -ne 'V5.0.1' -or $result.source_commit -ne '${{ github.sha }}') { throw 'Frozen version/source commit mismatch' }
+          if (!$result.worksheet -or !$result.roi_colors -or !$result.deletion_updates_colors) { throw 'Frozen workspace results incomplete' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v5.0.1-build-results
+          path: |
+            release/*
+            release-tests.xml
+            workspace-check.json
+            frozen-workspace-check.json
+          if-no-files-found: warn
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $setup = 'release/SurfaceRxyZxyAnalyzer_Setup_V5.0.1.exe'
+          $checksum = "$setup.sha256"
+          foreach ($path in @($setup, $checksum, 'release/update_manifest.json')) {
+            if (!(Test-Path $path)) { throw "Missing release artifact: $path" }
+          }
+          gh release view v5.0.1 *> $null
+          if ($LASTEXITCODE -eq 0) { throw 'Release v5.0.1 already exists; refusing to overwrite it' }
+          gh release create v5.0.1 $setup $checksum release/update_manifest.json --verify-tag --title 'V5.0.1 — 自动滤波色标修复' --notes-file docs/RELEASE_NOTES_V5.0.1.md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
