@@ -4,7 +4,7 @@
 
 ## 当前版本入口
 
-- V5.0.1 当前提供源码补丁；Windows 安装包须通过 Windows 发布构建生成，尚未随本次修复发布。
+- Windows 安装包由 GitHub Actions 构建，发布成功后在 GitHub Release 下载 `SurfaceRxyZxyAnalyzer_Setup_V5.0.1.exe` 及校验文件；以 Release 实际附件为准。
 - 源码用户双击 `start_surface_analyzer_v5_0_1.bat`，首次运行需要 Python 及依赖下载访问。
 - Python 入口为 `面型及Rxy分析工具V5.0.1.py`，也可执行 `python -m surface_analyzer`。
 - 环境检查执行 `start_surface_analyzer_v5_0_1.bat --check`。
