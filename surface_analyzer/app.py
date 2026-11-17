@@ -54,6 +54,7 @@ from .mixins.parallelism import ParallelismMixin
 from .mixins.recipe import RecipeMixin
 from .mixins.roi import ROIMixin
 from .mixins.reporting import ReportingMixin
+from .mixins.judgment import JudgmentMixin
 from .workers import FunctionWorker
 from .rendering.raster import XY_RASTER_THRESHOLD
 from .rendering.controller import XYRasterController
@@ -63,7 +64,7 @@ from .pose_icons import workspace_icon, pose_pixmap
 
 
 
-class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, ParallelismMixin, RecipeMixin, ROIMixin, ReportingMixin, QMainWindow):
+class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, ParallelismMixin, RecipeMixin, ROIMixin, ReportingMixin, JudgmentMixin, QMainWindow):
     background_status = pyqtSignal(str, int)
     APP_VERSION = APP_VERSION
     SLOT_EMPTY_STYLE = "color: #7b8590; font-weight: 400;"
@@ -509,6 +510,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         recipe_menu = QMenu(self.btn_import_recipe)
         recipe_menu.addAction("Recipe 管理", self.open_recipe_manager)
         recipe_menu.addMenu(recipe_save_menu).setText("保存 / 导出 Recipe")
+        recipe_menu.addAction("判定规格…", self.open_judgment_spec_dialog)
         self.btn_import_recipe.setMenu(recipe_menu)
         self.btn_export_recipe.hide()
         layout_short = {
@@ -1018,14 +1020,14 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self._set_recipe_identity(self.current_recipe_name)
         if obj is getattr(self, '_results_strip', None) and event.type() == QEvent.Type.Resize:
             width = obj.width()
-            columns = 5 if width >= 900 else 3 if width >= 450 else 2
+            columns = len(self._metric_cards) if width >= 900 else 3 if width >= 450 else 2
             if columns != getattr(self, '_metric_columns', None):
                 self._metric_columns = columns
                 for card in self._metric_cards:
                     self._metric_grid.removeWidget(card)
                 for i, card in enumerate(self._metric_cards):
                     self._metric_grid.addWidget(card, i//columns, i%columns)
-                for i in range(5):
+                for i in range(len(self._metric_cards)):
                     self._metric_grid.setColumnStretch(i, 1 if i < columns else 0)
             self.lbl_eqn.hide()
             self.lbl_surface_residual_metrics.setVisible(True)
@@ -1140,7 +1142,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._metric_cards += [pv_card,
             self._make_metric_card("TTV·Z极差 (µm)", self.lbl_ttv),
             self._make_metric_card("Rx (µrad)", self.lbl_rx),
-            self._make_metric_card("Ry (µrad)", self.lbl_ry)]
+            self._make_metric_card("Ry (µrad)", self.lbl_ry),
+            self._make_judgment_card('single')]
         for i, card in enumerate(self._metric_cards):
             cards.addWidget(card,0,i)
         self._metric_grid = cards
@@ -1177,6 +1180,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.lbl_eqn.setText("--")
         for lab in (self.lbl_z, self.lbl_pv, self.lbl_ttv, self.lbl_rx, self.lbl_ry):
             lab.setText("--")
+        self._refresh_judgment('single', values={})
         if hasattr(self, 'lbl_surface_residual_metrics'):
             self.lbl_surface_residual_metrics.setText("暂无可用结果")
         if hasattr(self, 'canvas'):
@@ -2085,11 +2089,15 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.lbl_gap_matched = QLabel("--")
         self.lbl_gap_unmatched = QLabel("--")
         self.lbl_gap_tolerance = QLabel("--")
+        self.lbl_gap_reg_mean = QLabel("--")
         self.lbl_gap_state = QLabel("待计算")
         sl.addWidget(self._make_value_card("成功匹配点", self.lbl_gap_matched, accent=True), 1)
         sl.addWidget(self._make_value_card("未参与扣减点", self.lbl_gap_unmatched, accent=True), 1)
+        self.gap_reg_mean_card = self._make_value_card("配准误差均值 (µm)", self.lbl_gap_reg_mean)
+        sl.addWidget(self.gap_reg_mean_card, 1)
         sl.addWidget(self._make_value_card("容差窗口 (mm)", self.lbl_gap_tolerance), 1)
         sl.addWidget(self._make_value_card("状态", self.lbl_gap_state), 1)
+        sl.addWidget(self._make_judgment_card('gap'), 1)
         self._add_shadow(strip, blur=16, dy=2, alpha=18)
         outer.addWidget(strip)
 
@@ -2134,6 +2142,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         sl.addWidget(self._make_value_card("合成夹角 (µrad)", self.lbl_par_angle), 1)
         sl.addWidget(self._make_value_card("台阶高度差 (mm)", self.lbl_par_step), 1)
         sl.addWidget(self._make_value_card("状态", self.lbl_par_state), 1)
+        sl.addWidget(self._make_judgment_card('parallel'), 1)
         self._add_shadow(strip, blur=16, dy=2, alpha=18)
         outer.addWidget(strip)
 
@@ -2742,6 +2751,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.lbl_z.setText(f"{approx}{mean_z:.5f}")
             self.lbl_pv.setText(f"{approx}{pv:.3f}"); self.lbl_ttv.setText(f"{approx}{ttv:.3f}")
             self.lbl_rx.setText(f"{approx}{rx:.2f}"); self.lbl_ry.setText(f"{approx}{ry:.2f}")
+            self._refresh_judgment('single')
             self._update_surface_display_metrics()
             if quality['estimated']:
                 self._show_status(f"{quality['label']}：{quality['warning']}", 12000)

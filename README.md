@@ -1,13 +1,13 @@
-# Surface Rxy ZXY Analyzer V5.0.1
+# Surface Rxy ZXY Analyzer V5.0.2
 
-面型及 Rxy 分析工具 **V5.0 — 统一分析工作台**。独立模块导航、单层/膜厚/平行度参数页、四视图共享色标及导入策略页签。V5.0.1 修复自动异常点滤波后色标仍被噪点拉偏的问题，详见 [发布说明](docs/RELEASE_NOTES_V5.0.1.md)。
+面型及 Rxy 分析工具 **V5.0 — 统一分析工作台**。独立模块导航、单层/膜厚/平行度参数页、四视图共享色标及导入策略页签。V5.0.2 新增胶厚配准误差均值和结果判定（Rx/Ry/PV/TTV/平行度），详见 [发布说明](docs/RELEASE_NOTES_V5.0.2.md)。
 
 ## 当前版本入口
 
-- Windows 安装包由 GitHub Actions 构建，发布成功后在 GitHub Release 下载 `SurfaceRxyZxyAnalyzer_Setup_V5.0.1.exe` 及校验文件；以 Release 实际附件为准。
-- 源码用户双击 `start_surface_analyzer_v5_0_1.bat`，首次运行需要 Python 及依赖下载访问。
-- Python 入口为 `面型及Rxy分析工具V5.0.1.py`，也可执行 `python -m surface_analyzer`。
-- 环境检查执行 `start_surface_analyzer_v5_0_1.bat --check`。
+- Windows 安装包由 GitHub Actions 构建，发布成功后在 GitHub Release 下载 `SurfaceRxyZxyAnalyzer_Setup_V5.0.2.exe` 及校验文件；以 Release 实际附件为准。
+- 源码用户双击 `start_surface_analyzer_v5_0_2.bat`，首次运行需要 Python 及依赖下载访问。
+- Python 入口为 `面型及Rxy分析工具V5.0.2.py`，也可执行 `python -m surface_analyzer`。
+- 环境检查执行 `start_surface_analyzer_v5_0_2.bat --check`。
 - 旧版本启动脚本仍可启动当前模块。
 
 ## V5.0.0 重点

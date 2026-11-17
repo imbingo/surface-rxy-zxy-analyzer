@@ -15,6 +15,7 @@ from scipy.spatial import cKDTree
 from ..workers import TaskCancelled
 from ..dialog_paths import dialog_initial_path, remember_dialog_path
 from .analysis import AnalysisMixin
+from ..judgment import judgment_summary
 
 
 class GapAnalysisMixin:
@@ -90,6 +91,8 @@ class GapAnalysisMixin:
             self.import_info['gap_result_stale'] = True
             self.lbl_source.setText(f"当前数据: {self.current_source_name} [配准已变更，旧结果]")
         self._sync_gap_action_state()
+        if hasattr(self, '_refresh_judgment'):
+            self._refresh_judgment('gap')
         if reason:
             self._show_status(f"胶厚结果已失效：{reason}，请重新计算。", 5000)
 
@@ -222,6 +225,7 @@ class GapAnalysisMixin:
             layers[key] = {
                 'dist': dist, 'idx': idx, 'valid': valid,
                 'matched': int(valid.sum()),
+                'mean': float(np.mean(matched_dist)) if len(matched_dist) else np.nan,
                 'rms': float(np.sqrt(np.mean(matched_dist ** 2))) if len(matched_dist) else np.nan,
                 'max': float(np.max(matched_dist)) if len(matched_dist) else np.nan,
             }
@@ -259,7 +263,24 @@ class GapAnalysisMixin:
             else:
                 state = "可计算"
             self.lbl_gap_state.setText(state)
+            self._refresh_gap_registration_error(diag)
+            self._refresh_judgment('gap')
         return diag
+
+    def _refresh_gap_registration_error(self, diag):
+        if not hasattr(self, 'lbl_gap_reg_mean'):
+            return
+        means, tips = [], []
+        for key, tag in (('base1', '单片 1'), ('base2', '单片 2')):
+            layer = (diag or {}).get('layers', {}).get(key)
+            if not layer or not np.isfinite(layer['mean']):
+                continue
+            means.append(f"{layer['mean'] * 1000:.2f}")
+            tips.append(f"{tag}：均值 {layer['mean'] * 1000:.2f} µm | RMS {layer['rms'] * 1000:.2f} µm | "
+                        f"Max {layer['max'] * 1000:.2f} µm（{layer['matched']:,} 个匹配点）")
+        self.lbl_gap_reg_mean.setText(" / ".join(means) if means else "--")
+        self.gap_reg_mean_card.setToolTip(
+            "容差内匹配点到堆叠层的 XY 最近邻距离均值" + ("\n" + "\n".join(tips) if tips else ""))
 
     def _update_gap_diagnostic(self, diag):
         """Compatibility wrapper retained for callers and older tests."""
@@ -270,11 +291,12 @@ class GapAnalysisMixin:
         matched_dist = dist[valid]
         if len(matched_dist) == 0:
             return f"[{tag}] 无匹配点"
+        mean_um = np.mean(matched_dist) * 1000
         rms_um = np.sqrt(np.mean(matched_dist ** 2)) * 1000
         max_um = np.max(matched_dist) * 1000
         unique_ratio = len(np.unique(idx[valid])) / valid.sum() * 100
         text = (f"[{tag}] 匹配 {int(valid.sum())} / 未匹配 {int((~valid).sum())}\n"
-                f"    匹配距离 RMS {rms_um:.2f} µm | Max {max_um:.2f} µm\n"
+                f"    匹配距离 均值 {mean_um:.2f} µm | RMS {rms_um:.2f} µm | Max {max_um:.2f} µm\n"
                 f"    唯一匹配比例 {unique_ratio:.1f}%")
         if unique_ratio < 99.9:
             text += "  存在多对一重复匹配，建议减小容差"
@@ -360,6 +382,8 @@ class GapAnalysisMixin:
                 'rms': float(np.sqrt(np.mean(residuals ** 2))),
                 'overlap_rms': (float(np.sqrt(np.mean(overlap_dist ** 2)))
                                 if len(overlap_dist) else np.nan),
+                'overlap_mean': (float(np.mean(overlap_dist))
+                                 if len(overlap_dist) else np.nan),
                 'matched_rms': (float(np.sqrt(np.mean(matched_dist ** 2)))
                                 if len(matched_dist) else np.nan),
                 'matched': int(len(matched_dist)),
@@ -381,6 +405,7 @@ class GapAnalysisMixin:
                 'proposed_offset_y': float(proposed[1]),
                 'rms': quality['rms'],
                 'overlap_rms': quality['overlap_rms'],
+                'overlap_mean': quality['overlap_mean'],
                 'matched_rms': quality['matched_rms'],
                 'matched': quality['matched'],
                 'moving_points': quality['moving_points'],
@@ -512,11 +537,13 @@ class GapAnalysisMixin:
             rec['registration_mode'] = 'auto'
             applied = True
             quality_rms = float(values.get('overlap_rms', values['rms']))
+            quality_mean = float(values.get('overlap_mean', np.nan))
+            mean_text = f"均值 {quality_mean * 1000:.2f} µm / " if np.isfinite(quality_mean) else ""
             matched = int(values.get('matched', 0))
             moving_points = int(values.get('moving_points', rec.get('n', 0)))
             details.append(
                 f"{label}: ΔX {values['offset_x']:+.4f} mm，ΔY {values['offset_y']:+.4f} mm，"
-                f"单片→堆叠残差 RMS {quality_rms * 1000:.2f} µm，"
+                f"单片→堆叠残差 {mean_text}RMS {quality_rms * 1000:.2f} µm，"
                 f"容差内 {matched:,}/{moving_points:,} 点")
         if applied:
             self._invalidate_gap_result()
@@ -800,6 +827,14 @@ class GapAnalysisMixin:
             lines.append(
                 f"单片 2  ΔX {layers['base2']['offset_x']:+.5f} mm  ΔY {layers['base2']['offset_y']:+.5f} mm  "
                 f"{self.GAP_REGISTRATION_MODE_LABELS.get(layers['base2'].get('registration_mode', 'none'), '未配准')}")
+        for key, tag in (('base1_distance', '单片 1'), ('base2_distance', '单片 2')):
+            dist = payload.get('details', {}).get(key)
+            if dist is not None and len(dist):
+                dist = np.asarray(dist, dtype=float) * 1000
+                lines.append(f"{tag}  配准误差 均值 {np.mean(dist):.2f} µm  RMS {np.sqrt(np.mean(dist ** 2)):.2f} µm")
+        judgment = judgment_summary(self.current_judgment('gap'))
+        if judgment:
+            lines[1:1] = [judgment]
         lines.extend(["", "数据来源", f"堆叠  {Path(str(layers['stack']['name'])).name}",
                       f"单片 1  {Path(str(layers['base1']['name'])).name}"])
         if layers['base2'] is not None:
