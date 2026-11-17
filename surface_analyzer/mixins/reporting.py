@@ -18,6 +18,7 @@ from matplotlib.figure import Figure
 from matplotlib.patches import FancyBboxPatch, Rectangle as MplRectangle, Circle as MplCircle
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from ..judgment import judgment_summary
 from matplotlib.widgets import RectangleSelector
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -926,6 +927,9 @@ class ReportingMixin:
             f"物料 Ry       {relation} {metrics['ry']:.2f} µrad"
             f"{display_residual_text}"
         )
+        judgment = judgment_summary(self.current_judgment('single', {k: metrics.get(k) for k in ('rx', 'ry', 'pv', 'ttv')}))
+        if judgment:
+            results_text += f"\n\n{judgment}"
         result_face = '#fff4e5' if quality['estimated'] else '#eaf2fb'
         result_edge = '#d97706' if quality['estimated'] else '#3498db'
         ax_res.text(0.02, 0.97, results_text, va='top', ha='left',

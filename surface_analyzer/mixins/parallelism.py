@@ -32,6 +32,7 @@ from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
 from scipy.spatial import cKDTree
 
 from ..plotting import set_surface_box_aspect
+from ..judgment import judgment_summary
 
 
 
@@ -237,6 +238,7 @@ class ParallelismMixin:
             self.lbl_par_angle.setText("--")
             self.lbl_par_step.setText("--")
             self.lbl_par_state.setText("待计算")
+        self._refresh_judgment('parallel')
 
         if b:
             self.lbl_par_eq_base.setText(f"基准面: Z = {b['a']:.6e}*X + {b['b']:.6e}*Y + {b['c']:.6e}")
@@ -262,6 +264,9 @@ class ParallelismMixin:
         ]
         if self.parallel_result.get('estimated'):
             rows.insert(1, "结果质量: 抽样估计，不可直接用于产线放行")
+        judgment = judgment_summary(self.current_judgment('parallel'))
+        if judgment:
+            rows.insert(1, judgment)
         base_trace = self._parallel_trace(self.parallel_base)
         measure_trace = self._parallel_trace(self.parallel_measure)
         rows.extend([
