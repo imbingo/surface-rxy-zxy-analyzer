@@ -117,12 +117,12 @@ class ImportProgressDialog(QDialog):
             detail = message or '导入未完成'
             cancelled = detail.startswith('已取消')
             title = '⚠ 导入已取消' if cancelled else '⛔ 导入失败'
-            color = '#8a5a00' if cancelled else '#a61b1b'
+            color = ui_color('#8a5a00' if cancelled else '#a61b1b')
             background = '#fff8e6' if cancelled else '#fff1f0'
             border = '#e6b84f' if cancelled else '#d9363e'
             self.setWindowTitle(('导入已取消' if cancelled else '导入失败') + ' - 导入测量数据')
             self.detail.setText(f'<div style="font-size:16px; font-weight:700; color:{color};">{title}</div>'
-                                f'<div style="margin-top:8px; color:#20242a;">'
+                                f'<div style="margin-top:8px; color:{ui_color("#20242a")};">'
                                 f'{html.escape(detail).replace(chr(10), "<br>")}</div>')
             self.detail.setStyleSheet(
                 f'QLabel {{ background:{background}; border:2px solid {border}; '
