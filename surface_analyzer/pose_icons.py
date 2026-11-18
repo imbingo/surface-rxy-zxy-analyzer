@@ -3,6 +3,8 @@ from PyQt6.QtCore import QByteArray, Qt
 from PyQt6.QtGui import QIcon, QPainter, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 
+from .theme import icon_color
+
 
 def pose_pixmap(key):
     paths = {
@@ -15,7 +17,7 @@ def pose_pixmap(key):
         '⊕': 'M12 3v18 M3 12h18 M12 5a7 7 0 1 0 0 14 7 7 0 1 0 0-14',
         '↶': 'M4 9h9a7 7 0 0 1 0 14 M9 4 4 9l5 5',
     }
-    svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="{paths[key]}" fill="none" stroke="#52657a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="{paths[key]}" fill="none" stroke="{icon_color()}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
     pixmap = QPixmap(60, 60)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
@@ -32,7 +34,7 @@ def focus_icon(restore=False):
     else:
         path = 'M9 4H4v5 M15 4h5v5 M9 20H4v-5 M15 20h5v-5'
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
-           f'<path d="{path}" fill="none" stroke="#52657a" stroke-width="1.7" '
+           f'<path d="{path}" fill="none" stroke="{icon_color()}" stroke-width="1.7" '
            'stroke-linecap="round" stroke-linejoin="round"/></svg>')
     pixmap = QPixmap(54, 54)
     pixmap.fill(Qt.GlobalColor.transparent)
@@ -45,6 +47,7 @@ def focus_icon(restore=False):
 
 def workspace_icon(name, color="#52657a"):
     """Use the pose toolbar's monochrome line style for workspace commands."""
+    color = icon_color(color)
     paths = {
         'surface': 'M5 5C10 1 14 10 21 6 M3 10C9 5 14 15 20 11 M2 15C8 10 13 20 19 16 M9 4C6 8 6 12 5 14 M17 7C14 11 14 15 13 18',
         'recipe': 'M5 2h10l4 4v16H5z M14 2v5h5 M8 11h8 M8 15h8 M8 19h5',
@@ -59,6 +62,8 @@ def workspace_icon(name, color="#52657a"):
         'query': 'M12 2v5 M12 17v5 M2 12h5 M17 12h5 M12 5a7 7 0 1 0 0 14 7 7 0 1 0 0-14',
         'open': 'M3 7V4h6l2 3h10v13H3z M3 10h18',
         'save': 'M4 3h13l4 4v14H3V3z M7 3v6h10V3 M7 21v-8h10v8',
+        'sun': 'M12 8a4 4 0 1 0 0 8 4 4 0 1 0 0-8 M12 2v2 M12 20v2 M4.9 4.9l1.4 1.4 M17.7 17.7l1.4 1.4 M2 12h2 M20 12h2 M4.9 19.1l1.4-1.4 M17.7 6.3l1.4-1.4',
+        'moon': 'M20 14.5A8.5 8.5 0 1 1 9.5 4 7 7 0 0 0 20 14.5z',
     }
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
            f'<path d="{paths[name]}" fill="none" stroke="{color}" '

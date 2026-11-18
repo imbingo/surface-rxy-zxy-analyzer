@@ -61,6 +61,8 @@ from .rendering.controller import XYRasterController
 from .rendering.lod import spatial_lod_indices, critical_indices, LODCache
 from .status_label import ImportStatusLabel
 from .pose_icons import workspace_icon, pose_pixmap
+from . import theme as ui_theme
+from .theme import bind_icon, icon_color
 
 
 
@@ -234,6 +236,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.setAcceptDrops(True)
         self.background_status.connect(self._show_status)
         self.init_ui()
+        self._init_theme()
         self._install_shortcuts()
 
     def _apply_theme(self):
@@ -366,11 +369,11 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         return cache[key]
 
     def _set_disclosure(self, button, expanded):
-        icon = self._chevron_icon('down' if expanded else 'right')
-        if icon.isNull():
+        direction = 'down' if expanded else 'right'
+        if self._chevron_icon(direction).isNull():
             button.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
         else:
-            button.setIcon(icon)
+            bind_icon(button, lambda: self._chevron_icon(direction, icon_color('#55606b')))
             button.setIconSize(QSize(14, 14))
 
     def _add_shadow(self, widget, blur=22, dy=4, alpha=38):
@@ -388,6 +391,9 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self._apply_theme()
         self.setStyleSheet(self.styleSheet() + """
             QMainWindow, #centralRoot { background: #f2f1f0; }
+            #themeButton { border: none; border-radius: 10px; background: transparent; padding: 0; }
+            #themeButton:hover { background: #e9e8e7; }
+            #themeButton::menu-indicator { image: none; width: 0; }
             QWidget { font-size: 14px; font-family: 'Microsoft YaHei UI'; }
             #appBar { background: #faf9f8; }
             #verPill { background: transparent; border: none; color: #626873; }
@@ -475,7 +481,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         app_title = QLabel("面型与 Rxy 分析"); app_title.setObjectName("appTitle")
         ver_pill = QLabel(self.APP_VERSION); ver_pill.setObjectName("verPill")
         self.btn_toggle_parameters = QPushButton()
-        self.btn_toggle_parameters.setIcon(workspace_icon("sidebar"))
+        bind_icon(self.btn_toggle_parameters, lambda: workspace_icon("sidebar"))
         self.btn_toggle_parameters.setFixedSize(28, 28)
         self.btn_toggle_parameters.setObjectName("sidebarToggle")
         self.btn_toggle_parameters.setIconSize(QSize(21, 21))
@@ -506,7 +512,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         recipe_save_menu.addAction('格式扩展管理…', show_extensions)
         self.btn_export_recipe.setMenu(recipe_save_menu)
         self.btn_import_recipe.setText("Recipe")
-        self.btn_import_recipe.setIcon(workspace_icon("recipe"))
+        bind_icon(self.btn_import_recipe, lambda: workspace_icon("recipe"))
         recipe_menu = QMenu(self.btn_import_recipe)
         recipe_menu.addAction("Recipe 管理", self.open_recipe_manager)
         recipe_menu.addMenu(recipe_save_menu).setText("保存 / 导出 Recipe")
@@ -612,7 +618,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         export_menu.addAction("导出测量报告图", self.export_report_image)
         export_menu.addAction("导出 CSV", self.save_file)
         self.btn_export_report.setMenu(export_menu)
-        self.btn_export_report.setIcon(workspace_icon('export', '#ffffff'))
+        bind_icon(self.btn_export_report, lambda: workspace_icon('export', '#ffffff'))
         self.btn_export_report.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.btn_export_report.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.btn_export_report.setIconSize(QSize(20, 20))
@@ -631,7 +637,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.top_import_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         self.top_import_button.setMenu(self.recent_files_menu)
         self.top_import_button.clicked.connect(self.load_file)
-        self.top_import_button.setIcon(workspace_icon('open'))
+        bind_icon(self.top_import_button, lambda: workspace_icon('open'))
         ab.insertWidget(ab.count() - 5, self.top_import_button)
 
         right_main_panel = QWidget()
@@ -718,7 +724,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             button.setObjectName("moduleNav")
             button.setText(label)
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
-            button.setIcon(workspace_icon(icon))
+            bind_icon(button, lambda name=icon: workspace_icon(name))
             button.setIconSize(QSize(24, 24))
             button.setCheckable(True)
             button.setAutoExclusive(True)
@@ -727,6 +733,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             rail_layout.addWidget(button)
             self.module_buttons.append(button)
         rail_layout.addStretch()
+        rail_layout.addWidget(self._build_theme_button(), 0, Qt.AlignmentFlag.AlignHCenter)
         body_l.addWidget(self.module_rail)
         body_l.addWidget(splitter, 1)
         self._on_tab_changed(self.tabs.currentIndex())
@@ -1088,15 +1095,15 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             button.setCheckable(True)
             button.setChecked(view is None)
             self.view_buttons[view] = button
-            button.setIcon(workspace_icon('grid' if view is None else '3d' if view == '3D' else 'xy'))
+            bind_icon(button, lambda name='grid' if view is None else '3d' if view == '3D' else 'xy': workspace_icon(name))
             button.clicked.connect(lambda checked=False, target=view: self.canvas.set_focused_view(target))
             head.addWidget(button)
         fit_button = QPushButton("适应窗口")
         fit_button.clicked.connect(self._fit_all_plot_views)
-        fit_button.setIcon(workspace_icon('fit'))
+        bind_icon(fit_button, lambda: workspace_icon('fit'))
         head.addWidget(fit_button)
         self.btn_point_query = QPushButton("点查询")
-        self.btn_point_query.setIcon(workspace_icon('query'))
+        bind_icon(self.btn_point_query, lambda: workspace_icon('query'))
         self.btn_point_query.setCheckable(True)
         self.btn_point_query.setToolTip("开启后移到可见点查看 XYZ；关闭后可按住 Ctrl 临时查询。")
         self.btn_point_query.toggled.connect(lambda _: self._clear_projection_hover(draw=True))
@@ -1226,7 +1233,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         v.setContentsMargins(2, 5, 2, 5)
         v.setSpacing(1)
         ic = QLabel(); ic.setObjectName("poseIcon")
-        ic.setPixmap(pose_pixmap(icon))
+        bind_icon(ic, lambda key=icon: pose_pixmap(key), 'setPixmap')
         ic.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tx = QLabel(label); tx.setObjectName("poseLabel")
         tx.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1928,11 +1935,58 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.lbl_module_status.setVisible(not message and bool(module_text))
         self.lbl_import_status.setVisible(not message and not module_text)
 
+    def _build_theme_button(self):
+        from PyQt6.QtGui import QAction, QActionGroup
+        from PyQt6.QtWidgets import QMenu
+        button = QToolButton()
+        button.setObjectName("themeButton")
+        button.setFixedSize(64, 44)
+        button.setIconSize(QSize(22, 22))
+        button.setAccessibleName("界面主题")
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(button)
+        group = QActionGroup(menu)
+        group.setExclusive(True)
+        self.theme_actions = {}
+        for mode in ui_theme.THEME_MODES:
+            action = QAction(ui_theme.THEME_LABELS[mode], menu)
+            action.setCheckable(True)
+            action.triggered.connect(lambda checked=False, target=mode: self.set_theme_preference(target))
+            group.addAction(action)
+            menu.addAction(action)
+            self.theme_actions[mode] = action
+        button.setMenu(menu)
+        self.btn_theme = button
+        return button
+
+    def _init_theme(self):
+        manager = ui_theme.manager()
+        manager.register(self)
+        manager.changed.connect(self._on_theme_changed)
+        self.set_theme_preference(self.settings.value(ui_theme.THEME_SETTINGS_KEY, "light"), persist=False)
+
+    def set_theme_preference(self, preference, persist=True):
+        """Switch between 浅色 / 深色 / 跟随系统 and remember the choice."""
+        if preference not in ui_theme.THEME_MODES:
+            preference = "light"
+        if persist:
+            self.settings.setValue(ui_theme.THEME_SETTINGS_KEY, preference)
+        ui_theme.manager().set_preference(preference)
+        self._on_theme_changed()
+
+    def _on_theme_changed(self, *_):
+        preference = ui_theme.manager().preference
+        for mode, action in getattr(self, 'theme_actions', {}).items():
+            action.setChecked(mode == preference)
+        if hasattr(self, 'btn_theme'):
+            bind_icon(self.btn_theme, lambda: workspace_icon('moon' if ui_theme.is_dark() else 'sun'))
+            self.btn_theme.setToolTip(f"界面主题：{ui_theme.THEME_LABELS[preference]}")
+
     def _on_tab_changed(self, index):
         for target, button in enumerate(getattr(self, 'module_buttons', [])):
             button.setChecked(target == index)
-            button.setIcon(workspace_icon(('surface', 'layers', 'parallel')[target],
-                                         '#286b9f' if target == index else '#606974'))
+            bind_icon(button, lambda name=('surface', 'layers', 'parallel')[target],
+                      color='#286b9f' if target == index else '#606974': workspace_icon(name, color))
         self.module_caption.setText(("单层分析", "膜厚分析", "平行度分析")[index])
         if hasattr(self, 'btn_export_report'):
             self.btn_export_report.setText(("导出报告", "导出膜厚", "导出平行度")[index])
@@ -2874,7 +2928,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self.tabs.show()
             self._apply_parameter_width()
         label = "展开左侧参数区" if collapsed else "收起左侧参数区"
-        self.btn_toggle_parameters.setIcon(workspace_icon("sidebar"))
+        bind_icon(self.btn_toggle_parameters, lambda: workspace_icon("sidebar"))
         self.btn_toggle_parameters.setToolTip(label)
         self.btn_toggle_parameters.setAccessibleName(label)
 

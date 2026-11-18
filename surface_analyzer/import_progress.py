@@ -3,6 +3,7 @@ import html
 import time
 from PyQt6.QtCore import Qt, QRectF, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
+from .theme import ui_color
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 
@@ -25,13 +26,13 @@ class ProgressRing(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(5, 5, self.width()-10, self.height()-10)
-        painter.setPen(QPen(QColor('#e6ebf1'), 4))
+        painter.setPen(QPen(QColor(ui_color('#e6ebf1', 'border')), 4))
         painter.drawEllipse(rect)
-        color = QColor('#c62828' if self.failed else
-                       ('#25855a' if self.value == 100 else '#2f6db0'))
+        color = QColor(ui_color('#c62828' if self.failed else
+                                ('#25855a' if self.value == 100 else '#2f6db0')))
         painter.setPen(QPen(color, 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawArc(rect, 90 * 16, -round(self.value * 3.6 * 16))
-        painter.setPen(color if self.active or self.value else QColor('#8693a3'))
+        painter.setPen(color if self.active or self.value else QColor(ui_color('#8693a3')))
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, f'{self.value}%')
 
 

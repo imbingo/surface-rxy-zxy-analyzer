@@ -14,7 +14,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.patches import FancyBboxPatch, Rectangle as MplRectangle, Circle as MplCircle
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from .theme import ThemedFigureCanvas as FigureCanvas, bind_icon, is_dark, ui_color, INFO
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.widgets import RectangleSelector
 from PyQt6.QtWidgets import (
@@ -90,13 +90,13 @@ class ROIRegionDelegate(QStyledItemDelegate):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         text_rect = option.rect.adjusted(12, 0, -54, 0)
         painter.setFont(styled.font)
-        painter.setPen(QColor('#243b50' if styled.state & QStyle.StateFlag.State_Selected else '#343d48'))
+        painter.setPen(QColor(ui_color('#243b50' if styled.state & QStyle.StateFlag.State_Selected else '#343d48')))
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                          styled.fontMetrics.elidedText(text, Qt.TextElideMode.ElideRight, text_rect.width()))
         enabled = index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked.value
         switch = self.switch_rect(option.rect)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor('#4779a6' if enabled else '#c8ced4'))
+        painter.setBrush(QColor((INFO if enabled else '#3a3a3e') if is_dark() else ('#4779a6' if enabled else '#c8ced4')))
         painter.drawRoundedRect(switch, 9, 9)
         painter.setBrush(QColor('#ffffff'))
         knob_x = switch.right() - 16 if enabled else switch.left() + 2
@@ -259,7 +259,7 @@ class MultiViewCanvas(QWidget):
             card.setVisible(view is None or key == view)
         for key, button in self.focus_buttons.items():
             restore = view == key
-            button.setIcon(focus_icon(restore))
+            bind_icon(button, lambda value=restore: focus_icon(value))
             button.setToolTip('还原四视图（Esc）' if restore else f'放大 {key} 视图')
             button.setAccessibleName('还原四视图' if restore else f'放大 {key} 视图')
         self._layout_cards()
@@ -296,7 +296,7 @@ class MultiViewCanvas(QWidget):
         focus.setAutoRaise(True)
         focus.setFixedSize(26, 24)
         focus.setIconSize(QSize(18, 18))
-        focus.setIcon(focus_icon(False))
+        bind_icon(focus, lambda: focus_icon(False))
         focus.setToolTip(f'放大 {view} 视图')
         focus.setAccessibleName(f'放大 {view} 视图')
         focus.setFocusPolicy(Qt.FocusPolicy.NoFocus)
