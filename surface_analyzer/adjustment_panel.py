@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QHeaderView, QFileDialog, QApplication, QCheckBox)
 from PyQt6.QtGui import QColor
 from matplotlib.figure import Figure
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from .theme import ThemedFigureCanvas as FigureCanvasQTAgg
 
 from .widgets import NoWheelComboBox, NoWheelDoubleSpinBox
 from .adjustment import (Plane, SupportPoint, AdjustmentConfig, calculate_adjustment,
