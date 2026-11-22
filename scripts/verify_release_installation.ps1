@@ -6,6 +6,7 @@ param(
     [Parameter(Mandatory=$true)][string]$ExpectedCommit
 )
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'release_install_helpers.ps1')
 # Run on a fresh CI account. Refuse to replace an existing user's installation.
 $UninstallKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{052d48fd-7fab-45bc-b78d-1efd35e50075}_is1'
 if (Test-Path -LiteralPath $UninstallKey) { throw 'Per-user installation already exists; refusing to replace it during QA.' }
@@ -34,6 +35,11 @@ function Check-Installed([string]$Name) {
         if ($mode -eq 'composite' -and -not $data.ok) { throw 'Installed composite protocol failed' }
     }
 }
+function Uninstall-Package {
+    $registered=Get-ItemPropertyValue -LiteralPath $UninstallKey -Name 'UninstallString'
+    $uninstaller=Resolve-ReleaseUninstaller -InstallRoot $Install -UninstallCommand $registered
+    Run-Hidden $uninstaller @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') 180
+}
 $UserData=Join-Path $env:LOCALAPPDATA 'SurfaceRxyZxyAnalyzer\recipes'
 New-Item -ItemType Directory -Force -Path $UserData | Out-Null
 $Canary=Join-Path $UserData 'release-upgrade-canary.json'
@@ -50,7 +56,7 @@ function Assert-Data {
 Install-Package $Setup (Join-Path $WorkRoot 'clean-install.log')
 Check-Installed 'clean'
 Assert-Data
-Run-Hidden (Join-Path $Install 'unins000.exe') @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') 180
+Uninstall-Package
 Assert-Data
 if (Test-Path -LiteralPath (Join-Path $Install 'SurfaceRxyZxyAnalyzer.exe')) { throw 'Clean uninstall left executable behind' }
 if ($PreviousSetup) {
@@ -59,7 +65,7 @@ if ($PreviousSetup) {
     Install-Package $Setup (Join-Path $WorkRoot 'upgrade-install.log')
     Assert-Data
     Check-Installed 'upgraded'
-    Run-Hidden (Join-Path $Install 'unins000.exe') @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') 180
+    Uninstall-Package
     Assert-Data
 }
 @{ version=$ExpectedVersion;source_commit=$ExpectedCommit;clean_install=$true;uninstall=$true;upgrade=[bool]$PreviousSetup;user_data_preserved=$true } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $WorkRoot 'installer-qa.json') -Encoding utf8

@@ -1,0 +1,74 @@
+name: Verify and publish V5.0.4 candidate
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+jobs:
+  validate-existing-candidate:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate installer QA path handling
+        run: |
+          python -m pip install pytest
+          python -m pytest tests/test_release_installation.py -q
+      - name: Verify immutable candidate and its completed software checks
+        shell: pwsh
+        run: |
+          $run=gh api repos/${{ github.repository }}/actions/runs/45014217869 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read original build run' }
+          $tag=gh api repos/${{ github.repository }}/commits/v5.0.4-r1 --jq .sha
+          if ($LASTEXITCODE -ne 0 -or $tag -ne '4caf591b0f1b03a82e2da8d3544c97c7e4ee1a8a' -or $run.head_sha -ne $tag) { throw 'Candidate tag/build source mismatch' }
+          $jobs=gh api repos/${{ github.repository }}/actions/runs/45014217869/jobs | ConvertFrom-Json
+          foreach ($required in @('Bounded targeted regression','Source acceptance','Build Windows installer','Frozen acceptance and provenance')) {
+            $steps=@($jobs.jobs.steps | Where-Object { $_.name -eq $required -and $_.conclusion -eq 'success' })
+            if ($steps.Count -ne 1) { throw "Original candidate did not pass $required" }
+          }
+          # Recovery changes must contain no new application or original test changes.
+          git fetch origin tag v5.0.4-r1
+          git diff --exit-code v5.0.4-r1 HEAD -- surface_analyzer installer tests/test_composite_workflow.py tests/test_vr_prefix_import.py
+          if ($LASTEXITCODE -ne 0) { throw 'Application differs from tested candidate; rebuild required' }
+      - name: Download and verify the exact tested installer
+        shell: pwsh
+        run: |
+          gh run download 45014217869 --name v5.0.4-r1-build-results --dir .candidate
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate artifact download failed' }
+          $manifest=Get-Content .candidate/release/update_manifest.json -Raw | ConvertFrom-Json
+          $setup='.candidate/release/SurfaceRxyZxyAnalyzer_Setup_V5.0.4.exe'
+          $hash=(Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($manifest.version -ne '5.0.4' -or $manifest.source_commit -ne '4caf591b0f1b03a82e2da8d3544c97c7e4ee1a8a' -or $hash -ne $manifest.sha256) { throw 'Candidate provenance/hash mismatch' }
+          $line=Get-Content "$setup.sha256" -Raw
+          if (!$line.StartsWith($hash)) { throw 'Candidate checksum file mismatch' }
+          New-Item -ItemType Directory -Force .qa/previous | Out-Null
+          gh release download v5.0.3 --pattern 'SurfaceRxyZxyAnalyzer_Setup_V5.0.3.exe' --dir .qa/previous
+          if ($LASTEXITCODE -ne 0) { throw 'Upgrade baseline download failed' }
+      - name: Clean install, upgrade, actual registered uninstall and user data preservation
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          ./scripts/verify_release_installation.ps1 -Setup "$PWD/.candidate/release/SurfaceRxyZxyAnalyzer_Setup_V5.0.4.exe" -PreviousSetup "$PWD/.qa/previous/SurfaceRxyZxyAnalyzer_Setup_V5.0.3.exe" -WorkRoot "$PWD/.qa/installer" -ExpectedCommit '4caf591b0f1b03a82e2da8d3544c97c7e4ee1a8a'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v5.0.4-r1-installer-acceptance
+          path: .qa/installer/*
+          include-hidden-files: true
+          if-no-files-found: warn
+      - name: Publish the verified immutable candidate
+        shell: pwsh
+        run: |
+          $result=Get-Content .qa/installer/installer-qa.json -Raw | ConvertFrom-Json
+          if (!$result.clean_install -or !$result.uninstall -or !$result.upgrade -or !$result.user_data_preserved) { throw 'Installation acceptance incomplete' }
+          $setup='.candidate/release/SurfaceRxyZxyAnalyzer_Setup_V5.0.4.exe'
+          gh release view v5.0.4-r1 *> $null
+          if ($LASTEXITCODE -eq 0) { throw 'Release exists; refusing to replace existing artifacts' }
+          gh release create v5.0.4-r1 $setup "$setup.sha256" .candidate/release/update_manifest.json --verify-tag --latest --title 'V5.0.4（r1）— VR 导入修复、组合 Recipe 与批量运行' --notes-file docs/RELEASE_NOTES_V5.0.4.md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
