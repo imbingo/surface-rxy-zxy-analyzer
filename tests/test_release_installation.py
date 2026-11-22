@@ -26,7 +26,9 @@ class ReleaseInstallerTests(unittest.TestCase):
                 path=root/name;path.touch()
                 result=self.resolve(root,'"'+str(path)+'"')
                 self.assertEqual(result.returncode,0,result.stderr)
-                self.assertEqual(os.path.normcase(result.stdout.strip()),os.path.normcase(str(path)))
+                # Hosted Windows TEMP may use RUNNER~1 while PowerShell
+                # canonicalizes to runneradmin. Assert file identity, not spelling.
+                self.assertTrue(os.path.samefile(result.stdout.strip(),path))
 
     def test_outside_directory_and_other_executables_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
