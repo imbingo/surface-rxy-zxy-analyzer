@@ -32,9 +32,14 @@ try {
     }
 
     New-Item -ItemType Directory -Force $ReleaseDir | Out-Null
-    & $Python ".\scripts\generate_app_icon.py"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to generate the application icon."
+    # Icons are committed release inputs. Regenerate artwork explicitly before
+    # committing it: differing Pillow encoders must not dirty a clean build.
+    if (-not (Test-Path (Join-Path $Root "assets\SurfaceRxyZxyAnalyzer.ico")) -or
+        -not (Test-Path (Join-Path $Root "assets\SurfaceRxyZxyAnalyzer.png"))) {
+        & $Python ".\scripts\generate_app_icon.py"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to generate the application icon."
+        }
     }
     & $Python ".\scripts\generate_release_metadata.py" `
         --version $Version `

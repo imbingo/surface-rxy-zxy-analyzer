@@ -1,4 +1,4 @@
-# V5.0.4 — VR 导入修复、组合 Recipe 与批量运行
+# V5.0.4（r1）— VR 导入修复、组合 Recipe 与批量运行
 
 - 修复 Keyence VR 高度矩阵因大量前导空白、分隔符空记录及长元数据而无法导入的问题。预检区分未覆盖正文与格式错误，手动起始行参与定位，保留可靠 Pitch、单位、矩阵行列及缺测位置；搜索有资源上限、进度和取消。
 - 膜厚和平行度新增“保存组合 Recipe”：每个槽内嵌写入时的独立完整单层参数。旧槽缺快照时需重新写入，不使用当前界面补齐。
@@ -13,7 +13,9 @@
 
 第一版按组串行、不递归目录，不包含嵌套组合 Recipe。内存或 Gap 计算结果需先导出为独立数据文件，再导入写槽。自动配准未接受的组明确失败。手动删除仍受源哈希及抽样签名校验；开始前选择失败或跳过并标记策略。
 
-[组合 Recipe 使用说明](https://github.com/imbingo/surface-rxy-zxy-analyzer/blob/v5.0.4/docs/composite-recipes.md) · [VR 修复说明](https://github.com/imbingo/surface-rxy-zxy-analyzer/blob/v5.0.4/docs/vr-prefix-import.md)
+[组合 Recipe 使用说明](https://github.com/imbingo/surface-rxy-zxy-analyzer/blob/v5.0.4-r1/docs/composite-recipes.md) · [VR 修复说明](https://github.com/imbingo/surface-rxy-zxy-analyzer/blob/v5.0.4-r1/docs/vr-prefix-import.md)
+
+- 搜索时间预算在达到边界时立即停止，覆盖 Windows 低分辨率单调时钟下零秒预算的确定性回归。
 
 ## 发布验证
 
@@ -24,3 +26,5 @@
 ## 安装
 
 Windows x64 完整 Setup，沿用原 AppId 支持升级，可选择当前用户安装；附 SHA-256 与 update_manifest.json。可选格式扩展不包含在主安装包中。安装包未进行代码签名，Windows 可能提示未知发布者。
+
+初始 `v5.0.4` 候选在云端边界回归阶段停止，未发布安装包；`v5.0.4-r1` 修复该问题后重新执行完整发布验收，旧标签保持不变。

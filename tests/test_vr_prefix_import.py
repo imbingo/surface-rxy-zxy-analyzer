@@ -157,6 +157,13 @@ class VRPrefixTests(unittest.TestCase):
                 self.assertIn(reason,str(error.exception))
                 self.assertNotIsInstance(error.exception,ImportPreflightError)
 
+    def test_zero_time_budget_expires_even_when_monotonic_clock_has_not_ticked(self):
+        path=self.write(self.header()+self.body())
+        policy=replace(IMPORT_GUARD_POLICY,prefix_max_seconds=0)
+        with patch('surface_analyzer.text_scan.time.monotonic',return_value=7.):
+            with self.assertRaisesRegex(PrefixSearchLimitError,'耗时'):
+                list(prefix_lines(path,'utf-8',policy=policy))
+
     def test_cancel_search_and_boundary_check_is_propagated(self):
         path=self.write('\n'*60000+self.header()+self.body())
         event=threading.Event();messages=[]

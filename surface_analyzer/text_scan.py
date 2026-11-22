@@ -35,7 +35,7 @@ def prefix_lines(path, encoding, cancel_event=None, progress=None,
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 raise TaskCancelled()
-            if time.monotonic()-started > policy.prefix_max_seconds:
+            if time.monotonic()-started >= policy.prefix_max_seconds:
                 stop('耗时',number)
             line = handle.readline(policy.prefix_max_line_chars+1)
             if not line:
