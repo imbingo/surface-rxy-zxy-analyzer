@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import unicodedata
+import codecs
 
 import numpy as np
 
@@ -26,6 +27,11 @@ class ImportGuardPolicy:
     maximum_consecutive_failures: int = 128
     early_quality_window: int = 256
     early_minimum_valid_ratio: float = 0.20
+    prefix_max_bytes: int = 64 * 1024 * 1024
+    prefix_max_seconds: float = 10.0
+    prefix_max_records: int = 50_000
+    prefix_max_line_chars: int = 1024 * 1024
+    metadata_max_fields: int = 2048
 
 
 IMPORT_GUARD_POLICY = ImportGuardPolicy()
@@ -61,9 +67,11 @@ def _decode_sample(path, cancel_event, policy):
     _cancel(cancel_event)
     if not data:
         raise ImportPreflightError("当前策略", None, "文件为空")
-    for encoding in ("utf-8-sig", "gbk", "utf-16", "latin-1"):
+    encodings = (("utf-16",) if data.startswith((b'\xff\xfe',b'\xfe\xff')) else
+                 ("utf-8-sig", "gbk", "utf-16", "latin-1"))
+    for encoding in encodings:
         try:
-            return data.decode(encoding), encoding
+            return codecs.getincrementaldecoder(encoding)().decode(data, final=False), encoding
         except UnicodeError:
             continue
     raise ImportPreflightError("当前策略", None, "无法识别文本编码")
@@ -130,10 +138,13 @@ def _header_semantics(tokens):
     return unique_mapping(axes), unique_mapping(pixel)
 
 
-def sniff_text_file(path, cancel_event=None, policy=IMPORT_GUARD_POLICY):
+def sniff_text_file(path, cancel_event=None, policy=IMPORT_GUARD_POLICY, start_line_no=0):
     """Inspect a bounded prefix and return a conservative format diagnosis."""
     text, encoding = _decode_sample(path, cancel_event, policy)
-    physical_lines = text.splitlines()[:policy.sniff_max_lines]
+    all_lines = text.splitlines()
+    sampled_lines = all_lines[:policy.sniff_max_lines]
+    complete = (Path(path).stat().st_size <= policy.sniff_max_bytes and len(all_lines) <= policy.sniff_max_lines)
+    physical_lines = sampled_lines[max(0,int(start_line_no)):]
     rows = []
     header_candidates = []
     numeric_line_count = 0
@@ -166,6 +177,8 @@ def sniff_text_file(path, cancel_event=None, policy=IMPORT_GUARD_POLICY):
     if len(rows) < policy.minimum_body_rows:
         return {"kind": "unknown", "encoding": encoding,
                 "numeric_line_count": numeric_line_count,
+                "sample_complete": complete, "rows_covered": len(sampled_lines),
+                "start_line_no": int(start_line_no),
                 "detail": "样本中有效数值行不足"}
     widths = [len(row[0]) for row in rows]
     common_width, common_count = Counter(widths).most_common(1)[0]
@@ -224,6 +237,7 @@ def sniff_text_file(path, cancel_event=None, policy=IMPORT_GUARD_POLICY):
         kind = "unknown"
     return {
         "kind": kind, "encoding": encoding, "rows_checked": len(rows),
+        "sample_complete": complete, "rows_covered": len(sampled_lines),
         "numeric_line_count": numeric_line_count,
         "common_width": common_width, "width_stability": width_stability,
         "xyz_valid_ratio": xyz_ratio, "integer_xy_ratio": integer_xy_ratio,
@@ -238,7 +252,7 @@ def sniff_text_file(path, cancel_event=None, policy=IMPORT_GUARD_POLICY):
 
 
 def validate_selected_layout(path, layout_mode, cancel_event=None,
-                             policy=IMPORT_GUARD_POLICY):
+                             policy=IMPORT_GUARD_POLICY, start_line_no=0):
     """Run bounded safety checks without overriding the user's parser choice.
 
     Layout sniffing remains useful diagnostic metadata, but generic XYZ,
@@ -247,7 +261,7 @@ def validate_selected_layout(path, layout_mode, cancel_event=None,
     validation.  Explicit vendor signatures are protected by the import entry
     point before this function is called.
     """
-    result = sniff_text_file(path, cancel_event, policy)
+    result = sniff_text_file(path, cancel_event, policy, start_line_no)
     selected = {
         "point_table": "Physical XYZ",
         "pixel_xy": "Pixel XY",
@@ -255,6 +269,12 @@ def validate_selected_layout(path, layout_mode, cancel_event=None,
         "zygo_xyz": "Zygo XYZ",
     }.get(layout_mode, str(layout_mode))
     if int(result.get('numeric_line_count', 0)) == 0:
-        raise ImportPreflightError(selected, None, result["detail"])
+        if (layout_mode == 'height_matrix' or start_line_no > 0) and not result['sample_complete']:
+            result['status'] = 'inconclusive'
+            result['detail'] = '前缀样本尚未覆盖有效正文；将继续有界、可取消地定位正文。'
+        else:
+            raise ImportPreflightError(selected, None, result["detail"])
+    else:
+        result['status'] = 'passed'
     result['selection_authoritative'] = True
     return result

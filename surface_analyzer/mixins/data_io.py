@@ -43,6 +43,7 @@ from ..data_scale import scale_summary
 from ..dialog_paths import dialog_initial_path, remember_dialog_path
 from ..format_extensions import FormatRegistry, ReadContext
 from ..import_preflight import IMPORT_GUARD_POLICY, validate_selected_layout
+from ..text_scan import prefix_lines, blank_record, PrefixSearchLimitError
 from ..matrix_sampling import (MatrixSampler, numeric_matrix_row, pixel_pitch_summary,
                                matrix_point_frame)
 
@@ -1417,7 +1418,10 @@ class DataIOMixin:
             return selected
 
         with open(path, 'r', encoding=enc, errors='strict') as fh:
-            for line_no, line in enumerate(fh):
+            records = (prefix_lines(path,enc,cancel_event,progress,'定位矩阵正文',
+                                    record_limit=max_scan_lines,budget_start_line=start_line_no)
+                       if layout_mode == 'height_matrix' else enumerate(fh))
+            for line_no, line in records:
                 cls._check_cancel(cancel_event)
                 if line_no < max(0, int(start_line_no)):
                     # The lower bound excludes body candidates, but a reliable
@@ -1442,12 +1446,20 @@ class DataIOMixin:
                                 candidate['line_no'] = line_no
                                 header_candidate = candidate
                     continue
-                if line_no >= max(0, int(start_line_no)) + max_scan_lines:
+                if layout_mode != 'height_matrix' and line_no >= max(0, int(start_line_no)) + max_scan_lines:
                     return best_candidate(run)
                 stripped = line.strip().lstrip('\ufeff')
                 if not stripped:
-                    finish_run(line_no)
-                    continue
+                    if layout_mode == 'height_matrix' and run is not None:
+                        run['last_line_no'] = line_no
+                        continue
+                    if (layout_mode == 'height_matrix' and start_line_no > 0
+                            and line_no == start_line_no and expected_cols):
+                        line = (forced_sep or matrix_metadata.get('body_separator') or ',').join(['']*int(expected_cols))+'\n'
+                        stripped = line.strip()
+                    else:
+                        finish_run(line_no)
+                        continue
                 is_comment = stripped.startswith('#')
                 candidate_text = stripped[1:].strip() if is_comment else stripped
                 if is_comment and not candidate_text:
@@ -1493,10 +1505,15 @@ class DataIOMixin:
                     finish_run(line_no)
                     continue
                 if layout_mode == 'height_matrix':
+                    missing_row = all(cls._is_missing_token(t) for t in tokens)
+                    if missing_row and height_marker_line is not None and line_no <= height_marker_line:
+                        finish_run(line_no)
+                        continue
                     is_numeric = cls._looks_like_matrix_row(
                         tokens, expected_cols,
                         allow_all_missing=(expected_cols is not None
-                                           and raw_token_count >= int(expected_cols)))
+                                           and raw_token_count >= int(expected_cols)) or
+                                          (run is not None and run['ncols'] == len(tokens)))
                 else:
                     is_numeric = cls._looks_like_point_record_row(tokens)
                     if layout_mode == 'pixel_xy' and not is_numeric:
@@ -1532,15 +1549,25 @@ class DataIOMixin:
                             'expected_cols': (int(expected_cols) if expected_cols is not None else None),
                             'expected_rows': matrix_metadata.get('expected_rows'),
                             'count': 1,
+                            'has_finite_values': (layout_mode != 'height_matrix' or
+                                                  any(np.isfinite(cls._token_to_float(t)) for t in tokens)),
+                            'blank_origin_explicit': bool(start_line_no > 0 and line_no == start_line_no),
                             'last_line_no': line_no,
                         }
                     else:
                         run['count'] += 1
                         run['last_line_no'] = line_no
+                        if layout_mode == 'height_matrix':
+                            run['has_finite_values'] |= any(np.isfinite(cls._token_to_float(t)) for t in tokens)
+                    if (layout_mode == 'height_matrix' and not run['has_finite_values']
+                            and not start_line_no and matrix_metadata.get('expected_rows')
+                            and run['count'] > int(matrix_metadata['expected_rows'])):
+                        raise PrefixSearchLimitError('高度标记之后的全空逻辑记录超过声明矩阵行数，无法确定正文起点；请手动指定准确正文搜索起始行，不会自动压缩这些记录。')
                     header_candidate = None
                     # 宽矩阵读取单行成本很高；确认稳定后即可停止布局扫描。
-                    if ((layout_mode == 'height_matrix' and run['ncols'] >= 8 and run['count'] >= 32)
-                            or run['count'] >= 512):
+                    if (run['has_finite_values'] and
+                            ((layout_mode == 'height_matrix' and run['ncols'] >= 8 and run['count'] >= 32)
+                             or run['count'] >= 512)):
                         return best_candidate(run)
                     if progress is not None and line_no and line_no % 1000 == 0:
                         progress(20, f"正在识别矩阵数据区: {line_no:,} 行")
@@ -1901,14 +1928,14 @@ class DataIOMixin:
         atol = max(abs(median) * 0.05, 1e-9)
         return bool(np.allclose(diffs, median, rtol=0.05, atol=atol))
 
-    def _prepare_height_matrix_layout(self, path, enc, layout):
+    def _prepare_height_matrix_layout(self, path, enc, layout, cancel_event=None, progress=None):
         """识别矩阵顶部列坐标、左侧行号和尾部空列，并返回标准 Z 区域布局。"""
         prepared = dict(layout)
         raw_ncols = int(prepared['ncols'])
         original_start = int(prepared['data_line_no'])
         sample_rows = []
         with open(path, 'r', encoding=enc, errors='ignore') as fh:
-            for line_no, line in enumerate(fh):
+            for line_no, line in prefix_lines(path,enc,cancel_event,progress,'校验矩阵边界',budget_start_line=original_start):
                 if line_no < original_start:
                     continue
                 if len(sample_rows) >= 16:
@@ -1942,7 +1969,7 @@ class DataIOMixin:
             first_tokens = sample_rows[0][1]
             rest = [self._token_to_float(value) for value in first_tokens[1:]]
             coordinate_values = rest[:-1] if rest and not np.isfinite(rest[-1]) else rest
-            if (self._is_missing_token(first_tokens[0]) and len(coordinate_values) >= 2
+            if (prepared.get('expected_cols') is None and self._is_missing_token(first_tokens[0]) and len(coordinate_values) >= 2
                     and self._regular_numeric_sequence(coordinate_values)):
                 value_start = 1
                 coordinate_header = True
@@ -1954,7 +1981,7 @@ class DataIOMixin:
             len(first_column) >= 3 and self._regular_numeric_sequence(first_column)
             and np.allclose(first_column, np.round(first_column), rtol=0.0, atol=1e-9)
             and abs(abs(float(np.median(np.diff(first_column)))) - 1.0) <= 1e-9)
-        if value_start == 0 and raw_ncols >= 3 and integer_row_index:
+        if value_start == 0 and prepared.get('expected_cols') is None and raw_ncols >= 3 and integer_row_index:
             value_start = 1
             coordinate_header = True
 
@@ -1993,19 +2020,15 @@ class DataIOMixin:
         keyence = False
         matrix_run_key = None
         matrix_run_count = 0
+        first_numeric_line = None
         with open(path, 'r', encoding=enc, errors='strict') as handle:
-            for line_no, raw_line in enumerate(handle):
-                if line_no >= int(max_lines):
-                    break
+            for line_no, raw_line in prefix_lines(path,enc,cancel_event,progress,'扫描矩阵元数据',
+                    record_limit=max_lines,budget_start_line=self._configured_start_line('height_matrix')):
                 self._check_cancel(cancel_event)
                 text = raw_line.rstrip('\r\n').lstrip('\ufeff')
                 stripped = text.strip()
-                if not stripped:
+                if blank_record(raw_line):
                     continue
-                if (line_no >= 4096 and not keyence
-                        and result.get('expected_rows') is None
-                        and result.get('expected_cols') is None):
-                    break
                 sep = self._detect_sep_from_line(text)
                 metadata_tokens = self._split_text_line(text, sep)
                 metadata_text = (' '.join(metadata_tokens) if sep != r'\s+' else stripped)
@@ -2022,15 +2045,22 @@ class DataIOMixin:
                                 break
                             continue
                         tokens = self._normalize_matrix_tokens(tokens, int(expected_cols))
-                    if self._looks_like_matrix_row(
+                    if (expected_cols is None or raw_token_count >= int(expected_cols)) and self._looks_like_matrix_row(
                             tokens, expected_cols,
                             allow_all_missing=(expected_cols is not None
                                                and raw_token_count >= int(expected_cols))):
+                        if not any(np.isfinite(self._token_to_float(t)) for t in tokens):
+                            if keyence and result.get('height_marker_line') is not None and expected_cols is not None:
+                                result['body_separator'] = sep
+                                break
+                            continue
+                        if first_numeric_line is None:
+                            first_numeric_line = line_no
+                            result['body_separator'] = sep
                         key = (sep, len(tokens))
                         matrix_run_count = matrix_run_count + 1 if key == matrix_run_key else 1
                         matrix_run_key = key
-                        if result.get('height_marker_line') is not None and (
-                                expected_cols is not None or matrix_run_count >= 3):
+                        if result.get('height_marker_line') is not None and matrix_run_count >= 3:
                             break
                         # In explicit Z-matrix mode, three consecutive wide
                         # numeric rows are the body, not metadata. Stop before
@@ -2045,7 +2075,7 @@ class DataIOMixin:
                 if re.search(r'输出图像数据\s*[,;:\t=]?\s*高度', normalized, re.I):
                     output_is_height = True
                     result['height_marker_line'] = line_no
-                elif stripped in ('高度', 'Height', 'HEIGHT'):
+                elif normalized.strip() in ('高度', 'Height', 'HEIGHT'):
                     output_is_height = True
                     result['height_marker_line'] = line_no
 
@@ -2054,7 +2084,10 @@ class DataIOMixin:
                     parts = [part.strip() for part in re.split(r'[,;\t:=]+', normalized)
                              if part.strip()]
                 if len(parts) >= 2:
-                    result['metadata'][parts[0]] = ' | '.join(parts[1:])
+                    if parts[0] in result['metadata'] or len(result['metadata']) < IMPORT_GUARD_POLICY.metadata_max_fields:
+                        result['metadata'][parts[0][:256]] = ' | '.join(parts[1:])[:4096]
+                    else:
+                        result['metadata_truncated'] = True
                 numbers = re.findall(r'[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?', normalized)
                 value = float(numbers[-1]) if numbers else None
                 if value is not None and re.search(r'(^|\W)水平(\W|$)', normalized):
@@ -2182,17 +2215,22 @@ class DataIOMixin:
                 arr[np.isclose(arr, marker, rtol=0.0, atol=1e-9)] = np.nan
         return arr
 
-    def _looks_like_height_matrix_layout(self, path, enc, layout, cancel_event=None):
+    def _looks_like_height_matrix_layout(self, path, enc, layout, cancel_event=None, progress=None):
         """判断文本数据是否为二维高度矩阵，而不是普通 XYZ 表格。"""
         if not layout or int(layout.get('ncols', 0)) < 2:
             return False
-        prepared = self._prepare_height_matrix_layout(path, enc, layout)
+        prepared = self._prepare_height_matrix_layout(path, enc, layout, cancel_event, progress)
         if int(prepared.get('ncols', 0)) < 2:
             return False
         layout.update(prepared)
         header = [str(x).strip().lower() for x in (layout.get('header_tokens') or [])]
         if header and self._header_semantics(header)['unambiguous']:
             return False
+        if ((layout.get('matrix_metadata') or {}).get('source_format') == 'Keyence VR ImageDataCsv'
+                and layout.get('expected_cols') == int(layout['ncols'])):
+            # Vendor dimensions anchor sparse/all-missing logical rows. The
+            # full streaming parser still validates every row and valid point.
+            return True
 
         target_cols = int(layout['ncols'])
         raw_cols = int(layout.get('raw_ncols', target_cols))
@@ -2201,7 +2239,7 @@ class DataIOMixin:
         scanned = 0
         try:
             with open(path, 'r', encoding=enc, errors='ignore') as fh:
-                for line_no, line in enumerate(fh):
+                for line_no, line in prefix_lines(path,enc,cancel_event,progress,'验证矩阵布局',budget_start_line=int(layout['data_line_no'])):
                     if line_no % 32 == 0:
                         self._check_cancel(cancel_event)
                     if line_no < int(layout['data_line_no']):
@@ -2220,6 +2258,8 @@ class DataIOMixin:
                         good_rows += 1
                     if scanned >= 16:
                         break
+        except (TaskCancelled,PrefixSearchLimitError):
+            raise
         except Exception:
             return False
         return good_rows >= 3
@@ -2279,17 +2319,69 @@ class DataIOMixin:
             return None
         return self._mask_matrix_missing_values(values, invalid_values)
 
+    def _iter_height_matrix_rows(self, path, enc, layout, invalid_values=(),
+                                  progress=None, cancel_event=None):
+        """Preserve internal physical blanks after a confirmed matrix origin.
+
+        Trailing plain blanks are formatting unless dimensions confirm missing
+        rows. Width-carrying empty CSV/Tab records are always logical rows once
+        the matrix begins. No tokens or source records are compressed.
+        """
+        ncols = int(layout['ncols'])
+        start = int(layout['data_line_no'])
+        end = layout.get('data_end_line_no')
+        expected = layout.get('expected_rows_hard')
+        if expected is None and (layout.get('matrix_metadata') or {}).get('source_format') == 'Keyence VR ImageDataCsv':
+            expected = layout.get('expected_rows')
+        blank = np.full(ncols,np.nan)
+        blank.flags.writeable = False
+        pending = 0
+        pending_start = 0
+        emitted = 0
+        started = bool(layout.get('blank_origin_explicit'))
+        with open(path,'r',encoding=enc,errors='strict') as handle:
+            for line_no,line in enumerate(handle):
+                self._check_cancel(cancel_event)
+                if line_no < start:
+                    if progress is not None and line_no % 4096 == 0:
+                        progress(20,f'正在定位矩阵正文：已跳过 {line_no+1:,} 物理行（可取消）')
+                    continue
+                if end is not None and line_no >= int(end):
+                    if expected is not None and emitted + pending < int(expected) and line.strip():
+                        raise ValueError(f'矩阵正文第 {line_no+1:,} 物理行在声明矩阵范围内结构不匹配，未压缩或重排矩阵。')
+                    break
+                if not line.strip():
+                    if started:
+                        if not pending:pending_start=line_no
+                        pending += 1
+                    continue
+                values = self._parse_height_matrix_line(line,layout['sep'],ncols,
+                    int(layout.get('matrix_value_start',0)),invalid_values,
+                    bool(layout.get('matrix_trailing_terminator',False)),bool(layout.get('expected_cols')))
+                if values is None:
+                    if started:
+                        raise ValueError(f'矩阵正文第 {line_no+1:,} 物理行结构不匹配；已停止，未压缩或重排矩阵。')
+                    continue
+                started = True
+                for offset in range(pending):
+                    self._check_cancel(cancel_event)
+                    emitted += 1
+                    yield pending_start+offset,blank
+                pending = 0
+                emitted += 1
+                yield line_no,values
+        if expected is not None and 0 < int(expected)-emitted <= pending:
+            for offset in range(int(expected)-emitted):
+                self._check_cancel(cancel_event)
+                yield pending_start+offset,blank
+
     def _prescan_height_matrix(self, path, enc, layout, invalid_values=(),
                                progress=None, cancel_event=None,
                                capture_limit=None, sampler=None):
         started = time.perf_counter()
         ncols = int(layout['ncols'])
-        data_line_no = int(layout['data_line_no'])
-        data_end_line_no = layout.get('data_end_line_no')
         expected_rows = layout.get('expected_rows')
         expected_rows_hard = layout.get('expected_rows_hard')
-        allow_padding = bool(layout.get('expected_cols'))
-        matrix_started = False
         row_count = 0
         valid_points = 0
         z_min = np.inf
@@ -2298,54 +2390,40 @@ class DataIOMixin:
         capture_active = capture_limit is None or int(capture_limit) > 0
         captured_points = []
         point_capture_active = capture_limit is not None and int(capture_limit) > 0
-        with open(path, 'r', encoding=enc, errors='ignore') as handle:
-            for line_no, line in enumerate(handle):
-                self._check_cancel(cancel_event)
-                if line_no < data_line_no:
-                    continue
-                if data_end_line_no is not None and line_no >= int(data_end_line_no):
-                    break
-                values = self._parse_height_matrix_line(
-                    line, layout['sep'], ncols,
-                    int(layout.get('matrix_value_start', 0)), invalid_values,
-                    bool(layout.get('matrix_trailing_terminator', False)), allow_padding)
-                if values is None:
-                    if matrix_started:
-                        break
-                    continue
-                matrix_started = True
-                if sampler is not None:
-                    sampler.add(row_count, values)
-                row_count += 1
-                if capture_active:
-                    if (capture_limit is None or
-                            row_count * ncols <= int(capture_limit)):
-                        captured_rows.append(values)
-                    else:
-                        captured_rows.clear()
-                        capture_active = False
-                finite = values[np.isfinite(values)]
-                valid_points += int(finite.size)
-                if point_capture_active:
-                    if valid_points <= int(capture_limit):
-                        cols = np.flatnonzero(np.isfinite(values))
-                        if len(cols):
-                            captured_points.append(np.column_stack(
-                                (np.full(len(cols), row_count - 1), cols, values[cols])))
-                    else:
-                        captured_points.clear()
-                        point_capture_active = False
-                if finite.size:
-                    z_min = min(z_min, float(np.min(finite)))
-                    z_max = max(z_max, float(np.max(finite)))
-                if progress is not None and (row_count % 64 == 0 or row_count == expected_rows):
-                    if expected_rows:
-                        fraction = min(1.0, row_count / max(1, int(expected_rows)))
-                        progress(20 + int(25 * fraction),
-                                 f"正在单遍校验并采样矩阵: {row_count:,}/{int(expected_rows):,} 行")
-                    else:
-                        progress(min(44, 20 + row_count // 100),
-                                 f"正在单遍校验并采样矩阵: {row_count:,} 行")
+        for line_no, values in self._iter_height_matrix_rows(
+                path,enc,layout,invalid_values,progress,cancel_event):
+            if sampler is not None:
+                sampler.add(row_count, values)
+            row_count += 1
+            if capture_active:
+                if (capture_limit is None or
+                        row_count * ncols <= int(capture_limit)):
+                    captured_rows.append(values)
+                else:
+                    captured_rows.clear()
+                    capture_active = False
+            finite = values[np.isfinite(values)]
+            valid_points += int(finite.size)
+            if point_capture_active:
+                if valid_points <= int(capture_limit):
+                    cols = np.flatnonzero(np.isfinite(values))
+                    if len(cols):
+                        captured_points.append(np.column_stack(
+                            (np.full(len(cols), row_count - 1), cols, values[cols])))
+                else:
+                    captured_points.clear()
+                    point_capture_active = False
+            if finite.size:
+                z_min = min(z_min, float(np.min(finite)))
+                z_max = max(z_max, float(np.max(finite)))
+            if progress is not None and (row_count % 64 == 0 or row_count == expected_rows):
+                if expected_rows:
+                    fraction = min(1.0, row_count / max(1, int(expected_rows)))
+                    progress(20 + int(25 * fraction),
+                             f"正在单遍校验并采样矩阵: {row_count:,}/{int(expected_rows):,} 行")
+                else:
+                    progress(min(44, 20 + row_count // 100),
+                             f"正在单遍校验并采样矩阵: {row_count:,} 行")
         if row_count == 0 or valid_points == 0:
             raise ValueError("Z Matrix 未识别到有效的连续二维数据区。")
         if expected_rows_hard is not None and row_count != int(expected_rows_hard):
@@ -2756,28 +2834,12 @@ class DataIOMixin:
             if z_values is None and point_records is None:
                 self.import_info['matrix_parse_passes'] = 2
                 matrix_rows = []
-                matrix_started = False
-                with open(path, 'r', encoding=enc, errors='ignore') as handle:
-                    for line_no, line in enumerate(handle):
-                        self._check_cancel(cancel_event)
-                        if line_no < int(layout['data_line_no']):
-                            continue
-                        if layout.get('data_end_line_no') is not None and line_no >= int(layout['data_end_line_no']):
-                            break
-                        values = self._parse_height_matrix_line(
-                            line, layout['sep'], cols_count,
-                            int(layout.get('matrix_value_start', 0)), invalid_values,
-                            bool(layout.get('matrix_trailing_terminator', False)),
-                            expected_cols is not None)
-                        if values is None:
-                            if matrix_started:
-                                break
-                            continue
-                        matrix_started = True
-                        matrix_rows.append(values)
-                        if progress is not None and len(matrix_rows) % 64 == 0:
-                            progress(45 + int(30 * len(matrix_rows) / max(1, rows_count)),
-                                     f"正在读取高度矩阵: {len(matrix_rows):,}/{rows_count:,} 行")
+                for line_no, values in self._iter_height_matrix_rows(
+                        path,enc,layout,invalid_values,progress,cancel_event):
+                    matrix_rows.append(values)
+                    if progress is not None and len(matrix_rows) % 64 == 0:
+                        progress(45 + int(30 * len(matrix_rows) / max(1, rows_count)),
+                                 f"正在读取高度矩阵: {len(matrix_rows):,}/{rows_count:,} 行")
                 z_values = np.asarray(matrix_rows, dtype=float)
             else:
                 self.import_info['matrix_parse_passes'] = 1
@@ -3602,14 +3664,21 @@ class DataIOMixin:
         return df
 
     @staticmethod
-    def _read_text_header(path, max_lines=50000):
+    def _read_text_header(path, max_lines=50000, cancel_event=None):
         """Return a usable text encoding and the requested leading lines."""
         last_error = None
         for enc in ('utf-8-sig', 'gbk', 'utf-16', 'latin-1'):
             try:
                 lines = []
                 with open(path, 'r', encoding=enc, errors='strict') as handle:
-                    for _, line in zip(range(max_lines), handle):
+                    for _ in range(max_lines):
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise TaskCancelled()
+                        line = handle.readline(IMPORT_GUARD_POLICY.prefix_max_line_chars+1)
+                        if not line:
+                            break
+                        if len(line) > IMPORT_GUARD_POLICY.prefix_max_line_chars:
+                            raise PrefixSearchLimitError('文件签名检查遇到过长单行，请检查文件布局或分隔符。')
                         lines.append(line.rstrip('\r\n'))
                 return enc, lines
             except (UnicodeError, OSError) as exc:
@@ -3621,8 +3690,10 @@ class DataIOMixin:
         """Detect only deterministic device signatures; never infer from numeric width."""
         try:
             cls._check_cancel(cancel_event)
-            enc, lines = cls._read_text_header(path, max_lines=12)
+            enc, lines = cls._read_text_header(path, max_lines=12, cancel_event=cancel_event)
             cls._check_cancel(cancel_event)
+        except (TaskCancelled,PrefixSearchLimitError):
+            raise
         except Exception:
             return None, None
         first = lines[0].strip().lstrip('\ufeff') if lines else ''
@@ -4390,9 +4461,10 @@ class DataIOMixin:
         if (suffix in self.TEXT_SUFFIXES or suffix == '') and signature is None:
             if progress is not None:
                 progress(8, "正在检查格式")
-            preflight = validate_selected_layout(path, layout_mode, cancel_event)
+            preflight = validate_selected_layout(path, layout_mode, cancel_event,
+                        start_line_no=self._configured_start_line(layout_mode))
             self.import_info['preflight'] = dict(preflight)
-            self.import_info['preflight_status'] = 'passed'
+            self.import_info['preflight_status'] = preflight.get('status','passed')
 
         if suffix in self.EXCEL_SUFFIXES:
             self._check_cancel(cancel_event)
@@ -4442,7 +4514,7 @@ class DataIOMixin:
                             layout['matrix_metadata'] = matrix_metadata
                         break
                     attempt_errors.append(f"{enc}: layout failed: no stable {layout_mode} body")
-                except TaskCancelled:
+                except (TaskCancelled,PrefixSearchLimitError):
                     raise
                 except Exception as e:
                     last_err = e
@@ -4459,7 +4531,7 @@ class DataIOMixin:
                 ncols = layout['ncols']
                 col_names = layout['header_tokens'] if layout['header_tokens'] else [f'Col{i+1}' for i in range(ncols)]
                 if layout_mode == 'height_matrix':
-                    if not self._looks_like_height_matrix_layout(path, enc, layout, cancel_event):
+                    if not self._looks_like_height_matrix_layout(path, enc, layout, cancel_event, progress):
                         raise ValueError(
                             "当前导入策略选择了Z矩阵，但文件中未找到稳定的二维数值矩阵区。\n"
                             "请检查正文搜索起始行，或在文件导入策略中切换为XYZ点表。")
@@ -4874,8 +4946,7 @@ class DataIOMixin:
                 self._update_import_status_label()
                 self._show_status(
                     "文件已读取：请选择 X/Y/Z 列及各轴单位，再点击“应用映射”。", 15000)
-                QMessageBox.information(
-                    self, "需要列映射",
+                self._workflow_notice("information", "需要列映射",
                     "文件已读取，但无法唯一确定 X/Y/Z 列。\n"
                     "请在左侧“列映射与单位”中选择 X/Y/Z 对应列及各轴单位，\n"
                     "再点击“应用映射并解析数据”。已读取的数据会保留，无需重新导入。")
@@ -4890,7 +4961,7 @@ class DataIOMixin:
                 self._safe_set_combo_text(self.cb_z_col, mapping.get('z_col'))
                 if self.apply_mapping(preserve_analysis_settings=True) is False:
                     raise ValueError("列映射或数据标准化失败。")
-                self.apply_recipe(self.pending_recipe, path_hint='已随当前文件自动应用', remap_current_data=False)
+                self.apply_recipe(self.pending_recipe, path_hint='已随当前文件自动应用', remap_current_data=False, show_message=not getattr(self, '_automation_mode', False))
             else:
                 if self.apply_mapping() is False:
                     raise ValueError("列映射或数据标准化失败。")
@@ -4908,7 +4979,7 @@ class DataIOMixin:
                     "提示: 多层寄存器仍保留之前的数据，如属不同物料请到[多层]页点击[清空全部寄存器]。", 10000)
             return True
         except Exception as e:
-            QMessageBox.critical(self, "导入失败", str(e))
+            self._workflow_notice("critical", "导入失败", str(e))
             return False
 
     def _import_ui_stage(self, value, message):
@@ -5103,5 +5174,5 @@ class DataIOMixin:
                                               self._pending_sigma_reanalysis)
             return True
         except Exception as e:
-            QMessageBox.critical(self, "解析失败", str(e))
+            self._workflow_notice("critical", "解析失败", str(e))
             return False

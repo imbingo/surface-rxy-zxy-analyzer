@@ -52,6 +52,7 @@ from .mixins.data_io import DataIOMixin
 from .mixins.gap import GapAnalysisMixin
 from .mixins.parallelism import ParallelismMixin
 from .mixins.recipe import RecipeMixin
+from .mixins.composite import CompositeMixin
 from .mixins.roi import ROIMixin
 from .mixins.reporting import ReportingMixin
 from .mixins.judgment import JudgmentMixin
@@ -66,7 +67,7 @@ from .theme import bind_icon, icon_color
 
 
 
-class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, ParallelismMixin, RecipeMixin, ROIMixin, ReportingMixin, JudgmentMixin, QMainWindow):
+class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysisMixin, ParallelismMixin, RecipeMixin, ROIMixin, ReportingMixin, JudgmentMixin, QMainWindow):
     background_status = pyqtSignal(str, int)
     APP_VERSION = APP_VERSION
     SLOT_EMPTY_STYLE = "color: #7b8590; font-weight: 400;"
@@ -77,7 +78,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
     MISSING_TEXT_TOKENS = MISSING_TEXT_TOKENS
     ACCENT = ACCENT
 
-    def __init__(self):
+    def __init__(self, *, settings=None):
         super().__init__()
         app = QApplication.instance()
         if app is not None:
@@ -147,7 +148,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         self.import_z_unit = 'auto'
         self.pixel_origin_x = 0.0
         self.pixel_origin_y = 0.0
-        self.settings = QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer")
+        self.settings = settings if settings is not None else QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer")
         for legacy_start_key in (
                 "import_start_row", "height_matrix_start_row",
                 "matrix_start_row", "data_start_row"):
@@ -778,6 +779,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         # Size queries during toolbar construction can polish widgets before
         # their final parents and object names exist. Resolve the theme once
         # the complete widget tree is in place.
+        self._init_composite_actions()
         self.setStyleSheet(self.styleSheet())
 
     def _toggle_max_restore(self):
@@ -829,6 +831,12 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         return True
 
     def _on_task_progress(self, value, message):
+        composite = getattr(self, '_composite_progress', None)
+        if composite:
+            _, label, bar, log = composite
+            label.setText(str(message)); bar.setValue(int(value))
+            if message and (not hasattr(self, '_last_composite_log') or self._last_composite_log != message):
+                log.appendPlainText(str(message)); self._last_composite_log = message
         self.task_progress.setValue(max(0, min(100, int(value))))
         smart_progress = getattr(self, '_smart_progress', None)
         if smart_progress is not None and not smart_progress.finished_state:
@@ -854,6 +862,7 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
         for control in self._task_controls:
             control.setEnabled(True)
         self._sync_gap_action_state()
+        self._refresh_composite_save_buttons()
         if self._pending_sigma_reanalysis:
             self._pending_sigma_reanalysis = False
             QTimer.singleShot(0, self.update_analysis)
@@ -3305,6 +3314,8 @@ class SurfaceAnalyzerPro(AnalysisMixin, DataIOMixin, GapAnalysisMixin, Paralleli
             self._update_import_status_label()
 
     def closeEvent(self, event):
+        if getattr(self, '_composite_running', False):
+            self._cancel_background_task(); event.ignore(); return
         if hasattr(self, 'xy_raster'):
             self.xy_raster.shutdown()
         super().closeEvent(event)

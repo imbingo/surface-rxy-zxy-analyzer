@@ -30,9 +30,13 @@ class RecipeLibraryDialog(QDialog):
         self.filter.addItems(['全部 Recipe', '收藏', '最近使用'])
         row.addWidget(self.search, 1)
         row.addWidget(self.filter)
+        self.type_filter = QComboBox()
+        self.type_filter.addItems(['全部类型','单层 Recipe','膜厚组合 Recipe','平行度组合 Recipe'])
+        self.type_filter.currentIndexChanged.connect(self.refresh)
+        row.addWidget(self.type_filter)
         layout.addLayout(row)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(['收藏', 'Recipe 名称', '软件版本', '保存时间'])
+        self.tree.setHeaderLabels(['收藏', 'Recipe 名称', '软件版本', '保存时间', '类型'])
         self.tree.setRootIsDecorated(False)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.tree.setColumnWidth(0, 50)
@@ -83,14 +87,16 @@ class RecipeLibraryDialog(QDialog):
             entries, errors = self.library.entries()
             query = self.search.text().strip().lower()
             for entry in entries:
-                if query not in f"{entry['name']} {entry['version']} {entry['path'].name}".lower():
+                if self.type_filter.currentIndex() and entry['kind'] != self.type_filter.currentText():
+                    continue
+                if query not in f"{entry['name']} {entry['version']} {entry['kind']} {entry['path'].name}".lower():
                     continue
                 if self.filter.currentIndex() == 1 and not entry['favorite']:
                     continue
                 if self.filter.currentIndex() == 2 and not entry['recent']:
                     continue
                 item = QTreeWidgetItem(['★' if entry['favorite'] else '', str(entry['name']),
-                                       str(entry['version']), entry['modified']])
+                                       str(entry['version']), entry['modified'], entry['kind']])
                 item.setData(0, Qt.ItemDataRole.UserRole, str(entry['path']))
                 item.setToolTip(1, str(entry['path']))
                 self.tree.addTopLevelItem(item)

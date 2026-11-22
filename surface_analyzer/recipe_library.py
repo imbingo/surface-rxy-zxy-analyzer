@@ -12,6 +12,9 @@ from uuid import uuid4
 def validate_recipe(data):
     if not isinstance(data, dict):
         raise ValueError('Recipe 顶层必须是 JSON 对象')
+    if data.get('recipe_type') == 'SurfaceAnalyzerCompositeRecipe':
+        from .composite_recipe import validate_composite
+        return validate_composite(data)
     if data.get('recipe_type') not in (None, 'SurfaceRxyZxyAnalyzerRecipe'):
         raise ValueError('该文件不是面型分析工具 Recipe')
     if not any(k in data for k in ('column_mapping', 'filter', 'input', 'roi')):
@@ -157,6 +160,7 @@ class RecipeLibrary:
 
     def entries(self):
         state = self.state()
+        from .composite_recipe import recipe_kind
         entries, errors = [], []
         for path in self.root.glob('*.json'):
             if path.name.startswith('.'):
@@ -165,6 +169,7 @@ class RecipeLibrary:
                 data = read_recipe(path)
                 entries.append(dict(path=path, name=data.get('library_metadata', {}).get('name') or path.stem,
                                     version=data.get('app_version', ''),
+                                    kind=recipe_kind(data),
                                     modified=datetime.fromtimestamp(path.stat().st_mtime).strftime('%Y-%m-%d %H:%M'),
                                     favorite=path.name in state.get('favorites', []),
                                     recent=state.get('recent', {}).get(path.name, '')))

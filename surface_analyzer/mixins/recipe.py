@@ -75,6 +75,13 @@ class RecipeMixin:
         try:
             data = read_recipe(path)
             name = str(data.get('library_metadata', {}).get('name') or Path(path).stem)
+            if data.get('recipe_type') == 'SurfaceAnalyzerCompositeRecipe':
+                started=self.open_composite_run(data)
+                if started:
+                    try:self._recipe_library().mark_used(path)
+                    except (OSError,ValueError) as exc:
+                        self._show_status(f'组合任务已启动，但最近使用记录未保存：{exc}',8000)
+                return bool(started)
             self.apply_recipe(data, path_hint=name, show_message=False)
             self._set_recipe_identity(name)
             try:
@@ -195,6 +202,11 @@ class RecipeMixin:
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 recipe = json.load(f)
+            from ..recipe_library import validate_recipe
+            validate_recipe(recipe)
+            if recipe.get('recipe_type') == 'SurfaceAnalyzerCompositeRecipe':
+                self.open_composite_run(recipe)
+                return
             if recipe.get('recipe_type') not in (None, 'SurfaceRxyZxyAnalyzerRecipe'):
                 ret = QMessageBox.question(self, "Recipe类型不一致", "该JSON不一定是Surface Rxy ZXY Analyzer Recipe，是否仍尝试导入？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
                 if ret != QMessageBox.StandardButton.Yes:
@@ -207,6 +219,8 @@ class RecipeMixin:
 
     def apply_recipe(self, recipe, path_hint='', remap_current_data=True, show_message=True):
         """将Recipe写入UI；若尚未载入数据，列映射名称会暂存，下一次载入文件后自动匹配。"""
+        if recipe.get('recipe_type') == 'SurfaceAnalyzerCompositeRecipe':
+            raise ValueError('组合 Recipe 必须通过按角色选文件的运行入口执行，不能作为单层参数应用')
         try:
             schema_version = int(recipe.get('schema_version', 1) or 1)
         except (TypeError, ValueError, OverflowError):
@@ -232,7 +246,7 @@ class RecipeMixin:
         input_layout = str(input_config.get('layout_mode', getattr(self, 'input_layout_mode', 'point_table')))
         if input_layout in ('point_table', 'pixel_xy', 'height_matrix', 'zygo_xyz'):
             self.input_layout_mode = input_layout
-            QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer").setValue(
+            self.settings.setValue(
                 "input_layout_mode", self.input_layout_mode)
         self.import_encoding = str(input_config.get('encoding', getattr(self, 'import_encoding', 'auto')) or 'auto')
         self.import_delimiter = str(input_config.get('delimiter', getattr(self, 'import_delimiter', 'auto')) or 'auto')
@@ -248,7 +262,7 @@ class RecipeMixin:
         legacy_pitch = recipe.get('large_file', {}) or {}
         explicit_pitch = any(k in legacy_pitch for k in ('sampling_pitch_x_um','sampling_pitch_y_um','matrix_pitch_x_um','matrix_pitch_y_um'))
         self.pitch_source = str(input_config.get('pitch_source') or ('manual' if explicit_pitch else 'auto'))
-        QSettings("SurfaceRxyZxyAnalyzer", "SurfaceAnalyzer").setValue(
+        self.settings.setValue(
             "pitch_source", self.pitch_source)
         units = recipe.get('units', {}) or {}
         self._safe_set_combo_text(self.cb_x_unit, units.get('x_unit'))
@@ -394,7 +408,8 @@ class RecipeMixin:
         deletion_result = {'status': 'pending' if self.df_raw is None else 'empty'}
         if self.df_raw is not None:
             deletion_result = self._restore_manual_deletions(
-                recipe.get('manual_deletion', {}) or {}, show_message=True)
+                recipe.get('manual_deletion', {}) or {}, show_message=show_message)
+        self._last_deletion_replay = deletion_result
         self._update_import_status_label()
         if self.df_raw is not None:
             self.update_analysis()

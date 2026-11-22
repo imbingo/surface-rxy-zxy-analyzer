@@ -1,6 +1,7 @@
 """Multi-layer gap registration, subtraction, and export workflow."""
 
 import re
+import copy
 from datetime import datetime
 from pathlib import Path
 
@@ -65,6 +66,7 @@ class GapAnalysisMixin:
             self._sync_status_widgets()
 
     def _sync_gap_action_state(self):
+        self._refresh_composite_save_buttons()
         busy = getattr(self, '_task_thread', None) is not None
         ready = self.data_stack is not None and self.data_base1 is not None
         result_ready = getattr(self, 'gap_result', None) is not None
@@ -96,22 +98,36 @@ class GapAnalysisMixin:
         if reason:
             self._show_status(f"胶厚结果已失效：{reason}，请重新计算。", 5000)
 
+    def _current_gap_record(self):
+        if self.df_raw is None or self.active_idx is None or len(self.active_idx) < 3:
+            raise ValueError('请先完成单层分析后写入数据槽')
+        tx, ty, tz = self.get_final_transformed_data(self.df_raw)
+        analysis_z = getattr(self, '_analysis_z_full', None)
+        if analysis_z is not None and len(analysis_z) == len(tz):
+            tz = np.asarray(analysis_z, dtype=float)
+        fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
+        return {
+            'x': fx.copy(), 'y': fy.copy(), 'z': fz.copy(),
+            'name': self.current_source_name, 'n': len(fz),
+            'metric_quality': copy.deepcopy(self._current_metric_quality()),
+            'sampled': bool(self.import_info.get('sampled', False)),
+            'import_info': copy.deepcopy(self.import_info),
+            'single_recipe': self._slot_single_recipe_snapshot(),
+            'recipe_name': str(getattr(self, 'current_recipe_name', '')),
+            'offset_x': 0.0, 'offset_y': 0.0, 'registration_mode': 'none',
+        }
+
     def set_memory_slot(self, slot):
         if self.df_raw is None or self.active_idx is None:
             QMessageBox.warning(self, "错误", "主界面尚无数据，请先载入并处理。")
             return
         if not self._confirm_estimated_metrics('写入多层扣减寄存器'):
             return
-        tx, ty, tz = self.get_final_transformed_data(self.df_raw)
-        fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
-        rec = {
-            'x': fx.copy(), 'y': fy.copy(), 'z': fz.copy(),
-            'name': self.current_source_name, 'n': len(fz),
-            'metric_quality': dict(self._current_metric_quality()),
-            'sampled': bool(self.import_info.get('sampled', False)),
-            'offset_x': 0.0, 'offset_y': 0.0,
-            'registration_mode': 'none',
-        }
+        try:
+            rec = self._current_gap_record()
+        except ValueError as exc:
+            QMessageBox.warning(self, '单层数据尚不可写入', str(exc))
+            return
         setattr(self, f"data_{slot}", rec)
         self._invalidate_gap_result()
         if slot in ('base1', 'base2'):
@@ -238,9 +254,9 @@ class GapAnalysisMixin:
             'tolerance': float(tolerance),
         }
 
-    def _refresh_gap_registration(self, preserve_view=True):
+    def _refresh_gap_registration(self, preserve_view=True, diagnostic=None):
         tolerance = float(self.spin_tol.value()) if hasattr(self, 'spin_tol') else 0.05
-        diag = self._registration_diagnostic(
+        diag = diagnostic if diagnostic is not None else self._registration_diagnostic(
             self.data_stack, self.data_base1, self.data_base2, tolerance)
         if hasattr(self, 'gap_match_canvas'):
             self.gap_match_canvas.plot_registration(

@@ -69,6 +69,8 @@ class ParallelismMixin:
             'sampled': bool(self.import_info.get('sampled', False)),
             'metric_quality': dict(quality),
             'import_info': import_snapshot,
+            'single_recipe': self._slot_single_recipe_snapshot(),
+            'recipe_name': str(getattr(self, 'current_recipe_name', '')),
         }
 
     @staticmethod
@@ -118,6 +120,7 @@ class ParallelismMixin:
                 f"Rx {rec['metrics']['rx']:.2f} µrad | Ry {rec['metrics']['ry']:.2f} µrad")
 
     def _update_parallel_ui(self):
+        self._refresh_composite_save_buttons()
         self._parallel_revision = int(getattr(self, '_parallel_revision', 0) or 0) + 1
         if hasattr(self, 'adjustment_panel'):
             self.adjustment_panel.invalidate('基准 / 测量面已变化，请完成平行度计算后重新计算装调量。')
