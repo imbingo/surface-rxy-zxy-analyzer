@@ -138,6 +138,9 @@ class VigExtensionModuleTests(unittest.TestCase):
         report.canvas.draw()
         map_axis = next(axis for axis in report.axes
                         if axis.get_title() == 'VIG 像面 image 分布')
+        report_xy = np.asarray(map_axis.collections[0].get_offsets())
+        self.assertAlmostEqual(report_xy[:, 0].min(), 0.0, delta=1e-12)
+        self.assertAlmostEqual(report_xy[:, 1].min(), 0.0, delta=1e-12)
         colorbar_axis = next(axis for axis in report.axes
                              if axis.get_ylabel() == 'image (µm)')
         self.assertAlmostEqual(
@@ -150,7 +153,8 @@ class VigExtensionModuleTests(unittest.TestCase):
         for expected in (
                 'VIG 像面报告', 'V5.0.6', 'vig-image', '1.0.0',
                 'two.csv', 'three.csv', 'XY 匹配容差', '匹配摘要',
-                '结果判定', '参与计算 12 点', 'Rx', 'P97/2', '合格'):
+                '导出坐标原点 有效点左下角归零', '结果判定',
+                '参与计算 12 点', 'Rx', 'P97/2', '合格'):
             self.assertIn(expected, report_text)
         self.window.set_judgment_spec({})
         unset_report = self.module._render_vig_report_figure()

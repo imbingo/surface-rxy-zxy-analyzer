@@ -466,6 +466,8 @@ class VigImageModule:
         plane = payload['plane']
         inputs = payload['inputs']
         thickness = payload['thickness_description']
+        dx, dy, origin_line = self.host.export_origin_offset(
+            payload['x'], payload['y'])
         judgment = self.host.judgment_lines(
             self.key, {'rx': plane['rx'] * 1e6, 'ry': plane['ry'] * 1e6})
         judgment_summary = self.host.judgment_summary(
@@ -491,6 +493,7 @@ class VigImageModule:
             f"三层总厚 {Path(str(inputs['three_layer']['name'])).name}",
             "电极厚度 " + "；".join(
                 f"{key} {thickness[key]}" for key in ('up', 'mid', 'low')),
+            f"导出坐标原点 {origin_line}",
         ]
         judgment_header = (
             judgment_summary
@@ -518,7 +521,8 @@ class VigImageModule:
             va='center', ha='left', fontsize=10, fontweight='bold',
             color='#1f2937', transform=ax_metrics.transAxes)
         scatter = ax_map.scatter(
-            payload['x'], payload['y'], c=payload['image'], cmap='turbo',
+            payload['x'] - dx, payload['y'] - dy,
+            c=payload['image'], cmap='turbo',
             s=18, edgecolors='none', rasterized=True)
         ax_map.set_xlabel("X (mm)")
         ax_map.set_ylabel("Y (mm)")
