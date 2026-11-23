@@ -40,7 +40,9 @@ hiddenimports = collect_submodules("surface_analyzer") + [
     "matplotlib.backends.backend_agg",
     "mpl_toolkits.mplot3d",
     "scipy.ndimage",
+    "scipy.optimize",
     "scipy.spatial._ckdtree",
+    "pandas",
     "openpyxl",
     "xlrd",
 ]
@@ -62,6 +64,8 @@ a = Analysis(
         "pytest",
         "IPython",
         "jupyter",
+        "numba",
+        "llvmlite",
     ],
     noarchive=False,
     optimize=0,

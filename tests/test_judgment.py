@@ -46,6 +46,16 @@ class JudgmentLogicTests(unittest.TestCase):
         only_pv = judge_measurements({'rx': 1e9, 'pv': 1}, {'pv': 5}, 'surface')
         self.assertEqual(only_pv['verdict'], 'pass')
 
+    def test_selected_keys_ignore_other_configured_surface_metrics(self):
+        result = judge_measurements(
+            {'rx': 4, 'ry': 5, 'pv': None, 'ttv': None},
+            {'rx': 10, 'ry': 10, 'pv': 0, 'ttv': 0},
+            'surface',
+            keys=('rx', 'ry'),
+        )
+        self.assertEqual(result['verdict'], 'pass')
+        self.assertEqual([item['key'] for item in result['items']], ['rx', 'ry'])
+
 
 class JudgmentUiTests(unittest.TestCase):
     @classmethod

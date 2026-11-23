@@ -36,13 +36,15 @@ def normalize_judgment_spec(data):
     return spec
 
 
-def judge_measurements(values, spec, scope):
+def judge_measurements(values, spec, scope, keys=None):
     """返回 {'verdict': pass|fail|pending|unset, 'items': [...], 'failed': [key, ...]}。"""
     spec = normalize_judgment_spec(spec)
     values = values or {}
+    selected_keys = None if keys is None else set(keys)
     items = []
     for key, label, unit, item_scope in JUDGMENT_ITEMS:
-        if item_scope != scope or spec[key] is None:
+        if (item_scope != scope or spec[key] is None
+                or (selected_keys is not None and key not in selected_keys)):
             continue
         value = _finite(values.get(key))
         ok = None

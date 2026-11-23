@@ -57,6 +57,9 @@ from .mixins.roi import ROIMixin
 from .mixins.reporting import ReportingMixin
 from .mixins.judgment import JudgmentMixin
 from .workers import FunctionWorker
+from .module_extensions import (
+    ModuleExtensionRegistry, ModuleHost, validate_module_object,
+)
 from .rendering.raster import XY_RASTER_THRESHOLD
 from .rendering.controller import XYRasterController
 from .rendering.lod import spatial_lod_indices, critical_indices, LODCache
@@ -224,6 +227,11 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self.data_stack = None
         self.gap_active_layer = None
         self.gap_result = None
+        self.module_extension_registry = ModuleExtensionRegistry()
+        self.module_descriptors = []
+        self._extension_modules = []
+        self._module_hosts = []
+        self._extension_judgment_registry = {}
 
         # V3.8.0: 平行度分析寄存器。保存主页面当前已变换、滤波、删点后的参与拟合点。
         self.parallel_base = None
@@ -508,9 +516,10 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         recipe_save_menu.addAction('导出当前参数到文件…', self.export_recipe)
         def show_extensions():
             from .extension_dialog import ExtensionDialog
-            ExtensionDialog(self).exec()
+            ExtensionDialog(
+                self, module_registry=self.module_extension_registry).exec()
         recipe_save_menu.addSeparator()
-        recipe_save_menu.addAction('格式扩展管理…', show_extensions)
+        recipe_save_menu.addAction('扩展管理…', show_extensions)
         self.btn_export_recipe.setMenu(recipe_save_menu)
         self.btn_import_recipe.setText("Recipe")
         bind_icon(self.btn_import_recipe, lambda: workspace_icon("recipe"))
@@ -691,9 +700,57 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         main_scroll = QScrollArea()
         main_scroll.setWidgetResizable(True)
         main_scroll.setWidget(right_main_panel)
+        gap_panel = self._build_gap_right_panel()
+        parallel_panel = self._build_parallel_right_panel()
         self.right_stack.addWidget(main_scroll)
-        self.right_stack.addWidget(self._build_parallel_right_panel())
-        self.right_stack.addWidget(self._build_gap_right_panel())
+        self.right_stack.addWidget(parallel_panel)
+        self.right_stack.addWidget(gap_panel)
+        self.module_descriptors = [
+            {
+                'key': 'single', 'label': '单层', 'caption': '单层分析',
+                'export_label': '导出报告',
+                'icon': lambda color: workspace_icon('surface', color),
+                'sidebar': tab_main, 'panel': main_scroll,
+                'panel_index': 0,
+                'export_actions': lambda: (
+                    ("导出单层报告图", self.export_report_image, self.last_metrics is not None),
+                    ("导出单层 CSV", self.save_file, self.last_metrics is not None),
+                ),
+                'status_text': lambda: '',
+                'show_export_origin_action': True,
+                'on_idle': None,
+            },
+            {
+                'key': 'gap', 'label': '膜厚', 'caption': '膜厚分析',
+                'export_label': '导出膜厚',
+                'icon': lambda color: workspace_icon('layers', color),
+                'sidebar': tab_math, 'panel': gap_panel,
+                'panel_index': 2,
+                'export_actions': lambda: (
+                    ("导出膜厚报告图", self.export_gap_report, self.btn_export_gap_report.isEnabled()),
+                    ("导出膜厚 CSV", self.export_gap_csv, self.btn_export_gap_csv.isEnabled()),
+                ),
+                'status_text': lambda: self._builtin_module_status('gap'),
+                'show_export_origin_action': False,
+                'on_idle': self._sync_gap_action_state,
+            },
+            {
+                'key': 'parallel', 'label': '平行度', 'caption': '平行度分析',
+                'export_label': '导出平行度',
+                'icon': lambda color: workspace_icon('parallel', color),
+                'sidebar': tab_parallel, 'panel': parallel_panel,
+                'panel_index': 1,
+                'export_actions': lambda: (
+                    ("导出平行度报告图", self.export_parallel_report,
+                     bool(getattr(self, 'parallel_result', None))),
+                    ("导出平行度 CSV", self.export_parallel_csv,
+                     bool(getattr(self, 'parallel_result', None))),
+                ),
+                'status_text': lambda: self._builtin_module_status('parallel'),
+                'show_export_origin_action': False,
+                'on_idle': None,
+            },
+        ]
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         splitter.addWidget(self.sidebar_shell)
@@ -713,6 +770,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self.module_rail.setObjectName("moduleRail")
         self.module_rail.setFixedWidth(72)
         rail_layout = QVBoxLayout(self.module_rail)
+        self.module_rail_layout = rail_layout
         rail_layout.setContentsMargins(4, 0, 4, 6)
         rail_layout.setSpacing(10)
         self.rail_header = QHBoxLayout()
@@ -720,12 +778,12 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self.rail_header.addStretch()
         rail_layout.addLayout(self.rail_header)
         self.module_buttons = []
-        for index, (label, icon) in enumerate((("单层", "surface"), ("膜厚", "layers"), ("平行度", "parallel"))):
+        for index, descriptor in enumerate(self.module_descriptors):
             button = QToolButton()
             button.setObjectName("moduleNav")
-            button.setText(label)
+            button.setText(descriptor['label'])
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
-            bind_icon(button, lambda name=icon: workspace_icon(name))
+            bind_icon(button, lambda module=descriptor: module['icon']('#606974'))
             button.setIconSize(QSize(24, 24))
             button.setCheckable(True)
             button.setAutoExclusive(True)
@@ -776,6 +834,8 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
                 getattr(self, 'gap_match_canvas', None)):
             if optional_control is not None:
                 self._task_controls.append(optional_control)
+        self._load_module_extensions()
+        self._on_tab_changed(self.tabs.currentIndex())
         # Size queries during toolbar construction can polish widgets before
         # their final parents and object names exist. Resolve the theme once
         # the complete widget tree is in place.
@@ -861,8 +921,15 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self.btn_cancel_task.setEnabled(True)
         for control in self._task_controls:
             control.setEnabled(True)
-        self._sync_gap_action_state()
+        for descriptor in self.module_descriptors:
+            callback = descriptor.get('on_idle')
+            if callback is not None:
+                try:
+                    callback()
+                except Exception as exc:
+                    self._show_status(f"{descriptor['label']} 模块状态更新失败：{exc}", 5000)
         self._refresh_composite_save_buttons()
+        self._sync_status_widgets()
         if self._pending_sigma_reanalysis:
             self._pending_sigma_reanalysis = False
             QTimer.singleShot(0, self.update_analysis)
@@ -1907,22 +1974,19 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         menu = self.btn_export_report.menu()
         menu.clear()
         index = self.tabs.currentIndex()
-        if index == self.math_tab_index:
-            actions = (("导出膜厚报告图", self.export_gap_report, self.btn_export_gap_report.isEnabled()),
-                       ("导出膜厚 CSV", self.export_gap_csv, self.btn_export_gap_csv.isEnabled()))
-        elif index == self.parallel_tab_index:
-            ready = bool(getattr(self, 'parallel_result', None))
-            actions = (("导出平行度报告图", self.export_parallel_report, ready),
-                       ("导出平行度 CSV", self.export_parallel_csv, ready))
-        else:
-            ready = self.last_metrics is not None
-            actions = (("导出单层报告图", self.export_report_image, ready),
-                       ("导出单层 CSV", self.save_file, ready))
+        if not 0 <= index < len(self.module_descriptors):
+            return
+        descriptor = self.module_descriptors[index]
+        try:
+            actions = descriptor['export_actions']()
+        except Exception as exc:
+            self._show_status(f"{descriptor['label']} 导出菜单不可用：{exc}", 5000)
+            actions = ()
         for label, callback, ready in actions:
             action = menu.addAction(label)
             action.triggered.connect(lambda checked=False, export=callback: export())
             action.setEnabled(ready and self._task_thread is None)
-        if index not in (self.math_tab_index, self.parallel_tab_index):
+        if descriptor.get('show_export_origin_action', False):
             menu.addSeparator()
             origin_action = menu.addAction("导出坐标按有效点左下角归零")
             origin_action.setToolTip(
@@ -1933,13 +1997,22 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             origin_action.toggled.connect(self._set_export_origin_zero_active_points)
 
     def _module_status_text(self, index):
+        if not 0 <= index < len(self.module_descriptors):
+            return ""
+        descriptor = self.module_descriptors[index]
+        try:
+            return descriptor['status_text']()
+        except Exception:
+            return f"{descriptor['label']} · 状态暂不可用"
+
+    def _builtin_module_status(self, module):
         def state(record):
             return "已写入" if record is not None else "未设置"
-        if index == getattr(self, 'math_tab_index', -1):
+        if module == 'gap':
             return (f"膜厚 · 堆叠总成 {state(getattr(self, 'data_stack', None))}"
                     f" · 单片 1 {state(getattr(self, 'data_base1', None))}"
                     f" · 单片 2 {state(getattr(self, 'data_base2', None))}（选填）")
-        if index == getattr(self, 'parallel_tab_index', -1):
+        if module == 'parallel':
             return (f"平行度 · 基准面 {state(getattr(self, 'parallel_base', None))}"
                     f" · 测量面 {state(getattr(self, 'parallel_measure', None))}")
         return ""
@@ -2001,23 +2074,110 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             self.btn_theme.setToolTip(f"界面主题：{ui_theme.THEME_LABELS[preference]}")
 
     def _on_tab_changed(self, index):
+        if not 0 <= index < len(self.module_descriptors):
+            return
+        descriptor = self.module_descriptors[index]
         for target, button in enumerate(getattr(self, 'module_buttons', [])):
             button.setChecked(target == index)
-            bind_icon(button, lambda name=('surface', 'layers', 'parallel')[target],
-                      color='#286b9f' if target == index else '#606974': workspace_icon(name, color))
-        self.module_caption.setText(("单层分析", "膜厚分析", "平行度分析")[index])
+            module = self.module_descriptors[target]
+            bind_icon(button, lambda item=module, selected=target:
+                      item['icon']('#286b9f' if selected == self.tabs.currentIndex()
+                                   else '#606974'))
+        self.module_caption.setText(descriptor['caption'])
         if hasattr(self, 'btn_export_report'):
-            self.btn_export_report.setText(("导出报告", "导出膜厚", "导出平行度")[index])
+            self.btn_export_report.setText(descriptor['export_label'])
         if index != 0 and hasattr(self, 'canvas'):
             self.canvas.set_focused_view(None)
         if hasattr(self, 'right_stack'):
-            if index == getattr(self, 'parallel_tab_index', -1):
-                self.right_stack.setCurrentIndex(1)
-            elif index == getattr(self, 'math_tab_index', -1):
-                self.right_stack.setCurrentIndex(2)
-            else:
-                self.right_stack.setCurrentIndex(0)
+            self.right_stack.setCurrentIndex(descriptor['panel_index'])
         self._sync_status_widgets()
+
+    def _append_module_rail_button(self, descriptor, index):
+        button = QToolButton()
+        button.setObjectName("moduleNav")
+        button.setText(descriptor['label'])
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        bind_icon(button, lambda item=descriptor: item['icon']('#606974'))
+        button.setIconSize(QSize(24, 24))
+        button.setCheckable(True)
+        button.setAutoExclusive(True)
+        button.setFixedSize(64, 76)
+        button.clicked.connect(
+            lambda checked=False, target=index: self.tabs.setCurrentIndex(target))
+        self.module_rail_layout.insertWidget(1 + len(self.module_buttons), button)
+        self.module_buttons.append(button)
+        return button
+
+    def _load_module_extensions(self):
+        for entry in self.module_extension_registry.entries():
+            if entry.get('status') != 'ready':
+                continue
+            host = ModuleHost(self, entry['id'])
+            module = self.module_extension_registry.load(entry, host)
+            if module is None:
+                continue
+            sidebar_parent = QWidget()
+            tab_index = None
+            panel_index = None
+            descriptor = None
+            rail_button = None
+            try:
+                validate_module_object(module, entry)
+                sidebar = module.build_sidebar(sidebar_parent)
+                panel = module.build_panel()
+                if not isinstance(sidebar, QWidget) or not isinstance(panel, QWidget):
+                    raise ValueError("build_sidebar/build_panel 必须返回 QWidget")
+                if not isinstance(module.icon('#606974'), QIcon):
+                    raise ValueError("icon(color) 必须返回 QIcon")
+                tab_index = self.tabs.addTab(sidebar, str(module.label))
+                panel_index = self.right_stack.addWidget(panel)
+                descriptor = {
+                    'key': str(module.key),
+                    'label': str(module.label),
+                    'caption': str(module.caption),
+                    'export_label': str(module.export_label),
+                    'icon': module.icon,
+                    'sidebar': sidebar,
+                    'panel': panel,
+                    'panel_index': panel_index,
+                    'export_actions': module.export_actions,
+                    'status_text': module.status_text,
+                    'show_export_origin_action': bool(
+                        getattr(module, 'uses_export_origin', False)),
+                    'on_idle': module.on_idle,
+                    'extension': module,
+                }
+                if tab_index != len(self.module_descriptors):
+                    raise RuntimeError("扩展模块导航顺序不一致")
+                self.module_descriptors.append(descriptor)
+                self._extension_modules.append(module)
+                self._module_hosts.append(host)
+                rail_button = self._append_module_rail_button(descriptor, tab_index)
+            except Exception as exc:
+                host.unregister_task_controls()
+                self._unregister_extension_judgment(str(getattr(module, 'key', '')))
+                if descriptor in self.module_descriptors:
+                    self.module_descriptors.remove(descriptor)
+                if module in self._extension_modules:
+                    self._extension_modules.remove(module)
+                if host in self._module_hosts:
+                    self._module_hosts.remove(host)
+                if tab_index is not None:
+                    self.tabs.removeTab(tab_index)
+                if panel_index is not None:
+                    widget = self.right_stack.widget(panel_index)
+                    self.right_stack.removeWidget(widget)
+                    if widget is not None:
+                        widget.deleteLater()
+                if rail_button is not None:
+                    if rail_button in self.module_buttons:
+                        self.module_buttons.remove(rail_button)
+                    self.module_rail_layout.removeWidget(rail_button)
+                    rail_button.deleteLater()
+                self.module_extension_registry.unload(entry)
+                self.module_extension_registry.mark_error(
+                    entry, f"模块构建失败：{exc}")
+                sidebar_parent.deleteLater()
 
     def setup_parallel_tab(self, parent_widget):
         scroll = QScrollArea()

@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory=$true)][string]$Setup,
     [string]$PreviousSetup,
     [Parameter(Mandatory=$true)][string]$WorkRoot,
-    [string]$ExpectedVersion = 'V5.0.5',
+    [string]$ExpectedVersion = 'V5.0.6',
     [Parameter(Mandatory=$true)][string]$ExpectedCommit
 )
 $ErrorActionPreference='Stop'

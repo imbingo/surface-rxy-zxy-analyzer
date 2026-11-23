@@ -32,6 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--check-adjustment", action="store_true", help="隔离设置运行装调页面自检后退出")
     parser.add_argument("--check-composite", action="store_true", help="隔离设置验证组合任务、子进程与取消后退出")
     parser.add_argument("--check-workspace", action="store_true", help="隔离设置验证派生列、ROI 色标和报告后退出")
+    parser.add_argument("--check-module-extension", metavar="DIR",
+                        help="验证并自检可选模块扩展后退出")
     parser.add_argument("--input", help="启动 GUI 后自动载入文件，或作为无界面分析输入")
     parser.add_argument("--headless", action="store_true", help="不打开 GUI，输出 JSON 结果")
     parser.add_argument("--output-json", help="无界面分析 JSON 输出路径；省略时写到标准输出")
@@ -54,6 +56,72 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--transform", action="append", default=[],
                         choices=("CW90", "CCW90", "ROT180", "SWAP", "FLIPX", "FLIPY", "ORIGIN(0,0)"))
     return parser
+
+
+def _run_check_module_extension(extension_dir: str, output_json: str | None) -> int:
+    from .module_extensions import (
+        API_VERSION, ModuleExtensionRegistry, validate_module_object,
+    )
+
+    extension_path = Path(extension_dir).expanduser().resolve()
+    registry = ModuleExtensionRegistry(
+        root=extension_path.parent, app_version=APP_VERSION)
+    payload = {'ok': False, 'path': str(extension_path), 'api_version': API_VERSION}
+    try:
+        entries = registry.entries()
+        entry = next((item for item in entries
+                      if item['path'].resolve() == extension_path), None)
+        if entry is None:
+            raise ValueError("目录中没有有效的 extension.json")
+        payload.update({
+            'id': entry.get('id'),
+            'name': entry.get('name'),
+            'version': entry.get('version'),
+            'manifest_status': entry.get('status'),
+        })
+        if entry.get('status') != 'ready':
+            raise ValueError(entry.get('status', '扩展清单无效'))
+        host = type('HeadlessModuleHost', (), {
+            'api_version': API_VERSION,
+            'app_version': APP_VERSION,
+        })()
+        module = registry.load(entry, host)
+        if module is None:
+            raise ValueError(entry.get('status', '扩展加载失败'))
+        validate_module_object(module, entry)
+        package = entry.get('_package')
+        self_check = getattr(package, 'self_check', None)
+        check_result = self_check() if callable(self_check) else {'ok': True}
+        if check_result is None:
+            check_result = {'ok': True}
+        if not isinstance(check_result, dict):
+            check_result = {'ok': bool(check_result), 'result': check_result}
+        payload['self_check'] = check_result
+        payload['ok'] = bool(check_result.get('ok', True))
+        if not payload['ok']:
+            raise ValueError(check_result.get('error', '扩展 self_check 未通过'))
+    except Exception as exc:
+        payload['ok'] = False
+        payload['error'] = str(exc)
+    payload['app_version'] = APP_VERSION
+
+    text = json.dumps(payload, ensure_ascii=True, indent=2)
+    if output_json:
+        try:
+            output = Path(output_json).expanduser().resolve()
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(text + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(f"[error] 模块扩展 JSON 写入失败: {exc}", file=sys.stderr)
+            return EXIT_OUTPUT
+        print(f"[ok] JSON: {output}")
+    else:
+        print(text)
+    if not payload['ok']:
+        print(f"[error] 模块扩展检查失败: {payload.get('error', 'invalid results')}",
+              file=sys.stderr)
+        return EXIT_ANALYSIS
+    return EXIT_OK
 
 
 def _run_headless(args: argparse.Namespace) -> int:
@@ -182,6 +250,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.check_workspace:
         from .workspace_smoke import run
         return run(args.output_json)
+    if args.check_module_extension:
+        return _run_check_module_extension(
+            args.check_module_extension, args.output_json)
     if args.check_adjustment:
         from .adjustment_smoke import run
         return run(args.output_json)
