@@ -39,6 +39,34 @@ from ..polynomial import fit_polynomial_surface, evaluate_polynomial_surface
 
 
 class ReportingMixin:
+    EXPORT_ORIGIN_SETTINGS_KEY = 'export/zero_origin_active_points'
+
+    def _export_origin_zero_active_points_enabled(self):
+        return bool(self.settings.value(
+            self.EXPORT_ORIGIN_SETTINGS_KEY, False, type=bool))
+
+    def _set_export_origin_zero_active_points(self, enabled):
+        self.settings.setValue(self.EXPORT_ORIGIN_SETTINGS_KEY, bool(enabled))
+
+    def _export_origin_offset(self, fx, fy):
+        if not self._export_origin_zero_active_points_enabled() or len(fx) == 0:
+            return 0.0, 0.0
+        return float(np.min(fx)), float(np.min(fy))
+
+    @staticmethod
+    def _translated_roi_shapes_for_xy(roi_shapes, dx, dy):
+        translated_shapes = []
+        for shape in roi_shapes or []:
+            translated = dict(shape)
+            if translated.get('type') == 'smart_face':
+                translated['seed_x'] = float(translated.get('seed_x', 0.0)) - dx
+                translated['seed_y'] = float(translated.get('seed_y', 0.0)) - dy
+            else:
+                translated['cx'] = float(translated.get('cx', 0.0)) - dx
+                translated['cy'] = float(translated.get('cy', 0.0)) - dy
+            translated_shapes.append(translated)
+        return translated_shapes
+
     def _current_result_exportable(self):
         if self.import_info.get('gap_result_stale', False):
             QMessageBox.warning(self, "胶厚结果已失效", "配准已变化，请重新计算胶厚后再导出主控结果。")
@@ -162,7 +190,11 @@ class ReportingMixin:
             if analysis_z is not None and len(analysis_z) == len(tz):
                 tz = np.asarray(analysis_z, dtype=float)
             fx, fy, fz = tx[self.active_idx], ty[self.active_idx], tz[self.active_idx]
-            metrics = self.compute_plane_metrics(fx, fy, fz)
+            zero_origin_enabled = self._export_origin_zero_active_points_enabled()
+            dx, dy = self._export_origin_offset(fx, fy)
+            tx_s, ty_s = tx - dx, ty - dy
+            metrics = self.compute_plane_metrics(
+                tx_s[self.active_idx], ty_s[self.active_idx], fz)
             pipeline_text = " -> ".join(self.transform_pipeline) if self.transform_pipeline else "原始状态"
             filter_text = self.cb_filter.currentText()
             if self.cb_filter.currentIndex() == 2:
@@ -173,7 +205,7 @@ class ReportingMixin:
             elif self.cb_filter.currentIndex() == 4:
                 filter_text += f" (空间σ={self.spin_gaussian_sigma.value():.4g} mm, 不补孔)"
             fig = self._render_report_figure(
-                self.current_source_name, tx, ty, tz, self.active_idx, metrics,
+                self.current_source_name, tx_s, ty_s, tz, self.active_idx, metrics,
                 self.n_filtered, pipeline_text, filter_text, self.import_info,
                 getattr(self, 'display_surface_mode', 'raw'),
                 render_config={'xy_mode': self.canvas.xy_mode.currentData(),
@@ -184,7 +216,8 @@ class ReportingMixin:
                     topology_domain_mask=self.manual_mask),
                 overview_idx=np.flatnonzero(self.manual_mask),
                 roi_mask_all=(getattr(self, '_effective_roi_mask_cache', None)
-                              if self._roi_is_active() else np.ones(len(tz), dtype=bool)))
+                              if self._roi_is_active() else np.ones(len(tz), dtype=bool)),
+                xy_offset=(dx, dy) if zero_origin_enabled else None)
             fig.savefig(path, dpi=150)
             self.statusBar().showMessage(f"已导出报告图: {path}", 6000)
             QMessageBox.information(self, "导出成功", f"测量报告图已导出：\n{path}")
@@ -226,6 +259,10 @@ class ReportingMixin:
             for order, model in sorted(getattr(self, 'high_order_models', {}).items()):
                 df_out[f'Resid_Order{order}_um'] = (
                     fz - evaluate_polynomial_surface(model, fx, fy)) * 1000.0
+            zero_origin_enabled = self._export_origin_zero_active_points_enabled()
+            dx, dy = self._export_origin_offset(fx, fy)
+            df_out['X_mm'] = fx - dx
+            df_out['Y_mm'] = fy - dy
 
             pipeline_text = " -> ".join(self.transform_pipeline) if self.transform_pipeline else "原始状态"
             filter_text = self.cb_filter.currentText()
@@ -245,6 +282,9 @@ class ReportingMixin:
                 f"# 导出时间: {datetime.now():%Y-%m-%d %H:%M:%S}",
                 f"# 数据来源: {self.current_source_name}",
                 f"# 变换路径: {pipeline_text}",
+                (f"# 导出坐标原点: 有效点左下角归零（导出 X = 界面 X − {dx:.6f} mm，"
+                 f"导出 Y = 界面 Y − {dy:.6f} mm；拟合平面系数和 ROI 形状仍为界面坐标）"
+                 if zero_origin_enabled else "# 导出坐标原点: 与界面坐标一致"),
                 f"# 滤波模式: {filter_text}",
                 f"# ROI: {roi_info['summary']}",
                 f"# 滤波剔除点数: {self.n_filtered} | 手动删除点数: {int((~self.manual_mask).sum())} | 导出点数: {len(fz)}",
@@ -707,7 +747,8 @@ class ReportingMixin:
     def _render_report_figure(self, source_name, tx, ty, tz, active_idx, metrics,
                               n_filtered, pipeline_text, filter_text,
                               import_info, display_surface_mode='raw', roi_info=None,
-                              overview_idx=None, roi_mask_all=None, render_config=None):
+                              overview_idx=None, roi_mask_all=None, render_config=None,
+                              xy_offset=None):
         """生成包含主页面全部信息(指标文本 + 四视图)的报告图，返回 Figure(Agg后端)。"""
         # YaHei 同时含中文与 µ(U+00B5)，避免报告图里 µm/µrad 出现缺字方块；其余字体兜底
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
@@ -732,6 +773,8 @@ class ReportingMixin:
         if isinstance(display_surface_mode, bool):
             display_surface_mode = 'residual_1' if display_surface_mode else 'raw'
         display_surface_mode = str(display_surface_mode or 'raw')
+        report_offset = (None if xy_offset is None else
+                         (float(xy_offset[0]), float(xy_offset[1])))
         if roi_info is None:
             overlay_enabled = roi_mask_all is not None
             roi_info = {'enabled': overlay_enabled,
@@ -835,7 +878,12 @@ class ReportingMixin:
                        color='#344054', bbox={'facecolor':'white', 'edgecolor':'#d0d5dd',
                                               'alpha':.88, 'boxstyle':'round,pad=.25'})
         set_xy_equal_aspect(ax_xy)
-        self._draw_roi_overlays(ax_xy, roi_info.get('shapes'), roi_info.get('roi_enabled'), report=True)
+        roi_shapes = roi_info.get('shapes')
+        if report_offset is not None:
+            roi_shapes = self._translated_roi_shapes_for_xy(
+                roi_shapes, *report_offset)
+        self._draw_roi_overlays(
+            ax_xy, roi_shapes, roi_info.get('roi_enabled'), report=True)
         ax_xz.scatter(dx, dz, **sc); ax_xz.set_title(txt); ax_xz.set_xlabel("X (mm)"); ax_xz.set_ylabel(zlab)
         ax_yz.scatter(dy, dz, **sc); ax_yz.set_title(tyt); ax_yz.set_xlabel("Y (mm)"); ax_yz.set_ylabel(zlab)
         for ax in (ax_xy, ax_xz, ax_yz):
@@ -899,6 +947,10 @@ class ReportingMixin:
             f"手动删除: {self._manual_deletion_summary()}",
             f"显示模式: {display_surface_mode}",
         ]
+        if report_offset is not None:
+            dx, dy = report_offset
+            meta_lines.append(
+                f"导出坐标原点: 有效点左下角（X−{dx:.4f}, Y−{dy:.4f} mm）")
         import_trace = self._import_trace_text(import_info)
         if import_trace:
             meta_lines.extend(import_trace[:4])
