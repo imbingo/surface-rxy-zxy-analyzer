@@ -475,7 +475,9 @@ class VigImageModule:
         figure = Figure(
             figsize=(12.5, 8.8), facecolor='white', constrained_layout=True)
         FigureCanvasAgg(figure)
-        grid = figure.add_gridspec(3, 1, height_ratios=(1.55, 0.38, 5.7))
+        header_height = 1.55
+        grid = figure.add_gridspec(
+            3, 1, height_ratios=(header_height, 0.38, 5.7))
         ax_header = figure.add_subplot(grid[0])
         ax_metrics = figure.add_subplot(grid[1])
         ax_map = figure.add_subplot(grid[2])
@@ -505,11 +507,67 @@ class VigImageModule:
             judgment_header,
             *(judgment if judgment_summary else []),
         ]
-        for x, lines in ((0.01, left_lines), (0.52, right_lines)):
-            ax_header.text(
-                x, 0.78, "\n".join(lines), va='top', ha='left', fontsize=9,
-                linespacing=1.35, wrap=True, color='#334155',
-                transform=ax_header.transAxes)
+        left_text = ax_header.text(
+            0.01, 0.78, "", va='top', ha='left', fontsize=9,
+            linespacing=1.35, color='#334155', transform=ax_header.transAxes)
+        left_text.set_gid('vig-report-left-column')
+        right_text = ax_header.text(
+            0.52, 0.78, "", va='top', ha='left', fontsize=9,
+            linespacing=1.35, color='#334155', transform=ax_header.transAxes)
+        right_text.set_gid('vig-report-right-column')
+        figure.canvas.draw()
+        renderer = figure.canvas.get_renderer()
+
+        def wrap_to_width(text_artist, lines, start, end):
+            start_x = ax_header.transAxes.transform((start, 0))[0]
+            end_x = ax_header.transAxes.transform((end, 0))[0]
+            max_width = end_x - start_x - 2
+            wrapped = []
+            for line in lines:
+                current = ''
+                for character in line:
+                    candidate = current + character
+                    text_artist.set_text(candidate)
+                    if (current
+                            and text_artist.get_window_extent(renderer).width > max_width):
+                        wrapped.append(current)
+                        current = character
+                    else:
+                        current = candidate
+                if current:
+                    wrapped.append(current)
+            return "\n".join(wrapped)
+
+        left_text.set_text(wrap_to_width(left_text, left_lines, 0.01, 0.50))
+        right_text.set_text(wrap_to_width(right_text, right_lines, 0.52, 0.99))
+        for _ in range(5):
+            figure.canvas.draw()
+            renderer = figure.canvas.get_renderer()
+            header_bbox = ax_header.get_window_extent(renderer)
+            text_bboxes = (
+                left_text.get_window_extent(renderer),
+                right_text.get_window_extent(renderer),
+            )
+            overflow = header_bbox.y0 + 4 - min(box.y0 for box in text_bboxes)
+            if overflow <= 0:
+                break
+            header_height = header_height * (1 + overflow / header_bbox.height) + 0.2
+            grid.set_height_ratios((header_height, 0.38, 5.7))
+        else:
+            raise RuntimeError("VIG 报告表头内容无法完整放入表头区域")
+
+        renderer = figure.canvas.get_renderer()
+        figure_bbox = figure.bbox
+        header_bbox = ax_header.get_window_extent(renderer)
+        left_bbox = left_text.get_window_extent(renderer)
+        right_bbox = right_text.get_window_extent(renderer)
+        left_boundary = ax_header.transAxes.transform((0.50, 0))[0]
+        right_boundary = ax_header.transAxes.transform((0.99, 0))[0]
+        if (left_bbox.x1 > left_boundary or right_bbox.x1 > right_boundary
+                or left_bbox.x0 < figure_bbox.x0 or right_bbox.x0 < figure_bbox.x0
+                or left_bbox.y0 < header_bbox.y0 or right_bbox.y0 < header_bbox.y0
+                or left_bbox.y1 > figure_bbox.y1 or right_bbox.y1 > figure_bbox.y1):
+            raise RuntimeError("VIG 报告表头文字超出列宽或图像边界")
         ax_metrics.text(
             0.01, 0.5,
             f"参与计算 {payload['n_points']:,} 点  ·  "

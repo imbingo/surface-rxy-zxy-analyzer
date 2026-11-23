@@ -136,6 +136,22 @@ class VigExtensionModuleTests(unittest.TestCase):
         self.assertTrue(report_path.is_file())
         report = self.module._render_vig_report_figure()
         report.canvas.draw()
+        left_text = next(
+            text for text in report.axes[0].texts
+            if text.get_gid() == 'vig-report-left-column')
+        right_text = next(
+            text for text in report.axes[0].texts
+            if text.get_gid() == 'vig-report-right-column')
+        renderer = report.canvas.get_renderer()
+        left_bbox = left_text.get_window_extent(renderer)
+        right_bbox = right_text.get_window_extent(renderer)
+        figure_bbox = report.bbox
+        self.assertLess(left_bbox.x1, right_bbox.x0)
+        for bbox in (left_bbox, right_bbox):
+            self.assertGreaterEqual(bbox.x0, figure_bbox.x0)
+            self.assertGreaterEqual(bbox.y0, figure_bbox.y0)
+            self.assertLessEqual(bbox.x1, figure_bbox.x1)
+            self.assertLessEqual(bbox.y1, figure_bbox.y1)
         map_axis = next(axis for axis in report.axes
                         if axis.get_title() == 'VIG 像面 image 分布')
         report_xy = np.asarray(map_axis.collections[0].get_offsets())
