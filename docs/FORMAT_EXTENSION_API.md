@@ -10,7 +10,7 @@
 `minimum_app_version`, 可选 `maximum_app_version`, `suffixes`, `entrypoint`。
 版本为 x.y.z；API 不匹配或主程序不兼容时拒绝加载。入口必须位于扩展目录内。
 扩展不能覆盖主程序的通用文本或 Excel reader。多个启用扩展声明同一后缀时明确报错。
-目录中的 `disabled` 标记用于禁用扩展。主界面“保存 Recipe”菜单中的“格式扩展管理”可检查状态和切换启用。
+目录中的 `disabled` 标记用于禁用扩展。主界面“保存 Recipe”菜单中的“扩展管理…”可检查状态和切换启用。
 
 ## Reader contract
 

@@ -51,6 +51,31 @@ class JudgmentMixin:
         self._judgment_widgets[module] = (card, label)
         return card
 
+    def _make_extension_judgment_card(self, module, metric_labels, keys):
+        if module in ('single', 'gap', 'parallel'):
+            raise ValueError("扩展判定模块 key 与内置模块冲突")
+        if not hasattr(self, '_extension_judgment_registry'):
+            self._extension_judgment_registry = {}
+        self._extension_judgment_registry[module] = {
+            'keys': tuple(keys),
+            'labels': dict(metric_labels),
+            'values': {},
+        }
+        card = self._make_judgment_card(module)
+        self._refresh_judgment(module)
+        return card
+
+    def _unregister_extension_judgment(self, module):
+        getattr(self, '_extension_judgment_registry', {}).pop(module, None)
+        getattr(self, '_judgment_widgets', {}).pop(module, None)
+
+    def _refresh_extension_judgment(self, module, values):
+        registry = getattr(self, '_extension_judgment_registry', {}).get(module)
+        if registry is None:
+            raise KeyError(f"未注册扩展判定模块：{module}")
+        registry['values'] = dict(values or {})
+        return self._refresh_judgment(module, registry['values'])
+
     def _judgment_values(self, module):
         if module == 'single':
             metrics = getattr(self, 'last_metrics', None) or {}
@@ -59,6 +84,9 @@ class JudgmentMixin:
             payload = getattr(self, 'gap_result', None)
             metrics = (payload or {}).get('plane_metrics') or {}
             return {key: metrics.get(key) for key in ('rx', 'ry', 'pv', 'ttv')}
+        extension = getattr(self, '_extension_judgment_registry', {}).get(module)
+        if extension is not None:
+            return extension['values']
         result = getattr(self, 'parallel_result', None)
         return {'parallel': result.get('angle')} if result else {}
 
@@ -69,13 +97,20 @@ class JudgmentMixin:
             names = {'parallel': 'lbl_par_angle'}
         else:
             names = {}
-        return {key: getattr(self, name) for key, name in names.items() if hasattr(self, name)}
+        labels = {key: getattr(self, name) for key, name in names.items()
+                  if hasattr(self, name)}
+        extension = getattr(self, '_extension_judgment_registry', {}).get(module)
+        if extension is not None:
+            labels.update(extension['labels'])
+        return labels
 
     def current_judgment(self, module, values=None):
+        extension = getattr(self, '_extension_judgment_registry', {}).get(module)
         scope = 'parallel' if module == 'parallel' else 'surface'
         if values is None:
             values = self._judgment_values(module)
-        return judge_measurements(values, self._judgment_spec(), scope)
+        keys = extension['keys'] if extension is not None else None
+        return judge_measurements(values, self._judgment_spec(), scope, keys=keys)
 
     def _refresh_judgment(self, module, values=None):
         widgets = getattr(self, '_judgment_widgets', {}).get(module)
