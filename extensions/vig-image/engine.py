@@ -256,8 +256,16 @@ def plane(x, y, Ry, Rx, Z):
 
 
 def plane_fit(x, y, z):
+    x = np.asarray(x, dtype=float).reshape(-1)
+    y = np.asarray(y, dtype=float).reshape(-1)
+    z = np.asarray(z, dtype=float).reshape(-1)
+    if len(z) < 3:
+        raise ValueError('有效点不足或共线，无法拟合平面')
     design = np.column_stack((-x, y, np.ones_like(x)))
-    Ry, Rx, Z = np.linalg.lstsq(design, z, rcond=None)[0]
+    coefficients, _, rank, _ = np.linalg.lstsq(design, z, rcond=None)
+    if rank < 3:
+        raise ValueError('有效点不足或共线，无法拟合平面')
+    Ry, Rx, Z = coefficients
     residuals = plane(x, y, Ry, Rx, Z) - z
     rms = np.sqrt(np.mean(residuals ** 2))
     return Ry, Rx, Z, rms

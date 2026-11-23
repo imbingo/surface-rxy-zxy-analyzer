@@ -84,6 +84,20 @@ class VigEngineTests(unittest.TestCase):
         self.assertAlmostEqual(rx / 50e-6, 1.0, delta=1e-3)
         self.assertAlmostEqual(ry / -20e-6, 1.0, delta=1e-3)
 
+    def test_compute_rejects_too_few_and_collinear_points(self):
+        _, two, three, thickness = _golden_data()
+        for point_count in (2, 3):
+            limited_two = dict(
+                two, x=two['x'][:point_count], y=two['y'][:point_count],
+                z=two['z'][:point_count])
+            limited_three = dict(
+                three, x=three['x'][:point_count], y=three['y'][:point_count],
+                z=three['z'][:point_count])
+            with self.subTest(point_count=point_count):
+                with self.assertRaisesRegex(
+                        ValueError, '有效点不足或共线，无法拟合平面'):
+                    compute_vig_image(limited_two, limited_three, thickness)
+
     def test_golden_image_and_plane_outputs_match_original_tool(self):
         frame, two, three, thickness = _golden_data()
         results = calculate_zimg2low_from_df(frame)
