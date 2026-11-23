@@ -1922,6 +1922,15 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             action = menu.addAction(label)
             action.triggered.connect(lambda checked=False, export=callback: export())
             action.setEnabled(ready and self._task_thread is None)
+        if index not in (self.math_tab_index, self.parallel_tab_index):
+            menu.addSeparator()
+            origin_action = menu.addAction("导出坐标按有效点左下角归零")
+            origin_action.setToolTip(
+                "导出时把参与计算的点（删点、ROI、滤波之后）的最小 X、Y 平移到 0；"
+                "界面坐标、Rx/Ry/PV 不变")
+            origin_action.setCheckable(True)
+            origin_action.setChecked(self._export_origin_zero_active_points_enabled())
+            origin_action.toggled.connect(self._set_export_origin_zero_active_points)
 
     def _module_status_text(self, index):
         def state(record):
