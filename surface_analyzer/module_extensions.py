@@ -15,6 +15,23 @@ from .version import APP_VERSION
 API_VERSION = 1
 
 
+def validate_module_object(module, entry):
+    required = (
+        'key', 'label', 'caption', 'export_label', 'icon',
+        'build_sidebar', 'build_panel', 'export_actions',
+        'status_text', 'on_idle',
+    )
+    if any(not hasattr(module, name) for name in required):
+        raise ValueError("扩展模块缺少必需接口")
+    if str(module.key) != entry['id']:
+        raise ValueError("模块 key 必须与 extension.json 的 id 一致")
+    if not all(callable(getattr(module, name)) for name in (
+            'icon', 'build_sidebar', 'build_panel', 'export_actions',
+            'status_text', 'on_idle')):
+        raise ValueError("扩展模块接口必须可调用")
+    return module
+
+
 def module_extension_root():
     base = Path(os.environ.get('LOCALAPPDATA', Path.home() / '.local' / 'share'))
     return base / 'SurfaceRxyZxyAnalyzer' / 'module_extensions'

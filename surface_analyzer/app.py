@@ -57,7 +57,9 @@ from .mixins.roi import ROIMixin
 from .mixins.reporting import ReportingMixin
 from .mixins.judgment import JudgmentMixin
 from .workers import FunctionWorker
-from .module_extensions import ModuleExtensionRegistry, ModuleHost
+from .module_extensions import (
+    ModuleExtensionRegistry, ModuleHost, validate_module_object,
+)
 from .rendering.raster import XY_RASTER_THRESHOLD
 from .rendering.controller import XYRasterController
 from .rendering.lod import spatial_lod_indices, critical_indices, LODCache
@@ -2120,19 +2122,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             descriptor = None
             rail_button = None
             try:
-                required = (
-                    'key', 'label', 'caption', 'export_label', 'icon',
-                    'build_sidebar', 'build_panel', 'export_actions',
-                    'status_text', 'on_idle',
-                )
-                if any(not hasattr(module, name) for name in required):
-                    raise ValueError("扩展模块缺少必需接口")
-                if str(module.key) != entry['id']:
-                    raise ValueError("模块 key 必须与 extension.json 的 id 一致")
-                if not all(callable(getattr(module, name)) for name in (
-                        'icon', 'build_sidebar', 'build_panel', 'export_actions',
-                        'status_text', 'on_idle')):
-                    raise ValueError("扩展模块接口必须可调用")
+                validate_module_object(module, entry)
                 sidebar = module.build_sidebar(sidebar_parent)
                 panel = module.build_panel()
                 if not isinstance(sidebar, QWidget) or not isinstance(panel, QWidget):

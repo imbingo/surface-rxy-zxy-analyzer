@@ -100,6 +100,24 @@ class ModuleExtensionRegistryTests(unittest.TestCase):
         from surface_analyzer.cli import _run_check_module_extension
 
         extension = write_module(self.root)
+        (extension / '__init__.py').write_text(
+            'from PyQt6.QtGui import QIcon\n'
+            'from PyQt6.QtWidgets import QWidget\n'
+            'class Module:\n'
+            '    key = "test-module"\n'
+            '    label = "TEST"\n'
+            '    caption = "Test module"\n'
+            '    export_label = "Export TEST"\n'
+            '    def icon(self, color): return QIcon()\n'
+            '    def build_sidebar(self, parent): return QWidget(parent)\n'
+            '    def build_panel(self): return QWidget()\n'
+            '    def export_actions(self): return []\n'
+            '    def status_text(self): return ""\n'
+            '    def on_idle(self): pass\n'
+            'def create_module(host): return Module()\n'
+            'def self_check(): return {"ok": True}\n',
+            encoding='utf-8',
+        )
         output = self.root / 'check.json'
         self.assertEqual(
             _run_check_module_extension(str(extension), str(output)), 0)
@@ -107,6 +125,17 @@ class ModuleExtensionRegistryTests(unittest.TestCase):
         self.assertTrue(payload['ok'])
         self.assertEqual(payload['id'], 'test-module')
         self.assertEqual(payload['self_check'], {'ok': True})
+
+    def test_cli_check_rejects_incomplete_module_contract(self):
+        from surface_analyzer.cli import _run_check_module_extension
+
+        extension = write_module(self.root)
+        output = self.root / 'invalid-check.json'
+        self.assertNotEqual(
+            _run_check_module_extension(str(extension), str(output)), 0)
+        payload = json.loads(output.read_text(encoding='utf-8'))
+        self.assertFalse(payload['ok'])
+        self.assertIn('缺少必需接口', payload['error'])
 
 
 class ExtensionDialogTests(unittest.TestCase):

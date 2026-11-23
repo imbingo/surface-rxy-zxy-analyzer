@@ -59,7 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_check_module_extension(extension_dir: str, output_json: str | None) -> int:
-    from .module_extensions import API_VERSION, ModuleExtensionRegistry
+    from .module_extensions import (
+        API_VERSION, ModuleExtensionRegistry, validate_module_object,
+    )
 
     extension_path = Path(extension_dir).expanduser().resolve()
     registry = ModuleExtensionRegistry(
@@ -86,6 +88,7 @@ def _run_check_module_extension(extension_dir: str, output_json: str | None) -> 
         module = registry.load(entry, host)
         if module is None:
             raise ValueError(entry.get('status', '扩展加载失败'))
+        validate_module_object(module, entry)
         package = entry.get('_package')
         self_check = getattr(package, 'self_check', None)
         check_result = self_check() if callable(self_check) else {'ok': True}
