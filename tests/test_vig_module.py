@@ -222,6 +222,30 @@ class VigExtensionModuleTests(unittest.TestCase):
         self.assertEqual(
             self.settings.value('extensions/vig-image/tolerance_mm'), 0.02)
 
+    def test_estimated_input_quality_reaches_panel_report_csv_and_judgment(self):
+        package = sys.modules['_surface_module_vig-image']
+        estimated_two = dict(self.two_record)
+        estimated_two['metric_quality'] = {
+            'estimated': True, 'label': '抽样估计', 'warning': '上游为抽样估计数据。'}
+        estimated_two['sampled'] = True
+        payload = package.engine.compute_vig_image(
+            estimated_two, self.three_record,
+            {'up': self.t_up, 'mid': self.t_mid, 'low': self.t_low})
+        self.assertTrue(payload['estimated'])
+        self.assertTrue(payload['sampled'])
+        self.assertTrue(payload['metric_quality']['estimated'])
+        self.module._apply_vig_payload(payload)
+
+        self.assertIn('不可直接用于产线放行', self.module.hint_label.text())
+        self.assertIn('不可直接用于产线放行', '\n'.join(self.module._export_metadata()))
+        judgment_label, = (self.window._judgment_widgets[self.module.key][1],)
+        self.assertIn('抽样估计', judgment_label.text())
+        self.assertIn('不可直接用于产线放行', judgment_label.parentWidget().toolTip())
+        report = self.module._render_vig_report_figure()
+        header_text = '\n'.join(
+            text.get_text() for axis in report.axes for text in axis.texts)
+        self.assertIn('不可直接用于产线放行', header_text)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -449,16 +449,21 @@ def compute_vig_image(
     two_values = ref_z[ref_indices] * 1000.0
     thickness_values = {}
     thickness_descriptions = {}
+    quality_sources = [('two_layer', two_layer), ('three_layer', three_layer)]
     inputs = {
         'two_layer': {
             'name': _record_name(two_layer, '两层总厚'),
             'n': int(len(ref_z)),
             'source': _record_source(two_layer),
+            'metric_quality': dict(two_layer.get('metric_quality') or {}),
+            'sampled': bool(two_layer.get('sampled', False)),
         },
         'three_layer': {
             'name': _record_name(three_layer, '三层总厚'),
             'n': int(len(three_z)),
             'source': _record_source(three_layer),
+            'metric_quality': dict(three_layer.get('metric_quality') or {}),
+            'sampled': bool(three_layer.get('sampled', False)),
         },
     }
     for key in ('up', 'mid', 'low'):
@@ -468,11 +473,14 @@ def compute_vig_image(
             thickness_values[key] = layer_z[maps[key][ref_indices]] * 1000.0
             name = _record_name(value, f'电极厚度 {key}')
             thickness_descriptions[key] = f'逐点：{name} ({len(layer_z):,} 点)'
+            quality_sources.append((f'thickness_{key}', value))
             inputs[f'thickness_{key}'] = {
                 'name': name,
                 'n': int(len(layer_z)),
                 'source': _record_source(value),
                 'mode': 'per_point',
+                'metric_quality': dict(value.get('metric_quality') or {}),
+                'sampled': bool(value.get('sampled', False)),
             }
         else:
             constant = float(value)
@@ -484,7 +492,31 @@ def compute_vig_image(
                 'source': '',
                 'mode': 'constant',
                 'value_um': constant,
+                'metric_quality': {},
+                'sampled': False,
             }
+
+    quality_details = [
+        {
+            'input': key,
+            'name': _record_name(record, key),
+            'metric_quality': dict(record.get('metric_quality') or {}),
+            'sampled': bool(record.get('sampled', False)),
+        }
+        for key, record in quality_sources
+    ]
+    sampled = any(item['sampled'] for item in quality_details)
+    estimated = sampled or any(
+        item['metric_quality'].get('estimated', False) for item in quality_details)
+    metric_quality = {
+        'estimated': bool(estimated),
+        'sampled': bool(sampled),
+        'sources': quality_details,
+        'label': '抽样估计' if estimated else '全量计算',
+        'warning': (
+            '输入包含抽样或估计数据；VIG 结果为估计，不可直接用于产线放行。'
+            if estimated else ''),
+    }
 
     x = ref_x[ref_indices]
     y = ref_y[ref_indices]
@@ -566,6 +598,9 @@ def compute_vig_image(
         'tolerance': tolerance_mm,
         'match_reports': reports,
         'inputs': inputs,
+        'metric_quality': metric_quality,
+        'estimated': bool(estimated),
+        'sampled': bool(sampled),
         'thickness_description': thickness_descriptions,
         'plane_info': plane_info,
         'matched_reference_indices': ref_indices[valid_input][valid],

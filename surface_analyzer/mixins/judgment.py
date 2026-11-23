@@ -117,14 +117,20 @@ class JudgmentMixin:
         if widgets is None:
             return None
         card, label = widgets
+        quality_values = values if values is not None else self._judgment_values(module)
         result = self.current_judgment(module, values)
         verdict = result['verdict']
-        label.setText(VERDICT_TEXT[verdict])
+        quality_values = quality_values or {}
+        estimated = bool(quality_values.get('_estimated'))
+        quality_warning = quality_values.get('_quality_warning', '')
+        label.setText(VERDICT_TEXT[verdict] + (" · 抽样估计" if estimated else ""))
         label.setStyleSheet(f"color: {VERDICT_COLOR[verdict]};")
         for key, metric_label in self._judgment_metric_labels(module).items():
             metric_label.setStyleSheet(
                 f"color: {VERDICT_COLOR['fail']};" if key in result['failed'] else "")
         lines = judgment_lines(result) or ["尚未设置判定规格"]
+        if quality_warning:
+            lines.insert(0, quality_warning)
         card.setToolTip("\n".join(lines + ["", "点击设置判定规格"]))
         return result
 

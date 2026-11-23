@@ -309,10 +309,18 @@ class VigImageModule:
         self.metric_labels['ry'].setToolTip(f"{plane['ry'] * 1e3:.6f} mrad")
         for key in ('rms', 'std3', 'p97_half'):
             self.metric_labels[key].setText(f"{plane[key] * 1e6:.5g}")
-        self.host.refresh_judgment(self.key, {
+        judgment_values = {
             'rx': plane['rx'] * 1e6, 'ry': plane['ry'] * 1e6,
-        })
-        self.hint_label.setText(self._match_summary())
+        }
+        quality = payload.get('metric_quality') or {}
+        if quality.get('estimated'):
+            judgment_values['_estimated'] = True
+            judgment_values['_quality_warning'] = quality.get('warning', '')
+        self.host.refresh_judgment(self.key, judgment_values)
+        quality_warning = quality.get('warning', '')
+        self.hint_label.setText(
+            (f"⚠ {quality_warning}；" if quality_warning else '')
+            + self._match_summary())
         self.hint_label.setToolTip(self.hint_label.text())
         self._draw_result()
         self.host.status(f"VIG 像面计算完成，参与计算 {payload['n_points']:,} 点")
@@ -404,6 +412,7 @@ class VigImageModule:
             f"# 导出时间: {datetime.now().isoformat(timespec='seconds')}",
             "# 公式: VIG_up = 三层 − 两层 − t_up；VIG_low = 两层 − t_mid − t_low（µm）",
             f"# 输入: {payload['inputs']}",
+            f"# 结果质量: {(payload.get('metric_quality') or {}).get('warning') or '全量计算'}",
             f"# 电极厚度: {payload['thickness_description']}",
             f"# XY 匹配容差: {payload['tolerance']:g} mm",
             f"# 匹配报告: {payload['match_reports']}",
@@ -489,6 +498,7 @@ class VigImageModule:
         right_lines = [
             f"XY 匹配容差 {payload['tolerance']:g} mm",
             f"匹配摘要 {self._match_summary()}",
+            (payload.get('metric_quality') or {}).get('warning') or "结果质量 全量计算",
             judgment_header,
             *(judgment if judgment_summary else []),
         ]
