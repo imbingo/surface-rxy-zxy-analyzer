@@ -417,29 +417,32 @@ class VigImageModule:
     def export_vig_csv(self):
         if self.result is None:
             return
-        path = self.host.save_path(
-            "导出 VIG CSV", "vig_image.csv", "CSV 文件 (*.csv)")
-        if not path:
-            return
-        payload = self.result
-        dx, dy, _ = self.host.export_origin_offset(payload['x'], payload['y'])
-        data = {
-            'X_mm': payload['x'] - dx,
-            'Y_mm': payload['y'] - dy,
-            'VIG_up_um': payload['vig_up'],
-            'VIG_low_um': payload['vig_low'],
-            'thickness_up_um': payload['t_up'],
-            'thickness_mid_um': payload['t_mid'],
-            'thickness_low_um': payload['t_low'],
-            'f_img_um': payload['f_img'],
-            'img_principle_z_um': payload['img_principle_z'],
-            'image_um': payload['image'],
-            'Resid_um': payload['resid_um'],
-        }
-        with open(path, 'w', encoding='utf-8-sig', newline='') as stream:
-            stream.write('\n'.join(self._export_metadata()) + '\n')
-            pd.DataFrame(data).to_csv(stream, index=False)
-        self.host.status(f"已导出 VIG CSV：{path}")
+        try:
+            path = self.host.save_path(
+                "导出 VIG CSV", "vig_image.csv", "CSV 文件 (*.csv)")
+            if not path:
+                return
+            payload = self.result
+            dx, dy, _ = self.host.export_origin_offset(payload['x'], payload['y'])
+            data = {
+                'X_mm': payload['x'] - dx,
+                'Y_mm': payload['y'] - dy,
+                'VIG_up_um': payload['vig_up'],
+                'VIG_low_um': payload['vig_low'],
+                'thickness_up_um': payload['t_up'],
+                'thickness_mid_um': payload['t_mid'],
+                'thickness_low_um': payload['t_low'],
+                'f_img_um': payload['f_img'],
+                'img_principle_z_um': payload['img_principle_z'],
+                'image_um': payload['image'],
+                'Resid_um': payload['resid_um'],
+            }
+            with open(path, 'w', encoding='utf-8-sig', newline='') as stream:
+                stream.write('\n'.join(self._export_metadata()) + '\n')
+                pd.DataFrame(data).to_csv(stream, index=False)
+            self.host.status(f"已导出 VIG CSV：{path}")
+        except Exception as exc:
+            QMessageBox.warning(None, "导出失败", f"VIG CSV 导出失败：{exc}")
 
     def _render_vig_report_figure(self):
         if self.result is None:
@@ -516,12 +519,18 @@ class VigImageModule:
     def export_vig_report(self):
         if self.result is None:
             return
-        path = self.host.save_path(
-            "导出 VIG 报告图", "vig_image_report.png", "PNG 图片 (*.png)")
-        if not path:
-            return
-        figure = self._render_vig_report_figure()
-        figure.savefig(
-            path, dpi=180, facecolor='white', bbox_inches='tight', pad_inches=0.2)
-        plt.close(figure)
-        self.host.status(f"已导出 VIG 报告图：{path}")
+        figure = None
+        try:
+            path = self.host.save_path(
+                "导出 VIG 报告图", "vig_image_report.png", "PNG 图片 (*.png)")
+            if not path:
+                return
+            figure = self._render_vig_report_figure()
+            figure.savefig(
+                path, dpi=180, facecolor='white', bbox_inches='tight', pad_inches=0.2)
+            self.host.status(f"已导出 VIG 报告图：{path}")
+        except Exception as exc:
+            QMessageBox.warning(None, "导出失败", f"VIG 报告图导出失败：{exc}")
+        finally:
+            if figure is not None:
+                plt.close(figure)

@@ -11,7 +11,8 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import numpy as np
 import pandas as pd
 from PyQt6.QtCore import QSettings
-from PyQt6.QtWidgets import QApplication, QFileDialog
+from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from matplotlib.figure import Figure
 
 from surface_analyzer.app import SurfaceAnalyzerPro
 from surface_analyzer.judgment import VERDICT_TEXT
@@ -189,6 +190,22 @@ class VigExtensionModuleTests(unittest.TestCase):
         self.qt.processEvents()
         self.module.canvas.draw()
         self.assertEqual(self.module.ax.collections[0].get_cmap().name, 'turbo')
+
+    def test_export_write_errors_show_warnings_without_escaping(self):
+        self.module._apply_vig_payload(self._compute())
+        with (
+                patch.object(self.module.host, 'save_path', return_value='blocked.csv'),
+                patch('builtins.open', side_effect=PermissionError('denied')),
+                patch.object(QMessageBox, 'warning') as warning):
+            self.module.export_vig_csv()
+        self.assertIn('VIG CSV 导出失败', warning.call_args.args[2])
+
+        with (
+                patch.object(self.module.host, 'save_path', return_value='blocked.png'),
+                patch.object(Figure, 'savefig', side_effect=PermissionError('denied')),
+                patch.object(QMessageBox, 'warning') as warning):
+            self.module.export_vig_report()
+        self.assertIn('VIG 报告图导出失败', warning.call_args.args[2])
 
 
 if __name__ == '__main__':
