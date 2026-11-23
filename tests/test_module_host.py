@@ -56,8 +56,8 @@ class ModuleHostTests(unittest.TestCase):
             '    caption = "Test module"\n'
             '    export_label = "Export TEST"\n'
             '    uses_export_origin = True\n'
-            '    def __init__(self, host): self.host = host\n'
-            '    def icon(self, color): return QIcon()\n'
+            '    def __init__(self, host): self.host = host; self.icon_colors = []\n'
+            '    def icon(self, color): self.icon_colors.append(color); return QIcon()\n'
             '    def build_sidebar(self, parent): return QLabel("sidebar", parent)\n'
             '    def build_panel(self): return QWidget()\n'
             '    def export_actions(self): return [("Export", lambda: None, False)]\n'
@@ -100,6 +100,13 @@ class ModuleHostTests(unittest.TestCase):
             self.assertEqual(len(window.module_buttons), 4)
             window.module_buttons[3].click()
             self.qt.processEvents()
+            self.assertTrue(window.module_buttons[3].isCheckable())
+            self.assertEqual(
+                [index for index, button in enumerate(window.module_buttons)
+                 if button.isChecked()],
+                [3])
+            self.assertEqual(
+                window._extension_modules[0].icon_colors[-1], '#286b9f')
             self.assertEqual(window.module_caption.text(), 'Test module')
             self.assertEqual(window.right_stack.currentIndex(), 3)
             dialog = ExtensionDialog(

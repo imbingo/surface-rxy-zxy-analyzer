@@ -2096,7 +2096,8 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         button.setText(descriptor['label'])
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         bind_icon(button, lambda item=descriptor: item['icon']('#606974'))
-        button.setIconSize(QSize(26, 26))
+        button.setIconSize(QSize(24, 24))
+        button.setCheckable(True)
         button.setAutoExclusive(True)
         button.setFixedSize(64, 76)
         button.clicked.connect(

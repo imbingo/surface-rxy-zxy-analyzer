@@ -127,6 +127,24 @@ class VigExtensionModuleTests(unittest.TestCase):
             self.module.export_vig_csv()
             self.module.export_vig_report()
         self.assertTrue(report_path.is_file())
+        report = self.module._render_vig_report_figure()
+        report.canvas.draw()
+        map_axis = next(axis for axis in report.axes
+                        if axis.get_title() == 'VIG 像面 image 分布')
+        colorbar_axis = next(axis for axis in report.axes
+                             if axis.get_ylabel() == 'image (µm)')
+        self.assertAlmostEqual(
+            map_axis.get_position().height,
+            colorbar_axis.get_position().height,
+            delta=0.01)
+        report_text = '\n'.join(
+            [axis.get_title() for axis in report.axes]
+            + [text.get_text() for axis in report.axes for text in axis.texts])
+        for expected in (
+                'VIG 像面报告', 'V5.0.6', 'vig-image', '1.0.0',
+                'two.csv', 'three.csv', 'XY 匹配容差', '匹配摘要',
+                '判定', '参与计算 12 点', 'Rx', 'P97/2'):
+            self.assertIn(expected, report_text)
         text = csv_path.read_text(encoding='utf-8-sig')
         self.assertIn('# 导出坐标原点: 有效点左下角归零', text)
         data = pd.read_csv(csv_path, comment='#', encoding='utf-8-sig')

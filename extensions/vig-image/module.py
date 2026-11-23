@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
@@ -20,6 +24,9 @@ from surface_analyzer.theme import is_dark
 from surface_analyzer.workers import TaskCancelled
 
 from .engine import compute_vig_image
+
+_EXTENSION_MANIFEST = json.loads(
+    Path(__file__).with_name('extension.json').read_text(encoding='utf-8'))
 
 
 class VigImageModule:
@@ -71,9 +78,6 @@ class VigImageModule:
         layout = QVBoxLayout(root)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(10)
-        title = QLabel("数据层")
-        title.setObjectName('stepTitle')
-        layout.addWidget(title)
         note = QLabel(
             "VIG_up = 三层 − 两层 − t_up；VIG_low = 两层 − t_mid − t_low（µm）。"
             "在单层页处理好数据后写入。")
@@ -129,6 +133,9 @@ class VigImageModule:
             spin.setFixedWidth(88)
             row.addWidget(spin)
             self.thickness_spins[key] = spin
+            group.layout().addLayout(row)
+            row = QHBoxLayout()
+            row.setSpacing(6)
         set_button = QPushButton("用当前数据")
         set_button.setMinimumWidth(90)
         set_button.clicked.connect(lambda checked=False, slot=key: self.write_slot(slot))
@@ -431,6 +438,75 @@ class VigImageModule:
             pd.DataFrame(data).to_csv(stream, index=False)
         self.host.status(f"已导出 VIG CSV：{path}")
 
+    def _render_vig_report_figure(self):
+        if self.result is None:
+            raise ValueError("暂无有效 VIG 像面结果。")
+        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+        payload = self.result
+        plane = payload['plane']
+        inputs = payload['inputs']
+        thickness = payload['thickness_description']
+        judgment = self.host.judgment_lines(
+            self.key, {'rx': plane['rx'] * 1e6, 'ry': plane['ry'] * 1e6})
+        judgment_summary = self.host.judgment_summary(
+            self.key, {'rx': plane['rx'] * 1e6, 'ry': plane['ry'] * 1e6})
+        figure = Figure(
+            figsize=(12.5, 8.8), facecolor='white', constrained_layout=True)
+        FigureCanvasAgg(figure)
+        grid = figure.add_gridspec(3, 1, height_ratios=(1.55, 0.38, 5.7))
+        ax_header = figure.add_subplot(grid[0])
+        ax_metrics = figure.add_subplot(grid[1])
+        ax_map = figure.add_subplot(grid[2])
+        ax_header.axis('off')
+        ax_metrics.axis('off')
+        ax_header.text(
+            0.01, 0.98, "VIG 像面报告", va='top', ha='left',
+            fontsize=16, fontweight='bold', color='#1f2937',
+            transform=ax_header.transAxes)
+        left_lines = [
+            f"主程序 {APP_VERSION} · 扩展 {_EXTENSION_MANIFEST['id']} "
+            f"{_EXTENSION_MANIFEST['version']}",
+            f"生成时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"两层总厚 {Path(str(inputs['two_layer']['name'])).name}",
+            f"三层总厚 {Path(str(inputs['three_layer']['name'])).name}",
+            "电极厚度 " + "；".join(
+                f"{key} {thickness[key]}" for key in ('up', 'mid', 'low')),
+        ]
+        right_lines = [
+            f"XY 匹配容差 {payload['tolerance']:g} mm",
+            f"匹配摘要 {self._match_summary()}",
+            f"判定 {judgment_summary}",
+            *(judgment or ["尚未设置判定规格"]),
+        ]
+        for x, lines in ((0.01, left_lines), (0.52, right_lines)):
+            ax_header.text(
+                x, 0.78, "\n".join(lines), va='top', ha='left', fontsize=9,
+                linespacing=1.35, wrap=True, color='#334155',
+                transform=ax_header.transAxes)
+        ax_metrics.text(
+            0.01, 0.5,
+            f"参与计算 {payload['n_points']:,} 点  ·  "
+            f"Rx {plane['rx'] * 1e6:.4f} µrad  ·  "
+            f"Ry {plane['ry'] * 1e6:.4f} µrad  ·  "
+            f"RMS {plane['rms'] * 1e6:.4g} µm  ·  "
+            f"3σ {plane['std3'] * 1e6:.4g} µm  ·  "
+            f"P97/2 {plane['p97_half'] * 1e6:.4g} µm",
+            va='center', ha='left', fontsize=10, fontweight='bold',
+            color='#1f2937', transform=ax_metrics.transAxes)
+        scatter = ax_map.scatter(
+            payload['x'], payload['y'], c=payload['image'], cmap='turbo',
+            s=18, edgecolors='none', rasterized=True)
+        ax_map.set_xlabel("X (mm)")
+        ax_map.set_ylabel("Y (mm)")
+        ax_map.set_title("VIG 像面 image 分布")
+        ax_map.grid(True, color='#edf0f3')
+        ax_map.set_aspect('equal', adjustable='datalim')
+        divider = make_axes_locatable(ax_map)
+        colorbar_axis = divider.append_axes("right", size="3%", pad=0.08)
+        figure.colorbar(scatter, cax=colorbar_axis, label="image (µm)")
+        return figure
+
     def export_vig_report(self):
         if self.result is None:
             return
@@ -438,26 +514,7 @@ class VigImageModule:
             "导出 VIG 报告图", "vig_image_report.png", "PNG 图片 (*.png)")
         if not path:
             return
-        payload = self.result
-        figure = Figure(figsize=(11, 7), facecolor='white', tight_layout=True)
-        ax = figure.add_subplot(111)
-        scatter = ax.scatter(payload['x'], payload['y'], c=payload['image'],
-                             cmap='turbo', s=18)
-        figure.colorbar(scatter, ax=ax, label='image (µm)')
-        ax.set_xlabel('X (mm)')
-        ax.set_ylabel('Y (mm)')
-        ax.set_title('VIG 像面 image 分布')
-        ax.set_aspect('equal', adjustable='box')
-        plane = payload['plane']
-        judgment = self.host.judgment_lines(
-            self.key, {'rx': plane['rx'] * 1e6, 'ry': plane['ry'] * 1e6})
-        figure.text(
-            0.02, 0.02,
-            f"Rx {plane['rx'] * 1e6:.4f} µrad · Ry {plane['ry'] * 1e6:.4f} µrad · "
-            f"RMS {plane['rms'] * 1e6:.4g} µm · 3σ {plane['std3'] * 1e6:.4g} µm · "
-            f"P97/2 {plane['p97_half'] * 1e6:.4g} µm\n"
-            + "；".join(judgment + [self._match_summary()]),
-            color='#222222', fontsize=9)
+        figure = self._render_vig_report_figure()
         figure.savefig(path, dpi=180, facecolor='white')
         plt.close(figure)
         self.host.status(f"已导出 VIG 报告图：{path}")
