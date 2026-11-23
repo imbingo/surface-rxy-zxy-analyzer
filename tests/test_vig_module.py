@@ -270,6 +270,26 @@ class VigExtensionModuleTests(unittest.TestCase):
             text.get_text() for axis in report.axes for text in axis.texts)
         self.assertIn('不可直接用于产线放行', header_text)
 
+    def test_report_renders_dollar_signs_in_layer_names_literally(self):
+        package = sys.modules['_surface_module_vig-image']
+        two = dict(self.two_record, name='TwoLayer_$10_$20_$30.csv')
+        three = dict(self.three_record, name='a$b.csv')
+        payload = package.engine.compute_vig_image(
+            two, three, {'up': self.t_up, 'mid': self.t_mid, 'low': self.t_low})
+        self.module._apply_vig_payload(payload)
+
+        report = self.module._render_vig_report_figure()
+        report.canvas.draw()
+        left_text = next(
+            text for text in report.axes[0].texts
+            if text.get_gid() == 'vig-report-left-column')
+        rendered_header = left_text.get_text()
+        self.assertIn('TwoLayer_$10_$20_$30.csv', rendered_header)
+        self.assertIn('a$b.csv', rendered_header)
+        path = Path(self.temp.name) / 'literal-dollar-report.png'
+        report.savefig(path, dpi=100, facecolor='white')
+        self.assertTrue(path.is_file())
+
 
 if __name__ == '__main__':
     unittest.main()

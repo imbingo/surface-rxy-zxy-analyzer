@@ -486,7 +486,7 @@ class VigImageModule:
         ax_header.text(
             0.01, 0.98, "VIG 像面报告", va='top', ha='left',
             fontsize=16, fontweight='bold', color='#1f2937',
-            transform=ax_header.transAxes)
+            transform=ax_header.transAxes, parse_math=False)
         left_lines = [
             f"主程序 {APP_VERSION} · 扩展 {_EXTENSION_MANIFEST['id']} "
             f"{_EXTENSION_MANIFEST['version']}",
@@ -509,11 +509,13 @@ class VigImageModule:
         ]
         left_text = ax_header.text(
             0.01, 0.78, "", va='top', ha='left', fontsize=9,
-            linespacing=1.35, color='#334155', transform=ax_header.transAxes)
+            linespacing=1.35, color='#334155', transform=ax_header.transAxes,
+            parse_math=False)
         left_text.set_gid('vig-report-left-column')
         right_text = ax_header.text(
             0.52, 0.78, "", va='top', ha='left', fontsize=9,
-            linespacing=1.35, color='#334155', transform=ax_header.transAxes)
+            linespacing=1.35, color='#334155', transform=ax_header.transAxes,
+            parse_math=False)
         right_text.set_gid('vig-report-right-column')
         figure.canvas.draw()
         renderer = figure.canvas.get_renderer()
@@ -577,7 +579,7 @@ class VigImageModule:
             f"3σ {plane['std3'] * 1e6:.4g} µm  ·  "
             f"P97/2 {plane['p97_half'] * 1e6:.4g} µm",
             va='center', ha='left', fontsize=10, fontweight='bold',
-            color='#1f2937', transform=ax_metrics.transAxes)
+            color='#1f2937', transform=ax_metrics.transAxes, parse_math=False)
         scatter = ax_map.scatter(
             payload['x'] - dx, payload['y'] - dy,
             c=payload['image'], cmap='turbo',
