@@ -70,8 +70,12 @@ class VigImageModule:
         spin.setDecimals(decimals)
         spin.setValue(float(self.host.settings_value(key, value)))
         spin.valueChanged.connect(
-            lambda current, name=key: self.host.set_setting(name, current))
+            lambda current, name=key: self._spin_value_changed(name, current))
         return spin
+
+    def _spin_value_changed(self, key, value):
+        self.host.set_setting(key, value)
+        self._invalidate_result()
 
     def build_sidebar(self, parent):
         root = QWidget(parent)

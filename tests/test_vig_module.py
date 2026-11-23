@@ -207,6 +207,21 @@ class VigExtensionModuleTests(unittest.TestCase):
             self.module.export_vig_report()
         self.assertIn('VIG 报告图导出失败', warning.call_args.args[2])
 
+    def test_parameter_changes_invalidate_result_and_exports(self):
+        self.module._apply_vig_payload(self._compute())
+        self.assertTrue(any(ready for _, _, ready in self.module.export_actions()))
+        self.module.thickness_spins['up'].setValue(151.0)
+        self.assertIsNone(self.module.result)
+        self.assertFalse(any(ready for _, _, ready in self.module.export_actions()))
+        self.assertEqual(
+            self.settings.value('extensions/vig-image/thickness_up_um'), 151.0)
+
+        self.module._apply_vig_payload(self._compute())
+        self.module.tolerance_spin.setValue(0.02)
+        self.assertIsNone(self.module.result)
+        self.assertEqual(
+            self.settings.value('extensions/vig-image/tolerance_mm'), 0.02)
+
 
 if __name__ == '__main__':
     unittest.main()
