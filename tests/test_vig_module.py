@@ -198,14 +198,18 @@ class VigExtensionModuleTests(unittest.TestCase):
     def test_export_write_errors_show_warnings_without_escaping(self):
         self.module._apply_vig_payload(self._compute())
         with (
-                patch.object(self.module.host, 'save_path', return_value='blocked.csv'),
+                patch.object(
+                    QFileDialog, 'getSaveFileName',
+                    return_value=('blocked.csv', 'CSV')),
                 patch('builtins.open', side_effect=PermissionError('denied')),
                 patch.object(QMessageBox, 'warning') as warning):
             self.module.export_vig_csv()
         self.assertIn('VIG CSV 导出失败', warning.call_args.args[2])
 
         with (
-                patch.object(self.module.host, 'save_path', return_value='blocked.png'),
+                patch.object(
+                    QFileDialog, 'getSaveFileName',
+                    return_value=('blocked.png', 'PNG')),
                 patch.object(Figure, 'savefig', side_effect=PermissionError('denied')),
                 patch.object(QMessageBox, 'warning') as warning):
             self.module.export_vig_report()
