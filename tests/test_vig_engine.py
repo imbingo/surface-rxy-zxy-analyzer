@@ -18,6 +18,7 @@ calculate_zimg2low_from_df = engine.calculate_zimg2low_from_df
 compute_vig_image = engine.compute_vig_image
 match_by_xy = engine.match_by_xy
 process_plane_from_df = engine.process_plane_from_df
+plane_fit = engine.plane_fit
 
 GOLDEN_F_IMG_UM = np.array([
     346.8065144299187, 346.8065144299187, 370.9442358234236, 388.6758529327735,
@@ -73,6 +74,16 @@ def _golden_data():
 
 
 class VigEngineTests(unittest.TestCase):
+    def test_closed_form_recovers_small_region_tilt(self):
+        x, y = np.meshgrid(np.linspace(-0.0001, 0.0001, 3),
+                           np.linspace(-0.0001, 0.0001, 3))
+        z = engine.plane(x.ravel(), y.ravel(), -20e-6, 50e-6, 1e-6)
+
+        ry, rx, _, _ = plane_fit(x.ravel(), y.ravel(), z)
+
+        self.assertAlmostEqual(rx / 50e-6, 1.0, delta=1e-3)
+        self.assertAlmostEqual(ry / -20e-6, 1.0, delta=1e-3)
+
     def test_golden_image_and_plane_outputs_match_original_tool(self):
         frame, two, three, thickness = _golden_data()
         results = calculate_zimg2low_from_df(frame)

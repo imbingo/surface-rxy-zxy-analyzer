@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import curve_fit, least_squares
+from scipy.optimize import curve_fit
 from scipy.spatial import cKDTree
 
 
@@ -256,14 +256,10 @@ def plane(x, y, Ry, Rx, Z):
 
 
 def plane_fit(x, y, z):
-    def residual(params):
-        Ry, Rx, Z = params
-        return plane(x, y, Ry, Rx, Z) - z
-
-    initial = [0.0, 0.0, np.mean(z)]
-    res = least_squares(residual, initial)
-    Ry, Rx, Z = res.x
-    rms = np.sqrt(np.mean(res.fun ** 2))
+    design = np.column_stack((-x, y, np.ones_like(x)))
+    Ry, Rx, Z = np.linalg.lstsq(design, z, rcond=None)[0]
+    residuals = plane(x, y, Ry, Rx, Z) - z
+    rms = np.sqrt(np.mean(residuals ** 2))
     return Ry, Rx, Z, rms
 
 
