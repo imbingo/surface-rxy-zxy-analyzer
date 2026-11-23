@@ -349,8 +349,11 @@ class VigImageModule:
             scatter = self.ax.scatter(
                 self.result['x'], self.result['y'], c=self.result['image'],
                 cmap='turbo', s=16)
-            self.colorbar = self.figure.colorbar(scatter, ax=self.ax, label='image (µm)')
             self.ax.set_aspect('equal', adjustable='box')
+            divider = make_axes_locatable(self.ax)
+            colorbar_axis = divider.append_axes("right", size="3%", pad=0.08)
+            self.colorbar = self.figure.colorbar(scatter, cax=colorbar_axis)
+            self.colorbar.set_label('image (µm)')
         for spine in self.ax.spines.values():
             spine.set_color('#777777' if dark else '#555555')
         self.canvas.draw_idle()
@@ -473,11 +476,14 @@ class VigImageModule:
             "电极厚度 " + "；".join(
                 f"{key} {thickness[key]}" for key in ('up', 'mid', 'low')),
         ]
+        judgment_header = (
+            judgment_summary
+            or ("；".join(judgment) if judgment else "结果判定  尚未设置判定规格"))
         right_lines = [
             f"XY 匹配容差 {payload['tolerance']:g} mm",
             f"匹配摘要 {self._match_summary()}",
-            f"判定 {judgment_summary}",
-            *(judgment or ["尚未设置判定规格"]),
+            judgment_header,
+            *(judgment if judgment_summary else []),
         ]
         for x, lines in ((0.01, left_lines), (0.52, right_lines)):
             ax_header.text(
@@ -515,6 +521,7 @@ class VigImageModule:
         if not path:
             return
         figure = self._render_vig_report_figure()
-        figure.savefig(path, dpi=180, facecolor='white')
+        figure.savefig(
+            path, dpi=180, facecolor='white', bbox_inches='tight', pad_inches=0.2)
         plt.close(figure)
         self.host.status(f"已导出 VIG 报告图：{path}")

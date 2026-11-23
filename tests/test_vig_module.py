@@ -98,7 +98,13 @@ class VigExtensionModuleTests(unittest.TestCase):
         self.assertEqual(self.module.clear_buttons['up'].minimumWidth(), 82)
         payload = self._compute()
         self.module._apply_vig_payload(payload)
+        self.module.canvas.draw()
         self.assertEqual(payload['n_points'], 12)
+        self.assertAlmostEqual(
+            self.module.ax.get_position().height,
+            self.module.colorbar.ax.get_position().height,
+            delta=0.01)
+        self.assertEqual(self.module.colorbar.ax.get_ylabel(), 'image (µm)')
         self.assertAlmostEqual(
             float(self.module.metric_labels['rx'].text()), payload['plane']['rx'] * 1e6, places=3)
         self.assertAlmostEqual(
@@ -143,8 +149,15 @@ class VigExtensionModuleTests(unittest.TestCase):
         for expected in (
                 'VIG 像面报告', 'V5.0.6', 'vig-image', '1.0.0',
                 'two.csv', 'three.csv', 'XY 匹配容差', '匹配摘要',
-                '判定', '参与计算 12 点', 'Rx', 'P97/2'):
+                '结果判定', '参与计算 12 点', 'Rx', 'P97/2', '合格'):
             self.assertIn(expected, report_text)
+        self.window.set_judgment_spec({})
+        unset_report = self.module._render_vig_report_figure()
+        header_lines = [
+            text.get_text()
+            for text in unset_report.axes[0].texts
+        ][-1].splitlines()
+        self.assertIn('结果判定  尚未设置判定规格', header_lines)
         text = csv_path.read_text(encoding='utf-8-sig')
         self.assertIn('# 导出坐标原点: 有效点左下角归零', text)
         data = pd.read_csv(csv_path, comment='#', encoding='utf-8-sig')
