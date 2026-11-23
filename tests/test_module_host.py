@@ -122,6 +122,33 @@ class ModuleHostTests(unittest.TestCase):
             window.deleteLater()
             self.qt.processEvents()
 
+    def test_later_extension_build_failure_keeps_earlier_rail_button(self):
+        self._write_extension(
+            'a-module', self._working_source().replace('test-module', 'a-module'))
+        failing_source = self._working_source().replace('test-module', 'b-module')
+        failing_source = failing_source.replace(
+            'def build_panel(self): return QWidget()',
+            'def build_panel(self): raise RuntimeError("panel error")')
+        self._write_extension('b-module', failing_source)
+
+        window = self._new_window()
+        try:
+            self.assertEqual(window.tabs.count(), 4)
+            self.assertEqual(len(window.module_buttons), 4)
+            self.assertEqual(window.module_descriptors[3]['key'], 'a-module')
+            extension_sidebar = window.module_descriptors[3]['sidebar']
+            window.module_buttons[3].click()
+            self.qt.processEvents()
+            self.assertIs(window.tabs.currentWidget(), extension_sidebar)
+            self.assertEqual(
+                [index for index, button in enumerate(window.module_buttons)
+                 if button.isChecked()],
+                [3])
+        finally:
+            window.close()
+            window.deleteLater()
+            self.qt.processEvents()
+
     def test_invalid_import_factory_build_disabled_and_version_are_isolated(self):
         invalid = self.root / 'invalid-module'
         invalid.mkdir()

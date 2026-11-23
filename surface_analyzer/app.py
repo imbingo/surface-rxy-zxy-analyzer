@@ -2118,6 +2118,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             tab_index = None
             panel_index = None
             descriptor = None
+            rail_button = None
             try:
                 required = (
                     'key', 'label', 'caption', 'export_label', 'icon',
@@ -2161,7 +2162,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
                 self.module_descriptors.append(descriptor)
                 self._extension_modules.append(module)
                 self._module_hosts.append(host)
-                self._append_module_rail_button(descriptor, tab_index)
+                rail_button = self._append_module_rail_button(descriptor, tab_index)
             except Exception as exc:
                 host.unregister_task_controls()
                 self._unregister_extension_judgment(str(getattr(module, 'key', '')))
@@ -2178,10 +2179,11 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
                     self.right_stack.removeWidget(widget)
                     if widget is not None:
                         widget.deleteLater()
-                if len(self.module_buttons) > 3:
-                    button = self.module_buttons.pop()
-                    self.module_rail_layout.removeWidget(button)
-                    button.deleteLater()
+                if rail_button is not None:
+                    if rail_button in self.module_buttons:
+                        self.module_buttons.remove(rail_button)
+                    self.module_rail_layout.removeWidget(rail_button)
+                    rail_button.deleteLater()
                 self.module_extension_registry.unload(entry)
                 self.module_extension_registry.mark_error(
                     entry, f"模块构建失败：{exc}")
