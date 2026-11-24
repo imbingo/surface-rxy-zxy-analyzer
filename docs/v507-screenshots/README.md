@@ -13,6 +13,8 @@
 | 主控独立编辑副本 | [ROI／滤波／去倾斜](vig-secondary-roi-filter-residual.png)、[编辑后报告](vig-secondary-edited-report.png) |
 | VIG 组合 Recipe | [复用原运行确认表](vig-composite-table.png) |
 | 指标选项与空上限 | [原判定规格窗口](metric-configuration.png) |
+| 窄窗口全部指标 | [六项均分两行](single-narrow-six-metrics.png) |
+| VIG 判定规格上下文 | [打开即选中模块规格页](module-spec-context.png) |
 | 两项指标自适应 | [PV 与 3σ](single-two-metrics.png) |
 | 主控浅色／深色 | [浅色](single-light.png)、[深色](single-dark.png) |
 | 下拉列表修复 | [修改前](popup-before.png)、[浅色状态](popup-states-light.png)、[深色状态](popup-states-dark.png) |
