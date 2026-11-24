@@ -1,0 +1,15 @@
+{
+  "source": "056c8fe",
+  "platform": "Linux Qt source",
+  "data": "synthetic",
+  "formal_screens": true,
+  "partial_stage_counts": {
+    "reference": 12,
+    "common_match": 12,
+    "valid_input": 6,
+    "success": 6,
+    "unmatched": 0,
+    "invalid_input": 6,
+    "ray_failure": 0
+  }
+}
