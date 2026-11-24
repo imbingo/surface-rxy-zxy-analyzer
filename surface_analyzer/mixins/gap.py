@@ -1,6 +1,7 @@
 """Multi-layer gap registration, subtraction, and export workflow."""
 
 import re
+import json
 import copy
 from datetime import datetime
 from pathlib import Path
@@ -807,6 +808,7 @@ class GapAnalysisMixin:
                             f"# {label}: {rec['name']} | 点数 {rec['n']} | "
                             f"ΔX {rec['offset_x']:+.6f} mm | ΔY {rec['offset_y']:+.6f} mm | "
                             f"配准方式 {('固定基准' if key == 'stack' else self.GAP_REGISTRATION_MODE_LABELS.get(rec.get('registration_mode', 'none'), '未配准'))}\n")
+                handle.write('# 输入处理参数快照: ' + json.dumps(payload.get('input_traces', {}), ensure_ascii=False, default=lambda v: v.tolist() if isinstance(v,np.ndarray) else str(v)) + '\n')
                 handle.write(f"# 有效匹配点: {len(payload['z'])}\n")
                 self._gap_result_frame().to_csv(handle, index=False)
             self._show_status(f"胶厚 CSV 已导出: {path}", 6000)
@@ -851,7 +853,9 @@ class GapAnalysisMixin:
         FigureCanvasAgg(fig)
         left = [f"{key}: {record['name']}" for key, record in payload['layers'].items() if record]
         for key, trace in payload.get('input_traces', {}).items():
-            left.append(f"{key} 处理: {trace.get('pipeline', '原始状态')} / {trace.get('filter', '关闭')}")
+            single = trace.get('single_recipe') or {}
+            left.append(f"{key} 处理: {single.get('transform_pipeline', [])} / "
+                        f"{(single.get('filter') or {}).get('mode_text', '关闭')}；ROI {(single.get('roi') or {}).get('enabled', False)}")
             quality = trace.get('metric_quality') or {}
             left.append(f"{key} 质量: {quality.get('label', '')} {quality.get('warning', '')}")
         right = [f"匹配 {len(payload['z']):,} 点 / 堆叠 {payload['layers']['stack']['n']:,} 点 · "

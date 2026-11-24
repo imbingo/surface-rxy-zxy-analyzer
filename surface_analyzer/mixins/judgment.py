@@ -160,12 +160,16 @@ class JudgmentMixin:
         active = [card for key, card in self._single_cards.items() if key in visible]
         for key, card in self._single_cards.items():
             card.setVisible(key in visible)
-        active.append(self._judgment_widgets['single'][0])
+        verdict = self._judgment_widgets['single'][0]
         for card in self._metric_cards: self._metric_grid.removeWidget(card)
         width = self._results_strip.width()
-        columns = min(len(active), max(1, width // 150))
+        columns = min(len(active) + 1, max(2, width // 150))
         for col in range(len(self._metric_cards)): self._metric_grid.setColumnStretch(col, 0)
-        for index, card in enumerate(active): self._metric_grid.addWidget(card, index // columns, index % columns)
+        metric_columns = max(1, columns - 1)
+        rows = max(1, (len(active) + metric_columns - 1) // metric_columns)
+        for index, card in enumerate(active):
+            self._metric_grid.addWidget(card, index // metric_columns, index % metric_columns)
+        self._metric_grid.addWidget(verdict, 0, columns - 1, rows, 1)
         for col in range(columns): self._metric_grid.setColumnStretch(col, 1)
         self._metric_columns = columns
 

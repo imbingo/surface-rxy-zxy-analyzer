@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
@@ -269,8 +270,16 @@ class VigImageModule:
     def compute_snapshot(self, records, config, progress=lambda value,text: None, check_cancel=lambda: None):
         thickness = {key: (records[key] if config['electrodes'][key]['mode'] == 'file'
                     else config['electrodes'][key]['value_um']) for key in ('up','mid','low')}
-        return compute_vig_image(records['two'], records['three'], thickness,
+        payload = compute_vig_image(records['two'], records['three'], thickness,
             tolerance_mm=config['calculation']['tolerance_mm'], progress=progress, check_cancel=check_cancel)
+        return self._trace_payload(payload, records)
+
+    @staticmethod
+    def _trace_payload(payload, records):
+        payload['input_traces'] = {key: {field: deepcopy(record.get(field)) for field in
+            ('name','single_recipe','metric_quality','import_info','source_path')}
+            for key,record in records.items() if record is not None}
+        return payload
 
     def calculate_vig(self):
         if self.slots['two'] is None or self.slots['three'] is None:
@@ -301,10 +310,11 @@ class VigImageModule:
             def check_cancel():
                 if cancel_event.is_set():
                     raise TaskCancelled()
-            return compute_vig_image(
+            payload = compute_vig_image(
                 self.slots['two'], self.slots['three'], thickness,
                 tolerance_mm=self.tolerance_spin.value(),
                 progress=progress, check_cancel=check_cancel)
+            return self._trace_payload(payload, self.slots)
 
         def success(payload):
             self._task_running = False
@@ -380,7 +390,7 @@ class VigImageModule:
             quality=payload.get('metric_quality', {}),
             metadata={'inputs': payload['inputs'], 'image_unit': 'µm', 'secondary_scale_to_mm': .001,
                       'coordinate_sign': '保留 image 原始符号；VIG 模块原拟合使用 -image，单层使用当前 Z，各自口径不改',
-                      'slot_parameters': {k: (v or {}).get('single_recipe') for k,v in self.slots.items()}, 'n_errors': payload.get('n_errors', 0),
+                      'slot_parameters': {k: v.get('single_recipe') for k,v in payload.get('input_traces', {}).items()}, 'n_errors': payload.get('n_errors', 0),
                       'errors': payload.get('errors', []), 'tolerance': payload['tolerance'],
                       'thickness_description': payload['thickness_description']})
         return True
@@ -454,6 +464,7 @@ class VigImageModule:
             f"# XY 匹配容差: {payload['tolerance']:g} mm",
             f"# 匹配报告: {payload['match_reports']}",
             f"# 失败点数: {payload.get('n_errors', 0)}",
+            "# 输入处理参数快照: " + json.dumps(payload.get('input_traces', {}), ensure_ascii=False, default=lambda v: v.tolist() if isinstance(v,np.ndarray) else str(v)),
             f"# 错误详情: {json.dumps(payload.get('errors', []), ensure_ascii=False)}",
             f"# Rx: {plane['rx'] * 1e6:.9g} µrad ({plane['rx'] * 1e3:.9g} mrad)",
             f"# Ry: {plane['ry'] * 1e6:.9g} µrad ({plane['ry'] * 1e3:.9g} mrad)",
@@ -539,6 +550,11 @@ class VigImageModule:
                 f"{key} {thickness[key]}" for key in ('up', 'mid', 'low')),
             f"导出坐标原点 {origin_line}",
         ]
+        for key, trace in payload.get('input_traces', {}).items():
+            single = trace.get('single_recipe') or {}
+            left_lines.append(f"{key} 参数: 单位 {single.get('units', {})}；变换 {single.get('transform_pipeline', [])}；"
+                              f"滤波 {(single.get('filter') or {}).get('mode_text', '关闭')}；"
+                              f"ROI {(single.get('roi') or {}).get('enabled', False)}")
         judgment_header = (
             judgment_summary
             or ("；".join(judgment) if judgment else "结果判定  尚未设置判定规格"))

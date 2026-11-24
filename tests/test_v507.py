@@ -21,7 +21,8 @@ from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 from surface_analyzer.app import SurfaceAnalyzerPro
 from surface_analyzer.composite_recipe import build_composite, required_roles, validate_composite, validate_group, scan_groups
 from surface_analyzer.composite_dialog import CompositeRunDialog, CompositeSaveDialog
-from surface_analyzer.composite_runner import execute_group, process_group, load_snapshot
+from surface_analyzer.composite_runner import execute_group, process_group, load_snapshot, run_groups
+from surface_analyzer.workers import TaskCancelled
 from surface_analyzer.display_metrics import display_metrics, judge_single, normalize_single_config
 from surface_analyzer.judgment import JudgmentSpecDialog
 from surface_analyzer.polynomial import fit_polynomial_surface, evaluate_polynomial_surface
@@ -245,6 +246,30 @@ class VigAcceptance(Base):
         np.testing.assert_allclose(saved['result']['image'],manual['image'])
         bad=deepcopy(recipe);bad['electrodes']['up']['value_um']=120.
         with self.assertRaises(ValueError):validate_composite(bad)
+
+    def test_vig_batch_failure_continue_missing_roles_cancel_and_timeout(self):
+        self.vig_setup()
+        recipe=self.w._compose_recipe('vig','batch',export={'csv':False,'report':False})
+        batch=self.root/'batch';batch.mkdir()
+        for name in ('01-failed','02-good','03-missing'):
+            folder=batch/name;folder.mkdir()
+            for role,label in (('two','两层'),('three','三层')):
+                if name=='03-missing' and role=='three':continue
+                shutil.copyfile(self.files[role],folder/(label+'.csv'))
+        (batch/'01-failed/两层.csv').write_text('X,Y,Z\n1,2,not-a-number\n')
+        groups=scan_groups(batch,recipe)
+        self.assertEqual(len(groups),3)
+        payload=run_groups(recipe,groups,self.root/'batch-output',timeout=90)
+        rows=payload['results']
+        self.assertEqual([r['status'] for r in rows],['failed','success','skipped'])
+        self.assertEqual(rows[0]['metrics'],{});self.assertEqual(rows[2]['metrics'],{})
+        self.assertTrue(payload['snapshot']);self.assertEqual(payload['snapshot']['module'],'vig')
+        for name,event,limit,error in [('cancel',threading.Event(),90,TaskCancelled),('timeout',threading.Event(),.01,TimeoutError)]:
+            folder=self.root/name;folder.mkdir()
+            if name=='cancel':event.set()
+            with self.assertRaises(error):
+                process_group(recipe,self.files,folder,lambda *a:None,event,timeout=limit)
+            self.assertFalse((folder/'snapshot.json').exists())
 
     def test_partial_ray_failure_is_in_ui_csv_and_report(self):
         import sys
