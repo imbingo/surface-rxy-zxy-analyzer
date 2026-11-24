@@ -115,12 +115,12 @@ class VigImageModule:
         self.btn_secondary = QPushButton('载入像面到单层二次分析')
         self.btn_secondary.clicked.connect(self.load_secondary)
         group_calc.layout().addWidget(self.btn_secondary)
-        self.btn_save_composite = QPushButton('保存组合 Recipe')
-        self.btn_save_composite.clicked.connect(lambda: self.host.save_composite_recipe('vig'))
+        self.btn_save_composite = QPushButton('批量运行')
+        self.btn_save_composite.clicked.connect(lambda: self.host.batch_from_example('vig'))
         group_calc.layout().addWidget(self.btn_save_composite)
         self.btn_run_composite = QPushButton('运行组合 Recipe / 批量运行')
         self.btn_run_composite.clicked.connect(lambda: self.host.choose_composite_recipe('vig'))
-        group_calc.layout().addWidget(self.btn_run_composite)
+        self.btn_run_composite.hide()
         layout.addWidget(group_calc)
         layout.addStretch(1)
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
@@ -209,6 +209,9 @@ class VigImageModule:
             ('rx', 'ry'),
         )
         grid.addWidget(self.judgment_card, 0, 3, 2, 1)
+        self.metric_labels['std3'].setToolTip('VIG 原定义：-image 去平面残差的总体标准差 × 3；主控 3σ 跟随所选显示面型。')
+        for key in ('rx','ry'):
+            self.metric_labels[key].setToolTip('VIG 原拟合使用 -image；主控编辑副本保留 image 原符号。')
         layout.addWidget(strip)
         plot_card = QFrame()
         plot_card.setObjectName('plotCard')
@@ -373,6 +376,11 @@ class VigImageModule:
             if coords:
                 shown = '、'.join(f"({x:.4f}, {y:.4f})" for x, y in coords[:10])
                 parts.append(f"未匹配坐标：{shown}" + ("…" if skipped > len(coords) else ""))
+        counts = self.result.get('stage_counts', {})
+        if counts:
+            parts.append('参考 → 共同匹配 → 有效输入 → 成功：' + ' → '.join(str(counts[k]) for k in ('reference','common_match','valid_input','success')))
+            if counts['success'] < counts['reference']:
+                parts.append('⚠ 部分区域可能无结果；未匹配点和失败点见诊断标记及 CSV 追溯')
         parts.append(f"计算失败 {self.result.get('n_errors', 0)} 点")
         for error in self.result.get('errors', [])[:10]:
             parts.append(f"点 {error['index']}: {error['message']}")
@@ -392,7 +400,8 @@ class VigImageModule:
                       'coordinate_sign': '保留 image 原始符号；VIG 模块原拟合使用 -image，单层使用当前 Z，各自口径不改',
                       'slot_parameters': {k: v.get('single_recipe') for k,v in payload.get('input_traces', {}).items()}, 'n_errors': payload.get('n_errors', 0),
                       'errors': payload.get('errors', []), 'tolerance': payload['tolerance'],
-                      'thickness_description': payload['thickness_description']})
+                      'thickness_description': payload['thickness_description'],
+                      'stage_counts':payload.get('stage_counts', {}), 'diagnostics':payload.get('diagnostics', [])})
         return True
 
     def _draw_result(self):
@@ -413,6 +422,13 @@ class VigImageModule:
         self.ax = axes[1]
         self.colorbar = self.figure.axes[-1]._colorbar
         self.ax.set_title('VIG 像面 image 分布')
+        diagnostics = payload.get('diagnostics', [])
+        for state, color, title in [('unmatched','#999999','未匹配'),('invalid_input','#d97706','无效间距'),('ray_failure','#c0392b','光线失败')]:
+            points = [d for d in diagnostics if d['status'] == state and np.isfinite([d['x'],d['y']]).all()]
+            if points:
+                self.ax.scatter([d['x'] for d in points],[d['y'] for d in points],c=color,marker='x',s=20,label=title)
+        if any(d['status'] != 'success' for d in diagnostics):
+            self.ax.legend(fontsize=8)
         self.canvas.draw_idle()
 
     def export_actions(self):
@@ -463,6 +479,8 @@ class VigImageModule:
             f"# 电极厚度: {payload['thickness_description']}",
             f"# XY 匹配容差: {payload['tolerance']:g} mm",
             f"# 匹配报告: {payload['match_reports']}",
+            f"# 阶段点数: {json.dumps(payload.get('stage_counts', {}), ensure_ascii=False)}",
+            f"# 点位追溯: {json.dumps(payload.get('diagnostics', []), ensure_ascii=False)}",
             f"# 失败点数: {payload.get('n_errors', 0)}",
             "# 输入处理参数快照: " + json.dumps(payload.get('input_traces', {}), ensure_ascii=False, default=lambda v: v.tolist() if isinstance(v,np.ndarray) else str(v)),
             f"# 错误详情: {json.dumps(payload.get('errors', []), ensure_ascii=False)}",

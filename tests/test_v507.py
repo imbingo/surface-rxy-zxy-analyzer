@@ -214,7 +214,7 @@ class MainAcceptance(Base):
         verdict=w._judgment_widgets['single'][0]
         self.assertEqual(w._metric_grid.getItemPosition(w._metric_grid.indexOf(verdict)),(0,3,2,1))
 
-    def test_gap_snapshot_views_and_five_graph_report_survive_new_single_data(self):
+    def test_gap_snapshot_main_report_survives_new_single_data(self):
         from surface_analyzer.mixins.gap import GapAnalysisMixin
         def record(name,z):return dict(x=self.x.copy(),y=self.y.copy(),z=np.broadcast_to(z,self.x.shape).copy(),name=name,n=len(self.x),offset_x=0.,offset_y=0.)
         stack=record('总成_'+('long_name_'*20)+'.csv',.8+.001*self.x)
@@ -226,14 +226,14 @@ class MainAcceptance(Base):
         self.load('different.csv',5.+self.x*.001)
         self.w.gap_result=payload
         fig=self.w._render_gap_report_figure();fig.canvas.draw()
-        views=[a for a in fig.axes if (a.get_gid() or '').startswith('result-')]
-        self.assertEqual(len(views),4)
-        self.assertTrue(any(a.get_title()=='XY 配准与容差匹配' for a in fig.axes))
-        xy=next(a for a in views if a.get_gid()=='result-xy')
-        np.testing.assert_allclose(xy.collections[0].get_array(),payload['z'])
+        self.assertEqual(self.w.tabs.currentIndex(),0)
+        self.assertIsNotNone(self.w.last_metrics)
+        np.testing.assert_allclose(self.w.df_raw['Z'], payload['z'])
         text='\n'.join(t.get_text() for a in fig.axes for t in a.texts)
-        self.assertNotIn('UNRELATED',text);self.assertIn('匹配率',text)
-        self.assertIn('ΔX +0.003',text);self.assertIn('最小 / 最大',text)
+        self.assertNotIn('UNRELATED',text)
+        self.assertIn('膜厚',text);self.assertIn('容差',text)
+        self.assertIn('ΔX +0.003',text)
+        self.assertFalse(any(a.get_title()=='XY 配准与容差匹配' for a in fig.axes))
         fig.clear()
 
 

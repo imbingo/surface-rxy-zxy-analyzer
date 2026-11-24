@@ -728,7 +728,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
                 'sidebar': tab_math, 'panel': gap_panel,
                 'panel_index': 2,
                 'export_actions': lambda: (
-                    ("导出膜厚报告图", self.export_gap_report, self.btn_export_gap_report.isEnabled()),
+                    ("载入膜厚结果到主控", self.load_gap_secondary, self.btn_export_gap_report.isEnabled()),
                     ("导出膜厚 CSV", self.export_gap_csv, self.btn_export_gap_csv.isEnabled()),
                 ),
                 'status_text': lambda: self._builtin_module_status('gap'),
@@ -1198,6 +1198,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self.lbl_surface_residual_metrics = SourceLabel("原始高度显示")
         self.lbl_surface_residual_metrics.setObjectName("mutedNote")
         self.lbl_surface_residual_metrics.setMaximumWidth(180)
+        display_label.setFixedWidth(display_label.sizeHint().width())
         head.addWidget(display_label)
         head.addWidget(self.cb_surface_display)
         self.cb_color_scale = NoWheelComboBox()
@@ -1206,7 +1207,9 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self.cb_color_scale.setFixedWidth(104)
         self.cb_color_scale.setToolTip('自动：有 ROI 时 XY 使用全局色标，3D/XZ/YZ 共用当前 ROI 色标；全局统一：四图使用同一全局范围。')
         self.cb_color_scale.currentIndexChanged.connect(lambda _: self.update_plots_only(preserve_view=True))
-        head.addWidget(QLabel('色标范围'))
+        color_label = QLabel('色标范围')
+        color_label.setFixedWidth(color_label.sizeHint().width())
+        head.addWidget(color_label)
         head.addWidget(self.cb_color_scale)
         cards = QGridLayout()
         cards.setSpacing(13)
@@ -1252,7 +1255,8 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             groups.append(group)
         self.lbl_surface_residual_metrics.setMaximumWidth(16777215)
         self.lbl_surface_residual_metrics.setWordWrap(False)
-        groups[2].layout().addWidget(self.lbl_surface_residual_metrics, 1)
+        groups[2].layout().addWidget(self.lbl_surface_residual_metrics)
+        groups[2].layout().addStretch(1)
         toolbar = ProjectionToolbar(groups)
         toolbar.setObjectName("viewToolbar")
         outer.addWidget(toolbar)
@@ -1948,7 +1952,8 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self.btn_export_gap_csv.clicked.connect(self.export_gap_csv)
         self.btn_export_gap_report = QPushButton("导出报告图")
         self.btn_export_gap_report.setFixedHeight(32)
-        self.btn_export_gap_report.clicked.connect(self.export_gap_report)
+        self.btn_export_gap_report.setText("载入结果到主控")
+        self.btn_export_gap_report.clicked.connect(self.load_gap_secondary)
         export_row.addWidget(self.btn_export_gap_csv)
         export_row.addWidget(self.btn_export_gap_report)
         ll.addLayout(export_row)
@@ -2353,23 +2358,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         cv.addWidget(self.gap_match_canvas, 1)
         self._add_shadow(card, blur=20, dy=3, alpha=30)
         outer.addWidget(card, 1)
-        self.gap_result_pages = QStackedWidget()
-        self.gap_result_pages.addWidget(panel)
-        result_panel = QWidget()
-        results = QVBoxLayout(result_panel)
-        self.gap_result_summary = QLabel('尚未计算膜厚')
-        self.gap_result_summary.setWordWrap(True)
-        results.addWidget(self.gap_result_summary)
-        from matplotlib.figure import Figure
-        from .theme import ThemedFigureCanvas
-        self.gap_result_figure = Figure(figsize=(10, 7), constrained_layout=True)
-        self.gap_result_canvas = ThemedFigureCanvas(self.gap_result_figure)
-        results.addWidget(self.gap_result_canvas, 1)
-        self.gap_result_pages.addWidget(result_panel)
-        self.gap_parameter_tabs.currentChanged.connect(
-            lambda index: self.gap_result_pages.setCurrentIndex(1 if index == 2 else 0))
-        self._refresh_gap_result_views()
-        return self.gap_result_pages
+        return panel
 
     def _build_parallel_right_panel(self):
         panel = QWidget()

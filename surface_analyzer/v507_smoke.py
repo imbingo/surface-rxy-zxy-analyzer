@@ -101,13 +101,23 @@ def run(extension, output):
             stack=record('总成_'+('long-source-name-'*12)+'.csv',.8+.001*x)
             base=record('单片.csv',.4+.0001*y)
             gap=GapAnalysisMixin._compute_gap_payload(stack,base,None,.01,lambda *a:None,threading.Event())
-            window.gap_result=gap;window._sync_gap_action_state()
-            figure=window._render_gap_report_figure();figure.canvas.draw()
-            assert len([a for a in figure.axes if (a.get_gid() or '').startswith('result-')]) == 4
-            figure.savefig(captures/'thickness-five-view-report.png',dpi=120);figure.clear()
-            window.tabs.setCurrentIndex(window.math_tab_index)
-            window.gap_parameter_tabs.setCurrentIndex(2);capture('thickness-results')
-            payload.update(startup_defaults=True,themes=True,window_controls=True,thickness_five_graphs=True)
+            window._apply_gap_payload(gap)
+            assert window.tabs.currentIndex() == 0
+            assert not hasattr(window, 'gap_result_figure')
+            figure=window._render_report_figure(window.current_source_name,
+                window.df_raw['X'].to_numpy(),window.df_raw['Y'].to_numpy(),window.df_raw['Z'].to_numpy(),
+                window.active_idx,window.compute_plane_metrics(window.df_raw['X'].to_numpy(),window.df_raw['Y'].to_numpy(),window.df_raw['Z'].to_numpy()),window.n_filtered,'原始状态','关闭',window.import_info,display_surface_mode='raw')
+            figure.savefig(captures/'thickness-main-report.png',dpi=120);figure.clear()
+            capture('thickness-main-copy')
+            for rec in (stack,base):
+                rec['metrics']=window.compute_plane_metrics(rec['x'],rec['y'],rec['z'])
+                rec['metric_quality']={'estimated':False,'label':'全量计算'}
+            window.parallel_base=base;window.parallel_measure=stack
+            window.parallel_result=window._compute_parallel_result()
+            figure=window._render_parallel_report_figure();figure.canvas.draw()
+            figure.savefig(captures/'parallel-report.png',dpi=120);figure.clear()
+            payload.update(parallel_report=True)
+            payload.update(startup_defaults=True,themes=True,window_controls=True,thickness_main_copy=True)
             if extension:
                 module=window._vig_composite_module()
                 files={}
@@ -126,6 +136,16 @@ def run(extension, output):
                 figure=module._render_vig_report_figure();figure.canvas.draw()
                 figure.savefig(captures/'vig-four-view-report.png',dpi=120);figure.clear()
                 window.tabs.setCurrentIndex(next(i for i,d in enumerate(window.module_descriptors) if d['key']==module.key));capture('vig-results')
+                from copy import deepcopy
+                partial_records=deepcopy(module.slots)
+                bad=partial_records['three'];mask=np.asarray(bad['x'])>0
+                bad['z'][mask]=np.asarray(partial_records['two']['z'])[mask]+np.asarray(partial_records['up']['z'])[mask]-.01
+                partial=module.compute_snapshot(partial_records,recipe)
+                assert partial['stage_counts']['invalid_input']==int(mask.sum())
+                module._apply_vig_payload(partial);capture('vig-partial-diagnostics')
+                figure=module._render_vig_report_figure();figure.savefig(captures/'vig-partial-report.png',dpi=120);figure.clear()
+                module._apply_vig_payload(result)
+                payload.update(vig_invalid_spacing=True,vig_region_diagnostics=True)
                 dialog=CompositeRunDialog(window,recipe)
                 dialog.resize(1300,800);dialog.show();application.processEvents()
                 dialog.grab().save(str(captures/'vig-composite-table.png'));dialog.close()

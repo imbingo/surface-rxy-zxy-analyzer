@@ -4692,8 +4692,12 @@ class DataIOMixin:
         self._df_version += 1
         self.current_source_name = str(name)
         q = deepcopy(quality or {})
+        q.setdefault('estimated', False)
+        q.setdefault('sampled', False)
+        q.setdefault('label', '抽样估计' if q['estimated'] else '全量计算')
+        q.setdefault('warning', '输入包含估计值，请核对结果质量。' if q['estimated'] else '')
         self.import_info = {'source_path': '', 'source_sha256': '', 'strategy': '内存结果编辑副本',
-            'source_format': 'VIG image', 'input_layout_mode': 'point_table',
+            'source_format': (metadata or {}).get('result_type', 'VIG image'), 'input_layout_mode': 'point_table',
             'import_rows': len(self.df_raw), 'valid_rows': len(self.df_raw),
             'source_valid_rows': len(self.df_raw), 'source_total_rows': len(self.df_raw),
             'sampled': bool(q.get('estimated')), 'extrema_preserved': q.get('extrema_preserved', True),

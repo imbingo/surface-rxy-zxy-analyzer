@@ -709,41 +709,26 @@ class GapAnalysisMixin:
 
     def _apply_gap_payload(self, payload):
         self.gap_result = payload
-        self.df_raw = pd.DataFrame({'Z': payload['z'], 'X': payload['x'], 'Y': payload['y']})
-        self._df_version += 1
-        self._invalidate_smart_roi_runtime_cache(
-            topology=True, masks=True, reason='Gap结果替换当前数据')
-        self.absolute_raw_df = None
-        self.current_source_name = payload['name']
-        self.lbl_source.setText(f"当前数据: {payload['name']}")
-        self.import_info = {
-            'file_size_bytes': 0, 'file_size_mb': 0.0, 'source_path': '', 'source_sha256': '',
-            'strategy': 'Gap计算结果', 'sampled': payload['sampled'],
-            'sample_method_key': 'derived_gap', 'extrema_preserved': payload['extrema_preserved'],
-            'import_rows': len(self.df_raw), 'valid_rows': len(self.df_raw),
-            'display_limit': self._display_limit(), 'large_file_mode': self._bigfile_mode_label(),
-            'notes': '由已保存的多层 XY 配准位移与容差匹配计算生成',
-            'gap_result_stale': False,
-        }
-        self._update_import_status_label()
-        self.transform_pipeline = []
-        self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
-        self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
-        self.manual_delete_operations = []
-        self._manual_delete_mask_history = []
-        self.pending_delete_operation = None
-        self.current_coeffs = None
-        self.clear_rois(update=False)
-        self.update_analysis()
         self._gap_plane_metrics(payload)
-        self.tabs.setCurrentIndex(self.math_tab_index)
-        self._on_tab_changed(self.math_tab_index)
-        self._refresh_gap_registration(preserve_view=True)
         self._sync_gap_action_state()
-        self._show_status(f"Gap 计算完成，共 {len(self.df_raw):,} 个有效匹配点。", 8000)
-        message = (f"成功配对并算出 Inner Gap\n容差设定: {payload['tolerance']} mm\n"
-                   f"成功对齐点数: {len(self.df_raw):,}\n\n匹配质量报告\n" + "\n".join(payload['reports']))
-        QMessageBox.information(self, "计算成功", message)
+        self.load_gap_secondary()
+        self._show_status(f"膜厚计算完成，已载入主控编辑副本，共 {len(payload['z']):,} 点。", 8000)
+
+    def load_gap_secondary(self):
+        payload = self.gap_result
+        if payload is None:
+            return False
+        quality = {'estimated': payload.get('sampled', False),
+                   'sampled': payload.get('sampled', False),
+                   'extrema_preserved': payload.get('extrema_preserved', True)}
+        self.load_memory_result(payload['x'], payload['y'], payload['z'],
+            name=payload['name'] + '（膜厚编辑副本）', quality=quality,
+            metadata={'result_type':'膜厚', 'inputs':payload['layers'],
+                      'input_traces':payload.get('input_traces', {}),
+                      'tolerance':payload['tolerance'], 'reports':payload['reports'],
+                      'original_points':len(payload['z'])})
+        self.import_info['source_format'] = '膜厚扣减结果'
+        return True
 
     def _gap_result_frame(self):
         payload = self.gap_result
@@ -844,77 +829,16 @@ class GapAnalysisMixin:
         self.gap_result_canvas.draw_idle()
 
     def _render_gap_report_figure(self):
+        """Compatibility API: use the ordinary main report for a fresh copy."""
         if self.gap_result is None:
-            raise ValueError('暂无有效胶厚结果。')
-        from ..result_views import draw_four_views, snapshot_report
-        from textwrap import fill
-        payload = self.gap_result
-        m = self._gap_plane_metrics(payload)
-        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
-        fig = Figure(constrained_layout=True, facecolor='white')
-        FigureCanvasAgg(fig)
-        left = [f"{key}: {record['name']}" for key, record in payload['layers'].items() if record]
-        for key, trace in payload.get('input_traces', {}).items():
-            single = trace.get('single_recipe') or {}
-            pose = ' → '.join(single.get('transform_pipeline', [])) or '原始状态'
-            roi = '启用' if (single.get('roi') or {}).get('enabled', False) else '关闭'
-            left.append(f"{key} 处理: 姿态 {pose} / 滤波 {(single.get('filter') or {}).get('mode_text', '关闭')}；ROI {roi}"
-                        if single else f'{key} 处理: 未记录可重放单层参数（内存或旧槽）')
-            quality = trace.get('metric_quality') or {}
-            left.append(f"{key} 质量: {quality.get('label', '')} {quality.get('warning', '')}")
-        right = [f"匹配 {len(payload['z']):,} 点 / 堆叠 {payload['layers']['stack']['n']:,} 点 · "
-                 f"匹配率 {len(payload['z']) / max(1, payload['layers']['stack']['n']):.2%}",
-                 f"容差 {payload['tolerance']:.6g} mm · Mean {m['mean_z']:.6g} mm",
-                 f"法向 PV {m['pv']:.6g} µm · RMS {m['rms']:.6g} µm · TTV {m['ttv']:.6g} µm",
-                 f"Rx {m['rx']:.6g} / Ry {m['ry']:.6g} µrad",
-                 judgment_summary(self.current_judgment('gap')),
-                 '全部图表来自同一原始扣减快照，不含主控后续编辑。',
-                 f"拟合点 {int(payload.get('plane_metric_count',len(payload['z']))):,}；最小 / 最大 "
-                 f"{np.min(payload['z']):.6g} / {np.max(payload['z']):.6g} mm"]
-        for key, tag in (('base1','单片 1'),('base2','单片 2')):
-            rec = payload['layers'].get(key)
-            if rec is not None:
-                right.append(f"{tag} 配准 ΔX {rec['offset_x']:+.6g} / ΔY {rec['offset_y']:+.6g} mm；"
-                             f"{self.GAP_REGISTRATION_MODE_LABELS.get(rec.get('registration_mode','none'),'未配准')}")
-        for key, tag in (('base1_distance', '单片 1'), ('base2_distance', '单片 2')):
-            distances = np.asarray(payload.get('details', {}).get(key, []), dtype=float)
-            if len(distances):
-                right.append(f"{tag} 匹配距离均值 {distances.mean()*1000:.6g} µm / RMS {np.sqrt(np.mean(distances**2))*1000:.6g} µm")
-        four, matching = snapshot_report(fig, f'多层胶厚扣减报告 ({self.APP_VERSION})', left, right, fifth=True)
-        draw_four_views(fig, payload['x'], payload['y'], payload['z'], spec=four,
-                        quantity='Inner Gap', unit='mm')
-        ax = fig.add_subplot(matching)
-        xy = payload.get('matching_xy', {})
-        # Legacy snapshots only contain matched point coordinates. Never read
-        # current slots here: they may belong to another measurement now.
-        for key, label in (('stack', '堆叠总成'), ('base1', '单片 1'), ('base2', '单片 2')):
-            rec = xy.get(key)
-            if rec is not None:
-                count = len(rec['x']);pick = np.linspace(0, count-1, min(count,35000), dtype=int)
-                ax.scatter(np.asarray(rec['x'])[pick], np.asarray(rec['y'])[pick],
-                           c=self.GAP_LAYER_COLORS[key], s=8, alpha=.5, label=label)
-        pick = np.linspace(0,len(payload['x'])-1,min(len(payload['x']),35000),dtype=int)
-        ax.scatter(np.asarray(payload['x'])[pick],np.asarray(payload['y'])[pick],s=18,
-                   facecolors='none',edgecolors=self.GAP_LAYER_COLORS['matched'],label='参与扣减点')
-        ax.set(title='XY 配准与容差匹配',xlabel='X (mm)',ylabel='Y (mm)',aspect='equal')
-        ax.legend(loc='best',fontsize=8);ax.grid(True,alpha=.2)
-        return fig
+            raise ValueError('暂无有效膜厚结果')
+        self.load_gap_secondary()
+        x,y,z = self.get_final_transformed_data(self.df_raw)
+        metrics = self.compute_plane_metrics(x[self.active_idx], y[self.active_idx], z[self.active_idx])
+        return self._render_report_figure(self.current_source_name,x,y,z,self.active_idx,
+            metrics,self.n_filtered,'原始状态','关闭',self.import_info,display_surface_mode='raw')
 
     def export_gap_report(self):
-        if self.gap_result is None:
-            QMessageBox.warning(self, "暂无结果", "请先完成容差匹配并计算胶厚。")
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "导出胶厚报告图",
-            dialog_initial_path('export', self._gap_report_default_name()),
-            "PNG 图片 (*.png);;All Files (*)")
-        if not path:
-            return
-        remember_dialog_path('export', path)
-        try:
-            fig = self._render_gap_report_figure()
-            fig.savefig(path, dpi=150)
-            self._show_status(f"胶厚报告图已导出: {path}", 6000)
-            QMessageBox.information(self, "导出成功", f"胶厚报告图已导出：\n{path}")
-        except Exception as exc:
-            QMessageBox.critical(self, "导出失败", str(exc))
+        # Legacy API forwards to the same main controls and export flow.
+        if self.load_gap_secondary():
+            self.export_report_image()

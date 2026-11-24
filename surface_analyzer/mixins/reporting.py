@@ -98,7 +98,7 @@ class ReportingMixin:
                  f"源数据统计: 有效 {valid} | 缺测 {missing:,} | 坏行 {bad:,}{topology}"]
         lines.extend(derived_trace)
         if info.get('memory_result'):
-            lines.append('内存结果编辑副本；源 VIG 结果保持不变，不可直接保存为文件型组合槽。')
+            lines.append('内存结果编辑副本；源计算结果保持不变，不可直接保存为文件型组合槽。')
             from .parallelism import ParallelismMixin
             short_text = ParallelismMixin._short_report_text
             provenance = info.get('memory_provenance', {})
@@ -106,8 +106,15 @@ class ReportingMixin:
             names = [short_text(Path(str(v.get('name', '--'))).name, 35) for v in inputs.values() if isinstance(v,dict)]
             errors = provenance.get('errors', [])
             error_text = short_text('; '.join(str(e.get('message','')) for e in errors[:2]), 80)
-            lines.append('VIG 来源: ' + ' / '.join(names[:2]) + f"；失败 {provenance.get('n_errors',0)} 点 {error_text}；完整追溯见 CSV")
-            lines.append('VIG 追溯: ' + json.dumps(provenance, ensure_ascii=False))
+            lines.append(str(provenance.get('result_type', 'VIG')) + ' 来源: ' + ' / '.join(names[:2]) + f"；失败 {provenance.get('n_errors',0)} 点 {error_text}；完整追溯见 CSV")
+            if provenance.get('result_type') == '膜厚':
+                lines.append(f"膜厚匹配：{provenance.get('original_points', 0):,} 点；容差 {provenance.get('tolerance', 0):.6g} mm")
+                for role, record in inputs.items():
+                    if role != 'stack' and record is not None:
+                        lines.append(f"配准 {role}：ΔX {record.get('offset_x',0):+.6g} / ΔY {record.get('offset_y',0):+.6g} mm")
+                for line in provenance.get('reports', []):
+                    lines.append('匹配信息：' + short_text(line, 85))
+            lines.append(str(provenance.get('result_type', 'VIG')) + ' 追溯: ' + json.dumps(provenance, ensure_ascii=False))
         if info.get('format_extension_id'):
             lines.append(f"格式扩展: {info['format_extension_id']} "
                          f"v{info.get('format_extension_version')} | "
@@ -973,7 +980,7 @@ class ReportingMixin:
                 f"导出坐标原点: 有效点左下角（X−{dx:.4f}, Y−{dy:.4f} mm）")
         import_trace = self._import_trace_text(import_info)
         if import_trace:
-            meta_lines.extend(import_trace[:4])
+            meta_lines.extend([line for line in import_trace if ' 追溯: ' not in line][:8])
         if roi_info.get('shape_lines'):
             roi_shape_text = "；".join(roi_info['shape_lines'][:4])
             if len(roi_info['shape_lines']) > 4:

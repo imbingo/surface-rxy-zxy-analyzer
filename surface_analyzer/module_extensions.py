@@ -177,6 +177,9 @@ class ModuleHost:
     def save_composite_recipe(self, module):
         return self.__window.save_composite_recipe(module)
 
+    def batch_from_example(self, module):
+        return self.__window.batch_from_example(module)
+
     def choose_composite_recipe(self, module):
         return self.__window.choose_composite_recipe(module)
 

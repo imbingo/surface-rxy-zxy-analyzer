@@ -4,7 +4,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt,QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (QMessageBox,QPushButton,QDialog,QVBoxLayout,QHBoxLayout,
-    QLabel,QPlainTextEdit,QProgressBar,QTableWidget,QTableWidgetItem,QHeaderView)
+    QDialogButtonBox,QLabel,QPlainTextEdit,QProgressBar,QTableWidget,QTableWidgetItem,QHeaderView)
 from ..composite_recipe import build_composite,validate_composite
 
 
@@ -28,15 +28,39 @@ class CompositeMixin:
             page=tabs.widget(1 if module=='parallelism' else 2)
             container=page.widget() if hasattr(page,'widget') else page
             layout=container.layout()
-            save=QPushButton('保存组合 Recipe');save.setToolTip('保存各槽写入时的独立单层参数副本')
-            save.clicked.connect(lambda checked=False,m=module:self.save_composite_recipe(m))
+            save=QPushButton('批量运行');save.setToolTip('保存各槽写入时的独立单层参数副本')
+            save.clicked.connect(lambda checked=False,m=module:self.batch_from_example(m))
             run=QPushButton('运行组合 Recipe / 批量运行')
             run.clicked.connect(lambda checked=False,m=module:self.choose_composite_recipe(m))
             layout.insertWidget(max(0,layout.count()-1),save)
-            layout.insertWidget(max(0,layout.count()-1),run)
+            run.hide()
             self._composite_save_buttons[module]=save
             self._task_controls.extend((save,run))
         self._refresh_composite_save_buttons()
+
+    def batch_from_example(self, module):
+        """Freeze per-slot settings; no library write and no manual deletion replay."""
+        from ..composite_dialog import CompositeSaveDialog
+        from ..composite_recipe import ROLE_LABELS
+        result = (self._vig_composite_module().result if module == 'vig' else
+                  self.parallel_result if module == 'parallelism' else self.gap_result)
+        if result is None:
+            QMessageBox.warning(self, '请先完成示例分析', '请先完成一组计算并确认结果，再启动批量运行。')
+            return False
+        dialog = CompositeSaveDialog(self, module)
+        dialog.setWindowTitle('批量运行 · 确认示例参数')
+        dialog.layout().insertWidget(dialog.layout().count()-1, QLabel('本次批量复用各槽参数和 ROI，不重放手动删点；不必先保存 Recipe。'))
+        dialog.deletion.hide()
+        for label in dialog.findChildren(QLabel):
+            if label.text() == '手动删点重放': label.hide()
+        dialog.name.setText({'thickness':'膜厚','parallelism':'平行度','vig':'VIG'}[module] + '当前示例')
+        dialog.buttons.button(QDialogButtonBox.StandardButton.Save).setText('下一步：确认分组')
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        recipe = deepcopy(dialog.recipe)
+        for role in recipe['roles'].values():
+            role['manual_deletion'] = {}
+        return self.open_composite_run(recipe)
 
     def _vig_composite_module(self):
         for module in self._extension_modules:

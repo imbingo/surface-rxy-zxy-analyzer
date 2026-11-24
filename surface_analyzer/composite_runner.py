@@ -176,9 +176,15 @@ def execute_group(recipe, files, output, report=lambda value,text:None):
             elif recipe['module']=='thickness':target._gap_result_frame().to_csv(path,index=False,encoding='utf-8-sig')
             else:pd.DataFrame([metrics]).to_csv(path,index=False,encoding='utf-8-sig')
             paths['csv']=str(path.resolve())
-        if recipe['export']['report']:
+        if recipe['export']['report'] and recipe['module']=='thickness':
+            target.load_gap_secondary()
+            x,y,z=target.get_final_transformed_data(target.df_raw)
+            figure=target._render_report_figure(target.current_source_name,x,y,z,target.active_idx,
+                target.compute_plane_metrics(x[target.active_idx],y[target.active_idx],z[target.active_idx]),target.n_filtered,'原始状态','关闭',target.import_info,display_surface_mode='raw')
+        elif recipe['export']['report']:
             figure=(module._render_vig_report_figure() if recipe['module']=='vig' else
                     target._render_gap_report_figure() if recipe['module']=='thickness' else target._render_parallel_report_figure())
+        if recipe['export']['report']:
             path=output/'report.png';figure.savefig(path,dpi=150);figure.clear()
             paths['report']=str(path.resolve())
         display_diagnostic=(target._registration_diagnostic(records['stack'],records['base1'],records.get('base2'),recipe['registration']['tolerance_mm']) if recipe['module']=='thickness' else None)

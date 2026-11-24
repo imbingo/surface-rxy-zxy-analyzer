@@ -53,7 +53,7 @@ class RecipeLibraryDialog(QDialog):
         row = QHBoxLayout()
         self.actions = {}
         for title, fn in [('从文件导入', self.import_files), ('保存当前参数', self.save_current),
-                          ('导出所选', self.export_selected), ('收藏 / 取消收藏', self.favorite),
+                          ('保存组合 Recipe', self.save_composite), ('导出所选', self.export_selected), ('收藏 / 取消收藏', self.favorite),
                           ('加载所选', self.load_selected)]:
             b = QPushButton(title)
             b.clicked.connect(fn)
@@ -77,6 +77,8 @@ class RecipeLibraryDialog(QDialog):
         return Path(item.data(0, Qt.ItemDataRole.UserRole)) if item else None
 
     def selection_changed(self):
+        item = self.tree.currentItem()
+        self.actions['加载所选'].setText('运行所选组合' if item and '组合 Recipe' in item.text(4) else '加载所选')
         for title in ('导出所选', '收藏 / 取消收藏', '加载所选'):
             self.actions[title].setEnabled(self.selected() is not None)
 
@@ -123,6 +125,17 @@ class RecipeLibraryDialog(QDialog):
         self.refresh()
         if failures:
             QMessageBox.warning(self, '部分 Recipe 未导入', '\n'.join(failures))
+
+    def save_composite(self):
+        from PyQt6.QtWidgets import QInputDialog
+        title, ok = QInputDialog.getItem(self, '保存组合 Recipe', '选择模块',
+            ['膜厚', '平行度', 'VIG'], 0, False)
+        if ok:
+            try:
+                self.owner.save_composite_recipe({'膜厚':'thickness','平行度':'parallelism','VIG':'vig'}[title])
+                self.refresh()
+            except ValueError as exc:
+                QMessageBox.warning(self, '组合 Recipe 不可用', str(exc))
 
     def save_current(self):
         self.owner.save_recipe_to_library()
