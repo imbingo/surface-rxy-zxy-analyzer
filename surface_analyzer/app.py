@@ -932,8 +932,13 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self._refresh_composite_save_buttons()
         self._sync_status_widgets()
         if self._pending_sigma_reanalysis:
-            self._pending_sigma_reanalysis = False
-            QTimer.singleShot(0, self.update_analysis)
+            QTimer.singleShot(0, self._resume_pending_sigma_analysis)
+
+    def _resume_pending_sigma_analysis(self):
+        if self._task_thread is not None or not self._pending_sigma_reanalysis:
+            return  # A later task cleanup will resume a still-pending request.
+        self._pending_sigma_reanalysis = False
+        self.update_analysis()
 
     def _set_system_frame_enabled(self, enabled):
         self.use_system_frame = bool(enabled)
@@ -2641,6 +2646,16 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
                 return
         self.display_surface_mode = mode
         self.display_detrended = mode != 'raw'
+        self._refresh_after_surface_change()
+
+    def _refresh_after_surface_change(self):
+        if self.cb_filter.currentIndex() == 3 and self.cb_sigma_residual.currentData() == 'follow_detrend':
+            # The chosen face is an input to this existing filter mode. Reuse
+            # the normal processing chain so a written slot and Recipe replay
+            # describe the same effective data, without changing the filter.
+            self._sigma_async_result = None
+            self.update_analysis()
+            return
         self._update_surface_display_metrics()
         # raw(mm) 与 residual(µm) 的纵轴单位和数量级不同，必须按新数据
         # 重新 autoscale；保留旧 ylim 会把绝大多数残差点裁出视野。
@@ -2682,8 +2697,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             if str(self.cb_surface_display.currentData() or 'raw') == mode:
                 self.display_surface_mode = mode
                 self.display_detrended = True
-                self._update_surface_display_metrics()
-                self.update_plots_only(preserve_view=False)
+                self._refresh_after_surface_change()
 
         def restore_selection():
             if revision != self._analysis_revision:

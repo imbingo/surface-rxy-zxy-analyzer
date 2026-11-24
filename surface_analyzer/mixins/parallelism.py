@@ -38,6 +38,9 @@ from ..judgment import judgment_summary
 
 class ParallelismMixin:
     def _current_parallel_record(self):
+        if getattr(self,'_task_thread',None) is not None or getattr(self,'_pending_sigma_reanalysis',False):
+            QMessageBox.warning(self,'单层处理尚未完成','请等待滤波或后台任务完成后再写入平行度数据槽。')
+            return None
         if self.df_raw is None or self.active_idx is None:
             QMessageBox.warning(self, "暂无数据", "请先在主页面导入并处理数据。")
             return None

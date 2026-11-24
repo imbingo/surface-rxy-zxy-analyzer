@@ -103,6 +103,8 @@ class GapAnalysisMixin:
             self._show_status(f"胶厚结果已失效：{reason}，请重新计算。", 5000)
 
     def _current_gap_record(self):
+        if getattr(self,'_task_thread',None) is not None or getattr(self,'_pending_sigma_reanalysis',False):
+            raise ValueError('单层处理尚未完成，请等待滤波或后台任务完成后再写入数据槽')
         if self.df_raw is None or self.active_idx is None or len(self.active_idx) < 3:
             raise ValueError('请先完成单层分析后写入数据槽')
         tx, ty, tz = self.get_final_transformed_data(self.df_raw)

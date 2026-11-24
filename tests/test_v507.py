@@ -161,6 +161,33 @@ class MainAcceptance(Base):
         self.assertEqual(w.cb_surface_display.currentData(),'raw')
         self.assertEqual(w.display_surface_mode,'raw')
 
+    def test_follow_sigma_face_change_is_replayable_and_unfinished_slots_are_rejected(self):
+        self.x,self.y=np.meshgrid(np.linspace(-1,1,11),np.linspace(-1,1,11))
+        self.x,self.y=self.x.ravel(),self.y.ravel()
+        z=.5+.01*self.x**2+.002*self.y**3;z[0]+=.1;z[60]+=.003
+        path=self.load('follow.csv',z);w=self.w
+        w.cb_sigma_residual.setCurrentIndex(w.cb_sigma_residual.findData('follow_detrend'))
+        w.cb_filter.setCurrentIndex(3);self.assertEqual(len(w.active_idx),120)
+        w.high_order_models[3]=fit_polynomial_surface(*w._high_order_inputs,3)
+        w.cb_surface_display.setCurrentIndex(w.cb_surface_display.findData('residual_3'))
+        self.assertEqual(w.last_sigma_summary['requested_order'],3)
+        self.assertEqual(len(w.active_idx),119)
+        record=w._current_gap_record()
+        replay=SurfaceAnalyzerPro(settings=QSettings(str(self.root/'replay.ini'),QSettings.Format.IniFormat))
+        try:
+            replay._automation_mode=True
+            replay.apply_recipe(record['single_recipe'],remap_current_data=False,show_message=False)
+            self.assertTrue(replay.load_path(path))
+            np.testing.assert_array_equal(replay.active_idx,w.active_idx)
+            np.testing.assert_allclose(replay._current_gap_record()['z'],record['z'])
+        finally:replay.close();replay.deleteLater()
+        w._pending_sigma_reanalysis=True
+        try:
+            with self.assertRaisesRegex(ValueError,'尚未完成'):w._current_gap_record()
+            with patch.object(QMessageBox,'warning') as notice:self.assertIsNone(w._current_parallel_record())
+            notice.assert_called_once()
+        finally:w._pending_sigma_reanalysis=False
+
     def test_blank_zero_hidden_limits_and_dialog(self):
         w=self.w;config=normalize_single_config({'visible':['pv','std3'],'limits':{'pv':None,'std3':0,'rx':0}})
         self.assertEqual(judge_single({'std3':0,'rx':500},config)['verdict'],'pass')
