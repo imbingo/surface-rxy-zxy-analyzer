@@ -124,6 +124,7 @@ def execute_group(recipe, files, output, report=lambda value,text:None):
         if recipe.get('calculation',{}).get('judgment'):
             target.set_judgment_spec(recipe['calculation']['judgment'],persist=False)
         if recipe['module'] == 'vig':
+            target._set_export_origin_zero_active_points(recipe['export'].get('zero_origin_active_points',False))
             report(70, '调用可选扩展现有 VIG 光线追迹')
             module = target._vig_composite_module()
             result = module.compute_snapshot(records, recipe,

@@ -233,7 +233,10 @@ class VigAcceptance(Base):
     def test_real_vig_composite_child_and_file_electrode_provenance(self):
         self.vig_setup()
         path=self.load('上电极.csv',.120);self.w.add_rot180();self.module.write_slot('up');self.files['up']=path
+        self.w._set_export_origin_zero_active_points(True)
         recipe=self.w._compose_recipe('vig','child',export={'csv':True,'report':True})
+        self.w._set_export_origin_zero_active_points(False)
+        self.assertTrue(recipe['export']['zero_origin_active_points'])
         self.assertEqual(recipe['roles']['two']['transform_pipeline'],[])
         self.assertEqual(recipe['roles']['up']['transform_pipeline'],['ROT180'])
         output=self.root/'child';output.mkdir()
@@ -241,6 +244,8 @@ class VigAcceptance(Base):
         self.assertEqual(result['status'],'success');self.assertEqual(set(result['inputs']),{'two','three','up'})
         for role in required_roles(recipe):self.assertEqual(result['inputs'][role]['single_recipe'],recipe['roles'][role])
         self.assertTrue((output/'result.csv').is_file());self.assertTrue((output/'report.png').is_file())
+        exported=pd.read_csv(output/'result.csv',comment='#')
+        self.assertAlmostEqual(exported.X_mm.min(),0.);self.assertAlmostEqual(exported.Y_mm.min(),0.)
         saved=load_snapshot(output);self.assertEqual(saved['module'],'vig')
         manual=self.module.compute_snapshot(self.module.slots,recipe)
         np.testing.assert_allclose(saved['result']['image'],manual['image'])

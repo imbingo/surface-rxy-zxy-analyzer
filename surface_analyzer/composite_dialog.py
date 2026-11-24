@@ -30,6 +30,8 @@ class CompositeSaveDialog(QDialog):
             fixed = [f"{ROLE_LABELS[key]}: {vig.thickness_spins[key].value():g} µm（固定值，无文件列）"
                      for key in ('up','mid','low') if vig.slots[key] is None]
             form.addRow(QLabel('；'.join(fixed) or '三个电极均使用文件输入'))
+            form.addRow(QLabel('保存导出原点：' + ('有效点左下角归零' if owner._export_origin_zero_active_points_enabled() else '与界面坐标一致')))
+
             role_names = ('two','three') + tuple(key for key in ('up','mid','low') if vig.slots[key] is not None)
         else:
             role_names = ('stack','base1','base2') if module=='thickness' else ('base','measure')

@@ -69,6 +69,8 @@ class CompositeMixin:
                 offsets={r:[float((records[r] or {}).get('offset_x',0)),float((records[r] or {}).get('offset_y',0))] for r in roles})
         vig_options = {}
         if module == 'vig':
+            export = deepcopy(export or {'csv':True,'report':True})
+            export['zero_origin_active_points'] = self._export_origin_zero_active_points_enabled()
             vig = self._vig_composite_module()
             vig_options = dict(electrodes={key: ({'mode':'file'} if records[key] is not None else
                 {'mode':'fixed','value_um':float(vig.thickness_spins[key].value())}) for key in ('up','mid','low')},
@@ -168,6 +170,7 @@ class CompositeMixin:
                 module = self._vig_composite_module()
                 module.slots = {role: records.get(role) for role in ('two','three','up','mid','low')}
                 config = payload['recipe']
+                self._set_export_origin_zero_active_points(config['export'].get('zero_origin_active_points',False))
                 for key in ('up','mid','low'):
                     if config['electrodes'][key]['mode'] == 'fixed':
                         spin = module.thickness_spins[key]

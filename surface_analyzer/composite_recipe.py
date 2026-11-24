@@ -151,6 +151,8 @@ def validate_composite(data):
     export = data.get('export',{})
     if any(type(export.get(k)) is not bool for k in ('csv','report')):
         raise ValueError('必须明确设置 CSV / 报告导出选项')
+    if 'zero_origin_active_points' in export and type(export['zero_origin_active_points']) is not bool:
+        raise ValueError('导出坐标归零设置必须为布尔值')
     calculation=data.get('calculation',{})
     if not isinstance(calculation,dict) or (calculation.get('judgment') is not None and not isinstance(calculation['judgment'],dict)):
         raise ValueError('组合计算设置无效')

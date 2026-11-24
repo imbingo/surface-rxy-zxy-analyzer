@@ -116,6 +116,7 @@ def run(extension, output):
                 files['up']=load('上电极.csv',.120);module.write_slot('up')
                 module.thickness_spins['mid'].setValue(150.)
                 module.thickness_spins['low'].setValue(80.)
+                window._set_export_origin_zero_active_points(True)
                 recipe=window._compose_recipe('vig','Frozen VIG QA',export={'csv':True,'report':True})
                 assert required_roles(recipe) == ('two','three','up')
                 result=module.compute_snapshot(module.slots,recipe)
@@ -142,6 +143,8 @@ def run(extension, output):
                 child_dir=captures/'vig-child';child_dir.mkdir(exist_ok=True)
                 child=process_group(recipe,files,child_dir,lambda *a:None,threading.Event(),timeout=120)
                 assert child['status']=='success',child
+                frame=pd.read_csv(child_dir/'result.csv',comment='#')
+                assert np.isclose(frame.X_mm.min(),0.) and np.isclose(frame.Y_mm.min(),0.)
                 saved=load_snapshot(child_dir)
                 np.testing.assert_allclose(saved['result']['image'],original)
                 payload.update(vig_loaded=True,vig_four_graphs=True,secondary_copy=True,
