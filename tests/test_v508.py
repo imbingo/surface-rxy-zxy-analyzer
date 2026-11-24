@@ -36,6 +36,12 @@ class Main508(Base):
         from surface_analyzer.data_scale import source_counts
         self.assertEqual(source_counts(w.import_info)[1].value,len(original))
         self.assertTrue(any('容差' in line for line in lines))
+        # The last successful batch snapshot follows the same main-copy route.
+        snapshot={'module':'thickness','result':p,'records':{'stack':w.data_stack,'base1':w.data_base1}}
+        w._finish_composite_run({'snapshot':snapshot,'recipe':{},'results':[], 'output_dir':str(self.root)})
+        self.assertEqual(w.tabs.currentIndex(),0)
+        np.testing.assert_array_equal(w.df_raw['Z'],original)
+        w._composite_results_dialog.close()
 
     def test_example_batch_freezes_roles_without_library_or_manual_mask(self):
         self.load('总成.csv',.8);self.w.set_memory_slot('stack')

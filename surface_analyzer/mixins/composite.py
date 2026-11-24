@@ -214,7 +214,7 @@ class CompositeMixin:
                 self.gap_result=snapshot['result'];self.spin_tol.blockSignals(True);self.spin_tol.setValue(self.gap_result['tolerance']);self.spin_tol.blockSignals(False)
                 self._update_gap_slot_labels()
                 self._refresh_gap_registration(preserve_view=False,diagnostic=snapshot.get('display_diagnostic'))
-                self._sync_gap_action_state();self.tabs.setCurrentIndex(self.math_tab_index)
+                self._sync_gap_action_state();self.load_gap_secondary()
         # The result table is also the display of successful group metrics.
         # Failed/cancelled rows contain no metric values.
         dialog=QDialog(self);dialog.setWindowTitle('组合运行结果');dialog.resize(1100,540)
