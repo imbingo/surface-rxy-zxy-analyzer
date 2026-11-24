@@ -1005,9 +1005,12 @@ class ReportingMixin:
         # 底部：脚注
         fit_warning_text = ("高阶警告: " + "；".join(high_order_warnings) + "\n"
                             if high_order_warnings else "")
+        pv_note = ('PV 为相对最佳拟合平面的法向残差极差，仅去倾斜、未去曲率。'
+                   if display_surface_mode == 'raw' else
+                   'PV 为当前显示残差 Z 的极差，不再次去平面；Rx/Ry 也基于当前显示 Z。')
         foot_text = (f"警告: {quality['warning']}\n" if quality['warning'] else "") + fit_warning_text + (
                      "注: Rx≈+dZ/dY, Ry≈-dZ/dX，符号约定需标准件校准。\n"
-                     "PV 为相对最佳拟合平面的法向残差极差，仅去倾斜、未去曲率。批量无手动删点。")
+                     + pv_note)
         ax_foot.text(0.02, 0.9, foot_text,
                      va='top', ha='left', fontsize=9, style='italic',
                      color='#b42318' if quality['warning'] or high_order_warnings else '#7f8c8d',

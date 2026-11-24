@@ -551,10 +551,16 @@ class VigImageModule:
             f"导出坐标原点 {origin_line}",
         ]
         for key, trace in payload.get('input_traces', {}).items():
-            single = trace.get('single_recipe') or {}
-            left_lines.append(f"{key} 参数: 单位 {single.get('units', {})}；变换 {single.get('transform_pipeline', [])}；"
-                              f"滤波 {(single.get('filter') or {}).get('mode_text', '关闭')}；"
-                              f"ROI {(single.get('roi') or {}).get('enabled', False)}")
+            single = trace.get('single_recipe')
+            if not single:
+                left_lines.append(f"{key} 参数: 未记录可重放单层参数（内存或旧槽）；来源与质量见 CSV")
+                continue
+            units = single.get('units', {})
+            unit_text = '/'.join(str(units.get(axis+'_unit','--')) for axis in 'xyz')
+            pose = ' → '.join(single.get('transform_pipeline', [])) or '原始状态'
+            roi = '启用' if (single.get('roi') or {}).get('enabled', False) else '关闭'
+            left_lines.append(f"{key} 参数: X/Y/Z 单位 {unit_text}；姿态 {pose}；"
+                              f"滤波 {(single.get('filter') or {}).get('mode_text', '关闭')}；ROI {roi}")
         judgment_header = (
             judgment_summary
             or ("；".join(judgment) if judgment else "结果判定  尚未设置判定规格"))

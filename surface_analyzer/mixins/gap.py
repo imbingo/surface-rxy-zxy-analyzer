@@ -854,8 +854,10 @@ class GapAnalysisMixin:
         left = [f"{key}: {record['name']}" for key, record in payload['layers'].items() if record]
         for key, trace in payload.get('input_traces', {}).items():
             single = trace.get('single_recipe') or {}
-            left.append(f"{key} 处理: {single.get('transform_pipeline', [])} / "
-                        f"{(single.get('filter') or {}).get('mode_text', '关闭')}；ROI {(single.get('roi') or {}).get('enabled', False)}")
+            pose = ' → '.join(single.get('transform_pipeline', [])) or '原始状态'
+            roi = '启用' if (single.get('roi') or {}).get('enabled', False) else '关闭'
+            left.append(f"{key} 处理: 姿态 {pose} / 滤波 {(single.get('filter') or {}).get('mode_text', '关闭')}；ROI {roi}"
+                        if single else f'{key} 处理: 未记录可重放单层参数（内存或旧槽）')
             quality = trace.get('metric_quality') or {}
             left.append(f"{key} 质量: {quality.get('label', '')} {quality.get('warning', '')}")
         right = [f"匹配 {len(payload['z']):,} 点 / 堆叠 {payload['layers']['stack']['n']:,} 点 · "

@@ -4695,6 +4695,7 @@ class DataIOMixin:
         self.import_info = {'source_path': '', 'source_sha256': '', 'strategy': '内存结果编辑副本',
             'source_format': 'VIG image', 'input_layout_mode': 'point_table',
             'import_rows': len(self.df_raw), 'valid_rows': len(self.df_raw),
+            'source_valid_rows': len(self.df_raw), 'source_total_rows': len(self.df_raw),
             'sampled': bool(q.get('estimated')), 'extrema_preserved': q.get('extrema_preserved', True),
             'memory_result': True, 'memory_quality': q, 'memory_provenance': deepcopy(metadata or {})}
         self.transform_pipeline = []; self.manual_delete_operations = []
