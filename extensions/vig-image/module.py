@@ -16,7 +16,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QDoubleSpinBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
-    QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget,
+    QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget, QScrollArea, QLayout,
 )
 
 from surface_analyzer import APP_VERSION
@@ -122,13 +122,19 @@ class VigImageModule:
         group_calc.layout().addWidget(self.btn_run_composite)
         layout.addWidget(group_calc)
         layout.addStretch(1)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         controls = [self.btn_calculate, self.tolerance_spin, self.btn_secondary, self.btn_save_composite, self.btn_run_composite]
         controls.extend(self.set_buttons.values())
         controls.extend(self.clear_buttons.values())
         controls.extend(self.thickness_spins.values())
         self.host.register_task_controls(controls)
         self._sync_slot_labels()
-        return root
+        scroll = QScrollArea(parent)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(root)
+        return scroll
 
     def _group(self, title):
         group = QGroupBox(title)
@@ -212,7 +218,7 @@ class VigImageModule:
         self.hint_label = QLabel("写入两层、三层数据后开始计算。")
         self.hint_label.setWordWrap(True)
         plot_layout.addWidget(self.hint_label)
-        self.figure = Figure(figsize=(8, 6), tight_layout=True)
+        self.figure = Figure(figsize=(8, 6), constrained_layout=True)
         self.ax = None
         self.canvas = self.host.make_canvas(self.figure)
         plot_layout.addWidget(self.canvas, 1)
@@ -257,6 +263,7 @@ class VigImageModule:
                 label.setText('--')
             self.host.refresh_judgment(self.key, {})
             self._draw_result()
+        self.on_idle()
         self.host.refresh_module_chrome()
 
     def compute_snapshot(self, records, config, progress=lambda value,text: None, check_cancel=lambda: None):
@@ -340,6 +347,7 @@ class VigImageModule:
             + self._match_summary())
         self.hint_label.setToolTip(self.hint_label.text())
         self._draw_result()
+        self.on_idle()
         self.host.status(f"VIG 像面计算完成，参与计算 {payload['n_points']:,} 点")
         self.host.refresh_module_chrome()
 

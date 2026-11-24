@@ -80,6 +80,9 @@ class MainAcceptance(Base):
         self.assertTrue(any(a.toolTip()==str(path.resolve()) for a in w.recent_files_menu.actions()))
         self.assertEqual(self.settings.value('recent_files',[],type=list)[0],str(path.resolve()))
         w.load_path(path); self.assertEqual(w.recent_files.count(str(path.resolve())),1)
+        restarted=SurfaceAnalyzerPro(settings=self.settings)
+        try:self.assertEqual(restarted.recent_files[0],str(path.resolve()))
+        finally:restarted.close();restarted.deleteLater()
         extension = self.root/'SurfaceRxyZxyAnalyzer/format_extensions/sensofar-plux'
         (extension/'disabled').touch(); self.assertFalse(w._is_supported_drop_file(path))
         (extension/'disabled').unlink()
@@ -228,8 +231,10 @@ class VigAcceptance(Base):
 
     def test_real_vig_composite_child_and_file_electrode_provenance(self):
         self.vig_setup()
-        path=self.load('上电极.csv',.120);self.module.write_slot('up');self.files['up']=path
+        path=self.load('上电极.csv',.120);self.w.add_rot180();self.module.write_slot('up');self.files['up']=path
         recipe=self.w._compose_recipe('vig','child',export={'csv':True,'report':True})
+        self.assertEqual(recipe['roles']['two']['transform_pipeline'],[])
+        self.assertEqual(recipe['roles']['up']['transform_pipeline'],['ROT180'])
         output=self.root/'child';output.mkdir()
         result=process_group(recipe,{r:self.files[r] for r in required_roles(recipe)},output,lambda *a:None,threading.Event(),timeout=90)
         self.assertEqual(result['status'],'success');self.assertEqual(set(result['inputs']),{'two','three','up'})

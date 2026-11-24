@@ -19,8 +19,8 @@ def draw_four_views(figure, x, y, z, *, spec=None, quantity='Z', unit='mm'):
     x, y, z = (np.asarray(v, dtype=float) for v in (x, y, z))
     valid = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
     x, y, z = x[valid], y[valid], z[valid]
-    grid = (figure.add_gridspec(2, 2) if spec is None
-            else spec.subgridspec(2, 2))
+    grid = (figure.add_gridspec(2, 2, wspace=.25, hspace=.18) if spec is None
+            else spec.subgridspec(2, 2, wspace=.25, hspace=.18))
     axes = [figure.add_subplot(grid[0, 0], projection='3d'),
             figure.add_subplot(grid[0, 1]),
             figure.add_subplot(grid[1, 0]), figure.add_subplot(grid[1, 1])]
@@ -43,6 +43,8 @@ def draw_four_views(figure, x, y, z, *, spec=None, quantity='Z', unit='mm'):
     axes[0].scatter(px, py, pz, depthshade=False, **style)
     axes[0].set(xlabel='X (mm)', ylabel='Y (mm)', zlabel=label, proj_type='ortho')
     set_surface_box_aspect(axes[0], x, y, z * (.001 if unit == 'µm' else 1.))
+    from matplotlib.ticker import MaxNLocator
+    axes[0].zaxis.set_major_locator(MaxNLocator(nbins=3))
     axes[1].scatter(px, py, **style)
     axes[1].set(xlabel='X (mm)', ylabel='Y (mm)', aspect='equal')
     axes[2].scatter(px, pz, **style)
