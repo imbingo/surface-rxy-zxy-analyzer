@@ -88,7 +88,7 @@ def judgment_summary(result):
 class JudgmentSpecDialog(QDialog):
     """勾选需要判定的指标并填写上限；未勾选的指标不参与判定。"""
 
-    def __init__(self, parent=None, spec=None, single_config=None):
+    def __init__(self, parent=None, spec=None, single_config=None, *, initial_scope="single"):
         super().__init__(parent)
         self.setWindowTitle("判定规格")
         spec = normalize_judgment_spec(spec)
@@ -119,6 +119,8 @@ class JudgmentSpecDialog(QDialog):
             tabs.addTab(page, '单层指标与规格')
             other = QWidget(); other_layout = QVBoxLayout(other)
             tabs.addTab(other, '膜厚 / 平行度 / 扩展规格')
+            self.scope_tabs = tabs
+            tabs.setCurrentIndex(0 if initial_scope == 'single' else 1)
             layout.addWidget(tabs)
         else:
             other_layout = layout

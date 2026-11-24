@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -8,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import QApplication
 
 from surface_analyzer.app import SurfaceAnalyzerPro
-from surface_analyzer.judgment import judge_measurements, judgment_summary
+from surface_analyzer.judgment import judge_measurements, judgment_summary, JudgmentSpecDialog
 from surface_analyzer.mixins.gap import GapAnalysisMixin
 
 SPEC = {'rx': 100.0, 'ry': 100.0, 'pv': 5.0, 'ttv': 8.0, 'parallel': 50.0}
@@ -92,6 +93,18 @@ class JudgmentUiTests(unittest.TestCase):
         w.parallel_result = None
         w._update_parallel_result_ui()
         self.assertEqual(self._verdict('parallel'), '--')
+
+    def test_spec_dialog_opens_the_visible_modules_scope(self):
+        captured=[]
+        def inspect(dialog):
+            captured.append(dialog.scope_tabs.currentIndex())
+            dialog.close()
+            return 0
+        with patch.object(JudgmentSpecDialog,'exec',inspect):
+            for index in (0,self.window.math_tab_index,self.window.parallel_tab_index):
+                self.window.tabs.setCurrentIndex(index)
+                self.window.open_judgment_spec_dialog()
+        self.assertEqual(captured,[0,1,1])
 
     def test_spec_is_saved_in_recipe(self):
         self.assertEqual(self.window._current_recipe_dict()['judgment'], SPEC)

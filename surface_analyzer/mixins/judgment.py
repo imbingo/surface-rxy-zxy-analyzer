@@ -33,7 +33,8 @@ class JudgmentMixin:
         self._refresh_all_judgments()
 
     def open_judgment_spec_dialog(self):
-        dialog = JudgmentSpecDialog(self, self._judgment_spec(), self._single_metric_config())
+        scope = 'single' if self.tabs.currentIndex() == 0 else 'other'
+        dialog = JudgmentSpecDialog(self, self._judgment_spec(), self._single_metric_config(), initial_scope=scope)
         if dialog.exec():
             self.set_judgment_spec(dialog.spec(), update_single=False)
             self.set_single_metric_config(dialog.single_config())
