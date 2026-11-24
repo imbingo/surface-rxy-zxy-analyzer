@@ -49,6 +49,7 @@ class JudgmentMixin:
         if not hasattr(self, '_judgment_widgets'):
             self._judgment_widgets = {}
         self._judgment_widgets[module] = (card, label)
+        self._refresh_judgment(module, values={})
         return card
 
     def _make_extension_judgment_card(self, module, metric_labels, keys):
@@ -164,10 +165,13 @@ class JudgmentMixin:
         verdict = self._judgment_widgets['single'][0]
         for card in self._metric_cards: self._metric_grid.removeWidget(card)
         width = self._results_strip.width()
-        columns = min(len(active) + 1, max(2, width // 150))
+        capacity = max(1, min(len(active), max(2, width // 150) - 1))
+        rows = max(1, (len(active) + capacity - 1) // capacity)
+        # Balance wrapped rows: six visible metrics become 3 + 3, rather than
+        # a nearly empty second row, with the verdict always at the far right.
+        metric_columns = max(1, (len(active) + rows - 1) // rows)
+        columns = metric_columns + 1 if active else 1
         for col in range(len(self._metric_cards)): self._metric_grid.setColumnStretch(col, 0)
-        metric_columns = max(1, columns - 1)
-        rows = max(1, (len(active) + metric_columns - 1) // metric_columns)
         for index, card in enumerate(active):
             self._metric_grid.addWidget(card, index // metric_columns, index % metric_columns)
         self._metric_grid.addWidget(verdict, 0, columns - 1, rows, 1)

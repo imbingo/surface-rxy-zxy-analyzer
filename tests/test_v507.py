@@ -104,6 +104,7 @@ class MainAcceptance(Base):
             config=other._single_metric_config();self.assertEqual(len(config['visible']),6)
             self.assertTrue(all(v is None for v in config['limits'].values()))
             self.assertEqual(other.current_judgment('single')['verdict'],'unset')
+            self.assertEqual(other._judgment_widgets['single'][1].text(),'未设规格')
             self.assertTrue(all(l.text()=='--' for l in (other.lbl_z,other.lbl_pv,other.lbl_std3)))
             other._set_system_frame_enabled(True); self.assertTrue(other.use_system_frame)
             other._set_system_frame_enabled(False); self.assertFalse(other.use_system_frame)
@@ -176,6 +177,15 @@ class MainAcceptance(Base):
         visible=[c for c in w._metric_cards if not c.isHidden()]
         self.assertEqual(len(visible),3)
         self.assertTrue(all(c.width()>100 for c in visible))
+        w.set_single_metric_config(normalize_single_config());w.resize(1366,900)
+        for _ in range(3):self.qt.processEvents()
+        rows={}
+        for card in w._single_cards.values():
+            row,col,_,_=w._metric_grid.getItemPosition(w._metric_grid.indexOf(card))
+            rows[row]=rows.get(row,0)+1
+        self.assertEqual(list(rows.values()),[3,3])
+        verdict=w._judgment_widgets['single'][0]
+        self.assertEqual(w._metric_grid.getItemPosition(w._metric_grid.indexOf(verdict)),(0,3,2,1))
 
     def test_gap_snapshot_views_and_five_graph_report_survive_new_single_data(self):
         from surface_analyzer.mixins.gap import GapAnalysisMixin
