@@ -5,6 +5,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: v507-review-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   windows-validation:
     runs-on: windows-latest
