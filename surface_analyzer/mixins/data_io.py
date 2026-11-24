@@ -5031,7 +5031,7 @@ class DataIOMixin:
 
     def apply_mapping(self, preserve_analysis_settings=False):
         if self.absolute_raw_df is None:
-            self._show_status("当前无原始文件可映射（Gap 结果状态下映射已锁定）", 5000)
+            self._show_status("当前无原始文件可映射（计算／内存结果不支持重新映射）", 5000)
             return
         try:
             derived_z = self.cb_z_col.currentText() in {d['name'] for d in getattr(self, 'derived_columns', [])}
