@@ -44,6 +44,11 @@ jobs:
         run: |
           ./scripts/build_release.ps1 -Python python -SkipTests
           ./scripts/build_module_extension.ps1
+          '## Installer SHA-256' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          Get-ChildItem release/*.exe | ForEach-Object {
+            $hash=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$($_.Name): $hash" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          }
       - name: Frozen EXE module, GUI, reports and real VIG worker
         timeout-minutes: 8
         shell: pwsh
@@ -82,5 +87,8 @@ jobs:
             release/*
             v507-tests.xml
             .qa/**
+            !.qa/previous/**
+            !.qa/extension-install/previous-source/**
+            !.qa/extension-install/previous.zip
           include-hidden-files: true
           if-no-files-found: warn

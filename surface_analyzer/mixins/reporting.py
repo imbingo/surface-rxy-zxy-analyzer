@@ -99,7 +99,15 @@ class ReportingMixin:
         lines.extend(derived_trace)
         if info.get('memory_result'):
             lines.append('内存结果编辑副本；源 VIG 结果保持不变，不可直接保存为文件型组合槽。')
-            lines.append('VIG 追溯: ' + json.dumps(info.get('memory_provenance', {}), ensure_ascii=False))
+            from .parallelism import ParallelismMixin
+            short_text = ParallelismMixin._short_report_text
+            provenance = info.get('memory_provenance', {})
+            inputs = provenance.get('inputs', {})
+            names = [short_text(Path(str(v.get('name', '--'))).name, 35) for v in inputs.values() if isinstance(v,dict)]
+            errors = provenance.get('errors', [])
+            error_text = short_text('; '.join(str(e.get('message','')) for e in errors[:2]), 80)
+            lines.append('VIG 来源: ' + ' / '.join(names[:2]) + f"；失败 {provenance.get('n_errors',0)} 点 {error_text}；完整追溯见 CSV")
+            lines.append('VIG 追溯: ' + json.dumps(provenance, ensure_ascii=False))
         if info.get('format_extension_id'):
             lines.append(f"格式扩展: {info['format_extension_id']} "
                          f"v{info.get('format_extension_version')} | "

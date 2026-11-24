@@ -134,6 +134,10 @@ def run(extension, output):
                 np.testing.assert_array_equal(result['image'],original)
                 assert window._slot_single_recipe_snapshot() is None
                 capture('vig-secondary-copy')
+                tx,ty,tz=window.get_final_transformed_data(window.df_raw)
+                figure=window._render_report_figure(window.current_source_name,tx,ty,tz,
+                    window.active_idx,window.last_metrics,window.n_filtered,'原始状态','关闭',window.import_info)
+                figure.savefig(captures/'vig-secondary-report.png',dpi=100);figure.clear()
                 child_dir=captures/'vig-child';child_dir.mkdir(exist_ok=True)
                 child=process_group(recipe,files,child_dir,lambda *a:None,threading.Event(),timeout=120)
                 assert child['status']=='success',child
