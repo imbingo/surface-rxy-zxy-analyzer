@@ -134,6 +134,17 @@ class MainAcceptance(Base):
         w.set_single_metric_config(normalize_single_config())
         w.apply_recipe(spec,show_message=False)
         self.assertEqual(w._single_metric_config(),spec['single_metrics'])
+        # A reduced ROI can invalidate order 3 while the raw plane remains
+        # valid. The CSV must not label raw fallback metrics as display metrics.
+        w.manual_mask=np.zeros(len(w.df_raw),dtype=bool);w.manual_mask[[0,1,5]]=True
+        w.update_analysis();self.assertIsNotNone(w.last_metrics)
+        self.assertIsNone(w._single_display_metrics);self.assertEqual(w.lbl_std3.text(),'--')
+        path=self.root/'unavailable-display.csv'
+        with patch.object(QFileDialog,'getSaveFileName',return_value=(str(path),'CSV')),patch.object(QMessageBox,'critical') as error:
+            w.save_file()
+        error.assert_not_called()
+        line=next(line for line in path.read_text(encoding='utf-8-sig').splitlines() if line.startswith('# 当前显示面型实际指标:'))
+        self.assertEqual(json.loads(line.split(': ',1)[1]),{'display_mode':'residual_3','available':False})
 
     def test_blank_zero_hidden_limits_and_dialog(self):
         w=self.w;config=normalize_single_config({'visible':['pv','std3'],'limits':{'pv':None,'std3':0,'rx':0}})
@@ -157,6 +168,7 @@ class MainAcceptance(Base):
         def record(name,z):return dict(x=self.x.copy(),y=self.y.copy(),z=np.broadcast_to(z,self.x.shape).copy(),name=name,n=len(self.x),offset_x=0.,offset_y=0.)
         stack=record('总成_'+('long_name_'*20)+'.csv',.8+.001*self.x)
         base=record('base.csv',.4+.0001*self.y)
+        base['offset_x']=.003
         payload=GapAnalysisMixin._compute_gap_payload(stack,base,None,.01,lambda *a:None,threading.Event())
         self.w.gap_result=payload;self.w._sync_gap_action_state()
         self.w.data_stack=record('UNRELATED',1000.);self.w.data_base1=None
@@ -170,6 +182,7 @@ class MainAcceptance(Base):
         np.testing.assert_allclose(xy.collections[0].get_array(),payload['z'])
         text='\n'.join(t.get_text() for a in fig.axes for t in a.texts)
         self.assertNotIn('UNRELATED',text);self.assertIn('匹配率',text)
+        self.assertIn('ΔX +0.003',text);self.assertIn('最小 / 最大',text)
         fig.clear()
 
 

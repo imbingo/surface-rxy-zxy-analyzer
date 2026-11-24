@@ -275,7 +275,10 @@ class ReportingMixin:
             df_out['X_mm'] = fx - dx
             df_out['Y_mm'] = fy - dy
 
-            display_values = self._single_display_metrics or self.last_metrics
+            display_values = self._single_display_metrics
+            if display_values is None:
+                mode = getattr(self,'display_surface_mode','raw')
+                display_values = self.last_metrics if mode == 'raw' else {'display_mode':mode,'available':False}
             pipeline_text = " -> ".join(self.transform_pipeline) if self.transform_pipeline else "原始状态"
             filter_text = self.cb_filter.currentText()
             if self.cb_filter.currentIndex() == 2:

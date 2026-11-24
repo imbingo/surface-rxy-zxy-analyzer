@@ -866,7 +866,14 @@ class GapAnalysisMixin:
                  f"法向 PV {m['pv']:.6g} µm · RMS {m['rms']:.6g} µm · TTV {m['ttv']:.6g} µm",
                  f"Rx {m['rx']:.6g} / Ry {m['ry']:.6g} µrad",
                  judgment_summary(self.current_judgment('gap')),
-                 '全部图表来自同一原始扣减快照，不含主控后续编辑。']
+                 '全部图表来自同一原始扣减快照，不含主控后续编辑。',
+                 f"拟合点 {int(payload.get('plane_metric_count',len(payload['z']))):,}；最小 / 最大 "
+                 f"{np.min(payload['z']):.6g} / {np.max(payload['z']):.6g} mm"]
+        for key, tag in (('base1','单片 1'),('base2','单片 2')):
+            rec = payload['layers'].get(key)
+            if rec is not None:
+                right.append(f"{tag} 配准 ΔX {rec['offset_x']:+.6g} / ΔY {rec['offset_y']:+.6g} mm；"
+                             f"{self.GAP_REGISTRATION_MODE_LABELS.get(rec.get('registration_mode','none'),'未配准')}")
         for key, tag in (('base1_distance', '单片 1'), ('base2_distance', '单片 2')):
             distances = np.asarray(payload.get('details', {}).get(key, []), dtype=float)
             if len(distances):
