@@ -718,7 +718,9 @@ class GapAnalysisMixin:
         payload = self.gap_result
         if payload is None:
             return False
-        quality = {'estimated': payload.get('sampled', False),
+        estimated = bool(payload.get('sampled') or not payload.get('extrema_preserved', True) or
+                         any((t.get('metric_quality') or {}).get('estimated') for t in payload.get('input_traces', {}).values()))
+        quality = {'estimated': estimated,
                    'sampled': payload.get('sampled', False),
                    'extrema_preserved': payload.get('extrema_preserved', True)}
         self.load_memory_result(payload['x'], payload['y'], payload['z'],

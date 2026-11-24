@@ -4,12 +4,20 @@ from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 import numpy as np
-from PyQt6.QtWidgets import QDialog, QMessageBox
+from PyQt6.QtWidgets import QDialog, QMessageBox, QLabel
 from tests.test_v507 import Base
 from surface_analyzer.mixins.gap import GapAnalysisMixin
 from surface_analyzer.composite_dialog import CompositeSaveDialog
 
 class Main508(Base):
+    def test_toolbar_labels_use_current_font_without_expanding(self):
+        w=self.w;w.resize(1600,950);w.show()
+        for _ in range(4):self.qt.processEvents()
+        for label in w.findChildren(QLabel):
+            if label.text() in ('显示面型','色标范围'):
+                self.assertGreaterEqual(label.width(), label.fontMetrics().horizontalAdvance(label.text()))
+                self.assertLess(label.width(),label.sizeHint().width()+10)
+
     def test_gap_auto_main_copy_and_main_export_trace(self):
         self.load('总成.csv', .8+.001*self.x);self.w.set_memory_slot('stack')
         self.load('单片1.csv',.4+.0001*self.y);self.w.set_memory_slot('base1')
