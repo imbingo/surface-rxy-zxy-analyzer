@@ -25,6 +25,8 @@ class Main508(Base):
         lines=w._import_trace_text(w.import_info)
         self.assertTrue(any('膜厚' in x and '来源' in x for x in lines))
         self.assertIsNone(w._slot_single_recipe_snapshot())
+        from surface_analyzer.data_scale import source_counts
+        self.assertEqual(source_counts(w.import_info)[1].value,len(original))
         self.assertTrue(any('容差' in line for line in lines))
 
     def test_example_batch_freezes_roles_without_library_or_manual_mask(self):

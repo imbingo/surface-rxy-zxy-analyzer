@@ -43,6 +43,8 @@ def source_counts(info):
         valid = Count(basis='列映射已变化，原有效点统计不适用')
     if not info.get('sampled') and info.get('mapped_finite_points') is not None:
         valid = Count(int(info['mapped_finite_points']), 'exact', '全量读入后按当前映射统计有限XYZ')
+    if info.get('memory_result') and info.get('source_valid_rows') is not None:
+        valid = Count(int(info['source_valid_rows']), 'exact', '内存编辑副本有效点，不代表原始测量文件总点数')
     return records, valid, positions
 
 

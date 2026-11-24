@@ -356,15 +356,15 @@ class VigImageModule:
         self.host.refresh_judgment(self.key, judgment_values)
         quality_warning = quality.get('warning', '')
         self.hint_label.setText(
-            (f"⚠ {quality_warning}；" if quality_warning else '')
-            + self._match_summary())
-        self.hint_label.setToolTip(self.hint_label.text())
+            (f"⚠ {quality_warning}；" if quality.get('estimated') and quality_warning else '')
+            + self._match_summary(include_errors=False))
+        self.hint_label.setToolTip(self._match_summary())
         self._draw_result()
         self.on_idle()
         self.host.status(f"VIG 像面计算完成，参与计算 {payload['n_points']:,} 点")
         self.host.refresh_module_chrome()
 
-    def _match_summary(self):
+    def _match_summary(self, include_errors=True):
         if not self.result:
             return "写入两层、三层数据后开始计算。"
         parts = []
@@ -373,7 +373,7 @@ class VigImageModule:
             parts.append(
                 f"{report['label']}：匹配 {report['matched']}/{report['total_ref']} 点，跳过 {skipped} 点")
             coords = report['unmatched_ref_xy']
-            if coords:
+            if coords and include_errors:
                 shown = '、'.join(f"({x:.4f}, {y:.4f})" for x, y in coords[:10])
                 parts.append(f"未匹配坐标：{shown}" + ("…" if skipped > len(coords) else ""))
         counts = self.result.get('stage_counts', {})
@@ -382,9 +382,9 @@ class VigImageModule:
             if counts['success'] < counts['reference']:
                 parts.append('⚠ 部分区域可能无结果；未匹配点和失败点见诊断标记及 CSV 追溯')
         parts.append(f"计算失败 {self.result.get('n_errors', 0)} 点")
-        for error in self.result.get('errors', [])[:10]:
+        for error in (self.result.get('errors', [])[:3] if include_errors else []):
             parts.append(f"点 {error['index']}: {error['message']}")
-        if self.result.get('n_errors', 0) > 10:
+        if include_errors and self.result.get('n_errors', 0) > 3:
             parts.append('其余错误见 CSV 元数据和运行记录')
         return "；".join(parts)
 
