@@ -101,10 +101,12 @@ class VigExtensionModuleTests(unittest.TestCase):
         self.module._apply_vig_payload(payload)
         self.module.canvas.draw()
         self.assertEqual(payload['n_points'], 12)
-        self.assertAlmostEqual(
-            self.module.ax.get_position().height,
-            self.module.colorbar.ax.get_position().height,
-            delta=0.01)
+        views = [axis for axis in self.module.figure.axes if (axis.get_gid() or '').startswith('result-')]
+        self.assertEqual(len(views), 4)
+        expected = (float(payload['image'].min()), float(payload['image'].max()))
+        for axis in views:
+            self.assertEqual(axis.collections[0].get_clim(), expected)
+        self.assertEqual(self.module.colorbar.mappable.get_clim(), expected)
         self.assertEqual(self.module.colorbar.ax.get_ylabel(), 'image (µm)')
         self.assertAlmostEqual(
             float(self.module.metric_labels['rx'].text()), payload['plane']['rx'] * 1e6, places=3)
@@ -157,17 +159,16 @@ class VigExtensionModuleTests(unittest.TestCase):
         report_xy = np.asarray(map_axis.collections[0].get_offsets())
         self.assertAlmostEqual(report_xy[:, 0].min(), 0.0, delta=1e-12)
         self.assertAlmostEqual(report_xy[:, 1].min(), 0.0, delta=1e-12)
-        colorbar_axis = next(axis for axis in report.axes
-                             if axis.get_ylabel() == 'image (µm)')
-        self.assertAlmostEqual(
-            map_axis.get_position().height,
-            colorbar_axis.get_position().height,
-            delta=0.01)
+        colorbar_axis = next(axis for axis in report.axes if hasattr(axis, '_colorbar'))
+        self.assertEqual(colorbar_axis.get_ylabel(), 'image (µm)')
+        self.assertEqual(len([a for a in report.axes if (a.get_gid() or '').startswith('result-')]), 4)
+        self.assertGreaterEqual(colorbar_axis.get_position().y0, 0.)
+        self.assertLessEqual(colorbar_axis.get_position().y1, 1.)
         report_text = '\n'.join(
             [axis.get_title() for axis in report.axes]
             + [text.get_text() for axis in report.axes for text in axis.texts])
         for expected in (
-                'VIG 像面报告', 'V5.0.6', 'vig-image', '1.0.0',
+                'VIG 像面报告', 'V5.0.7', 'vig-image', '1.1.0',
                 'two.csv', 'three.csv', 'XY 匹配容差', '匹配摘要',
                 '导出坐标原点 有效点左下角归零', '结果判定',
                 '参与计算 12 点', 'Rx', 'P97/2', '合格'):

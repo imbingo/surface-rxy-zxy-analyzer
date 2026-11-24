@@ -46,6 +46,7 @@ class VigImageModule:
         self.clear_buttons = {}
         self.set_buttons = {}
         self._syncing = False
+        self.host_module = self
 
     def icon(self, color):
         pixmap = QPixmap(32, 32)
@@ -76,6 +77,7 @@ class VigImageModule:
     def _spin_value_changed(self, key, value):
         self.host.set_setting(key, value)
         self._invalidate_result()
+        self._sync_slot_labels()
 
     def build_sidebar(self, parent):
         root = QWidget(parent)
@@ -109,9 +111,18 @@ class VigImageModule:
         self.btn_calculate.setObjectName('accentBtn')
         self.btn_calculate.clicked.connect(self.calculate_vig)
         group_calc.layout().addWidget(self.btn_calculate)
+        self.btn_secondary = QPushButton('载入像面到单层二次分析')
+        self.btn_secondary.clicked.connect(self.load_secondary)
+        group_calc.layout().addWidget(self.btn_secondary)
+        self.btn_save_composite = QPushButton('保存组合 Recipe')
+        self.btn_save_composite.clicked.connect(lambda: self.host.save_composite_recipe('vig'))
+        group_calc.layout().addWidget(self.btn_save_composite)
+        self.btn_run_composite = QPushButton('运行组合 Recipe / 批量运行')
+        self.btn_run_composite.clicked.connect(lambda: self.host.choose_composite_recipe('vig'))
+        group_calc.layout().addWidget(self.btn_run_composite)
         layout.addWidget(group_calc)
         layout.addStretch(1)
-        controls = [self.btn_calculate, self.tolerance_spin]
+        controls = [self.btn_calculate, self.tolerance_spin, self.btn_secondary, self.btn_save_composite, self.btn_run_composite]
         controls.extend(self.set_buttons.values())
         controls.extend(self.clear_buttons.values())
         controls.extend(self.thickness_spins.values())
@@ -202,7 +213,7 @@ class VigImageModule:
         self.hint_label.setWordWrap(True)
         plot_layout.addWidget(self.hint_label)
         self.figure = Figure(figsize=(8, 6), tight_layout=True)
-        self.ax = self.figure.add_subplot(111)
+        self.ax = None
         self.canvas = self.host.make_canvas(self.figure)
         plot_layout.addWidget(self.canvas, 1)
         layout.addWidget(plot_card, 1)
@@ -247,6 +258,12 @@ class VigImageModule:
             self.host.refresh_judgment(self.key, {})
             self._draw_result()
         self.host.refresh_module_chrome()
+
+    def compute_snapshot(self, records, config, progress=lambda value,text: None, check_cancel=lambda: None):
+        thickness = {key: (records[key] if config['electrodes'][key]['mode'] == 'file'
+                    else config['electrodes'][key]['value_um']) for key in ('up','mid','low')}
+        return compute_vig_image(records['two'], records['three'], thickness,
+            tolerance_mm=config['calculation']['tolerance_mm'], progress=progress, check_cancel=check_cancel)
 
     def calculate_vig(self):
         if self.slots['two'] is None or self.slots['three'] is None:
@@ -338,36 +355,46 @@ class VigImageModule:
             if coords:
                 shown = '、'.join(f"({x:.4f}, {y:.4f})" for x, y in coords[:10])
                 parts.append(f"未匹配坐标：{shown}" + ("…" if skipped > len(coords) else ""))
+        parts.append(f"计算失败 {self.result.get('n_errors', 0)} 点")
+        for error in self.result.get('errors', [])[:10]:
+            parts.append(f"点 {error['index']}: {error['message']}")
+        if self.result.get('n_errors', 0) > 10:
+            parts.append('其余错误见 CSV 元数据和运行记录')
         return "；".join(parts)
 
-    def _draw_result(self):
-        if not hasattr(self, 'ax'):
-            return
-        dark = is_dark()
-        self.figure.patch.set_facecolor('#141415' if dark else '#ffffff')
-        if getattr(self, 'colorbar', None) is not None:
-            self.colorbar.remove()
-            self.colorbar = None
-        self.ax.clear()
-        self.ax.set_facecolor('#141415' if dark else '#ffffff')
-        self.ax.tick_params(colors='#ededed' if dark else '#333333')
-        self.ax.set_xlabel('X (mm)')
-        self.ax.set_ylabel('Y (mm)')
+    def load_secondary(self):
         if self.result is None:
-            self.ax.text(.5, .5, "暂无 VIG 像面结果", ha='center', va='center',
-                         transform=self.ax.transAxes,
-                         color='#ededed' if dark else '#555555')
-        else:
-            scatter = self.ax.scatter(
-                self.result['x'], self.result['y'], c=self.result['image'],
-                cmap='turbo', s=16)
-            self.ax.set_aspect('equal', adjustable='box')
-            divider = make_axes_locatable(self.ax)
-            colorbar_axis = divider.append_axes("right", size="3%", pad=0.08)
-            self.colorbar = self.figure.colorbar(scatter, cax=colorbar_axis)
-            self.colorbar.set_label('image (µm)')
-        for spine in self.ax.spines.values():
-            spine.set_color('#777777' if dark else '#555555')
+            return False
+        payload = self.result
+        self.host.load_result_copy(payload['x'], payload['y'],
+            np.asarray(payload['image'], dtype=float) * .001,
+            name='VIG image 二次分析（编辑副本）',
+            quality=payload.get('metric_quality', {}),
+            metadata={'inputs': payload['inputs'], 'image_unit': 'µm', 'secondary_scale_to_mm': .001,
+                      'coordinate_sign': '保留 image 原始符号；VIG 模块原拟合使用 -image，单层使用当前 Z，各自口径不改',
+                      'slot_parameters': {k: (v or {}).get('single_recipe') for k,v in self.slots.items()}, 'n_errors': payload.get('n_errors', 0),
+                      'errors': payload.get('errors', []), 'tolerance': payload['tolerance'],
+                      'thickness_description': payload['thickness_description']})
+        return True
+
+    def _draw_result(self):
+        if not hasattr(self, 'figure'):
+            return
+        from surface_analyzer.result_views import draw_four_views
+        self.figure.clear()
+        payload = self.result
+        if payload is None:
+            self.figure.text(.5, .5, '暂无 VIG 像面结果', ha='center', va='center')
+            self.ax = None
+            self.canvas.draw_idle()
+            return
+        axes = draw_four_views(self.figure,
+            [] if payload is None else payload['x'],
+            [] if payload is None else payload['y'],
+            [] if payload is None else payload['image'], quantity='image', unit='µm')
+        self.ax = axes[1]
+        self.colorbar = self.figure.axes[-1]._colorbar
+        self.ax.set_title('VIG 像面 image 分布')
         self.canvas.draw_idle()
 
     def export_actions(self):
@@ -398,6 +425,8 @@ class VigImageModule:
             control.setEnabled(not busy)
         if hasattr(self, 'tolerance_spin'):
             self.tolerance_spin.setEnabled(not busy)
+        if hasattr(self, 'btn_secondary'):
+            self.btn_secondary.setEnabled(not busy and self.result is not None)
         if hasattr(self, 'btn_calculate'):
             self.btn_calculate.setEnabled(not busy and self.slots['two'] is not None
                                           and self.slots['three'] is not None)
@@ -416,6 +445,8 @@ class VigImageModule:
             f"# 电极厚度: {payload['thickness_description']}",
             f"# XY 匹配容差: {payload['tolerance']:g} mm",
             f"# 匹配报告: {payload['match_reports']}",
+            f"# 失败点数: {payload.get('n_errors', 0)}",
+            f"# 错误详情: {json.dumps(payload.get('errors', []), ensure_ascii=False)}",
             f"# Rx: {plane['rx'] * 1e6:.9g} µrad ({plane['rx'] * 1e3:.9g} mrad)",
             f"# Ry: {plane['ry'] * 1e6:.9g} µrad ({plane['ry'] * 1e3:.9g} mrad)",
             f"# Z: {plane['z']:.12g} m",
@@ -435,27 +466,30 @@ class VigImageModule:
                 "导出 VIG CSV", "vig_image.csv", "CSV 文件 (*.csv)")
             if not path:
                 return
-            payload = self.result
-            dx, dy, _ = self.host.export_origin_offset(payload['x'], payload['y'])
-            data = {
-                'X_mm': payload['x'] - dx,
-                'Y_mm': payload['y'] - dy,
-                'VIG_up_um': payload['vig_up'],
-                'VIG_low_um': payload['vig_low'],
-                'thickness_up_um': payload['t_up'],
-                'thickness_mid_um': payload['t_mid'],
-                'thickness_low_um': payload['t_low'],
-                'f_img_um': payload['f_img'],
-                'img_principle_z_um': payload['img_principle_z'],
-                'image_um': payload['image'],
-                'Resid_um': payload['resid_um'],
-            }
-            with open(path, 'w', encoding='utf-8-sig', newline='') as stream:
-                stream.write('\n'.join(self._export_metadata()) + '\n')
-                pd.DataFrame(data).to_csv(stream, index=False)
+            self.write_csv(path)
             self.host.status(f"已导出 VIG CSV：{path}")
         except Exception as exc:
             QMessageBox.warning(None, "导出失败", f"VIG CSV 导出失败：{exc}")
+
+    def write_csv(self, path):
+        payload = self.result
+        dx, dy, _ = self.host.export_origin_offset(payload['x'], payload['y'])
+        data = {
+            'X_mm': payload['x'] - dx,
+            'Y_mm': payload['y'] - dy,
+            'VIG_up_um': payload['vig_up'],
+            'VIG_low_um': payload['vig_low'],
+            'thickness_up_um': payload['t_up'],
+            'thickness_mid_um': payload['t_mid'],
+            'thickness_low_um': payload['t_low'],
+            'f_img_um': payload['f_img'],
+            'img_principle_z_um': payload['img_principle_z'],
+            'image_um': payload['image'],
+            'Resid_um': payload['resid_um'],
+        }
+        with open(path, 'w', encoding='utf-8-sig', newline='') as stream:
+            stream.write('\n'.join(self._export_metadata()) + '\n')
+            pd.DataFrame(data).to_csv(stream, index=False)
 
     def _render_vig_report_figure(self):
         if self.result is None:
@@ -473,14 +507,14 @@ class VigImageModule:
         judgment_summary = self.host.judgment_summary(
             self.key, {'rx': plane['rx'] * 1e6, 'ry': plane['ry'] * 1e6})
         figure = Figure(
-            figsize=(12.5, 8.8), facecolor='white', constrained_layout=True)
+            figsize=(17, 10.5), facecolor='white', constrained_layout=True)
         FigureCanvasAgg(figure)
         header_height = 1.55
         grid = figure.add_gridspec(
             3, 1, height_ratios=(header_height, 0.38, 5.7))
         ax_header = figure.add_subplot(grid[0])
         ax_metrics = figure.add_subplot(grid[1])
-        ax_map = figure.add_subplot(grid[2])
+        plot_spec = grid[2]
         ax_header.axis('off')
         ax_metrics.axis('off')
         ax_header.text(
@@ -580,18 +614,10 @@ class VigImageModule:
             f"P97/2 {plane['p97_half'] * 1e6:.4g} µm",
             va='center', ha='left', fontsize=10, fontweight='bold',
             color='#1f2937', transform=ax_metrics.transAxes, parse_math=False)
-        scatter = ax_map.scatter(
-            payload['x'] - dx, payload['y'] - dy,
-            c=payload['image'], cmap='turbo',
-            s=18, edgecolors='none', rasterized=True)
-        ax_map.set_xlabel("X (mm)")
-        ax_map.set_ylabel("Y (mm)")
-        ax_map.set_title("VIG 像面 image 分布")
-        ax_map.grid(True, color='#edf0f3')
-        ax_map.set_aspect('equal', adjustable='datalim')
-        divider = make_axes_locatable(ax_map)
-        colorbar_axis = divider.append_axes("right", size="3%", pad=0.08)
-        figure.colorbar(scatter, cax=colorbar_axis, label="image (µm)")
+        from surface_analyzer.result_views import draw_four_views
+        view_axes = draw_four_views(figure, payload['x'] - dx, payload['y'] - dy,
+                        payload['image'], spec=plot_spec, quantity='image', unit='µm')
+        view_axes[1].set_title('VIG 像面 image 分布')
         return figure
 
     def export_vig_report(self):

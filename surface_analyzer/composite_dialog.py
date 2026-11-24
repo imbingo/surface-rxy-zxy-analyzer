@@ -25,7 +25,15 @@ class CompositeSaveDialog(QDialog):
         self.base2.setChecked(module=='thickness' and owner.data_base2 is not None)
         if module=='thickness':form.addRow(self.base2)
         self.keywords={}
-        for role in (('stack','base1','base2') if module=='thickness' else ('base','measure')):
+        if module == 'vig':
+            vig = owner._vig_composite_module()
+            fixed = [f"{ROLE_LABELS[key]}: {vig.thickness_spins[key].value():g} µm（固定值，无文件列）"
+                     for key in ('up','mid','low') if vig.slots[key] is None]
+            form.addRow(QLabel('；'.join(fixed) or '三个电极均使用文件输入'))
+            role_names = ('two','three') + tuple(key for key in ('up','mid','low') if vig.slots[key] is not None)
+        else:
+            role_names = ('stack','base1','base2') if module=='thickness' else ('base','measure')
+        for role in role_names:
             edit=QLineEdit(DEFAULT_KEYWORDS[role]);self.keywords[role]=edit;form.addRow(ROLE_LABELS[role]+'关键词',edit)
         self.mode=QComboBox();self.mode.addItem('保持原坐标','none');self.mode.addItem('固定 XY 偏移','fixed');self.mode.addItem('每组重新自动匹配（保存偏移为初始位置）','auto')
         if module=='thickness':
@@ -70,6 +78,10 @@ class CompositeRunDialog(QDialog):
         layout=QVBoxLayout(self)
         note=QLabel('单组：按角色逐个选择文件。批量：每个直接子文件夹为一组。双击角色单元格可手动选择／更换文件；不按排列顺序推测角色。')
         note.setWordWrap(True);layout.addWidget(note)
+        if recipe['module'] == 'vig':
+            fixed = [f"{ROLE_LABELS[k]} = {v['value_um']:g} µm（固定值）" for k,v in recipe['electrodes'].items() if v['mode']=='fixed']
+            fixed_note = QLabel('；'.join(fixed) or '上/中/下电极均为文件角色')
+            fixed_note.setWordWrap(True); layout.addWidget(fixed_note)
         row=QHBoxLayout()
         self.single=QPushButton('配置单组');self.scan=QPushButton('选择批量根目录并扫描')
         self.single.clicked.connect(self.single_group);self.scan.clicked.connect(self.scan_root)

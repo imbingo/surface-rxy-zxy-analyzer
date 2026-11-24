@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QSizeGrip, QToolButton, QStyle, QStyleOption, QStyledItemDelegate, QStyleOptionViewItem,
 )
 from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSize, QRectF, pyqtSignal
-from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
+from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen, QFont, QFontMetricsF, QPalette
 from scipy.spatial import cKDTree
 
 from .plotting import (
@@ -34,6 +34,33 @@ from .plotting import (
 )
 from .pose_icons import focus_icon
 
+
+
+class AdaptiveMetricLabel(QLabel):
+    """Render the complete metric at a size that fits, without elision.
+
+    Paint-only sizing keeps theme/acceptance color styles and the stored text
+    intact. Qt's layout may give a two-card strip much wider cards than a
+    seven-card strip; do not bake a fixed minimum width into every value.
+    """
+    def __init__(self, text='--', parent=None):
+        super().__init__(text, parent)
+        self.setMinimumWidth(0)
+        self.setMinimumHeight(30)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        font = QFont(self.font())
+        rect = self.contentsRect().adjusted(0, 1, -2, -1)
+        size = min(30, max(12, rect.height() - 2))
+        font.setPixelSize(size)
+        while size > 7 and QFontMetricsF(font).horizontalAdvance(self.text()) > rect.width():
+            size -= 1
+            font.setPixelSize(size)
+        painter.setFont(font)
+        painter.setPen(self.palette().color(QPalette.ColorRole.WindowText))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.text())
 
 
 class ProjectionToolbar(QWidget):

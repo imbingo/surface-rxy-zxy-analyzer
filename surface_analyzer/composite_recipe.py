@@ -7,12 +7,16 @@ import codecs
 COMPOSITE_TYPE = 'SurfaceAnalyzerCompositeRecipe'
 COMPOSITE_SCHEMA = 1
 ROLE_LABELS = {'stack': '堆叠总成', 'base1': '单片 1', 'base2': '单片 2',
-               'base': '基准面', 'measure': '测量面'}
+               'base': '基准面', 'measure': '测量面',
+               'two': '两层总厚', 'three': '三层总厚', 'up': '上电极', 'mid': '中电极', 'low': '下电极'}
 DEFAULT_KEYWORDS = {'stack': '总成', 'base1': '单片1', 'base2': '单片2',
-                    'base': '基准', 'measure': '测量'}
+                    'base': '基准', 'measure': '测量',
+                    'two': '两层', 'three': '三层', 'up': '上电极', 'mid': '中电极', 'low': '下电极'}
 
 
 def required_roles(recipe):
+    if recipe['module'] == 'vig':
+        return ('two', 'three') + tuple(k for k in ('up','mid','low') if recipe['electrodes'][k]['mode'] == 'file')
     if recipe['module'] == 'parallelism':
         return ('base', 'measure')
     return ('stack', 'base1', 'base2') if recipe['include_base2'] else ('stack', 'base1')
@@ -21,6 +25,7 @@ def required_roles(recipe):
 def recipe_kind(data):
     if data.get('recipe_type') != COMPOSITE_TYPE:
         return '单层 Recipe'
+    if data.get('module') == 'vig': return 'VIG 组合 Recipe'
     return '膜厚组合 Recipe' if data.get('module') == 'thickness' else '平行度组合 Recipe'
 
 
@@ -96,15 +101,34 @@ def validate_single_snapshot(data):
 def validate_composite(data):
     if not isinstance(data, dict) or data.get('recipe_type') != COMPOSITE_TYPE:
         raise ValueError('不是组合 Recipe')
-    if type(data.get('schema_version')) is not int or data['schema_version'] != COMPOSITE_SCHEMA:
-        raise ValueError('不支持的组合 Recipe schema_version（当前为 1）')
-    if data.get('module') not in ('parallelism','thickness'):
+    if type(data.get('schema_version')) is not int or data['schema_version'] not in (1, 2):
+        raise ValueError('不支持的组合 Recipe schema_version（支持 1 / 2）')
+    if data.get('module') not in ('parallelism','thickness','vig'):
         raise ValueError('组合 Recipe 模块无效')
+    if data['module'] == 'vig':
+        if data['schema_version'] != 2:
+            raise ValueError('VIG 组合 Recipe 必须使用 schema 2')
+        electrodes = data.get('electrodes')
+        if not isinstance(electrodes, dict) or set(electrodes) != {'up','mid','low'}:
+            raise ValueError('必须明确保存三个电极的文件/固定值模式')
+        for role, setting in electrodes.items():
+            if not isinstance(setting, dict) or setting.get('mode') not in ('file','fixed'):
+                raise ValueError(f'{role} 电极模式无效')
+            if setting['mode'] == 'fixed':
+                value = setting.get('value_um')
+                if isinstance(value, bool) or not isinstance(value, (int,float)) or not math.isfinite(value) or not 1 <= value <= 5000:
+                    raise ValueError(f'{role} 固定厚度必须为 1–5000 µm')
+                if set(setting) != {'mode','value_um'}: raise ValueError('固定电极不能保存文件角色配置')
+            elif set(setting) != {'mode'}: raise ValueError('文件电极不能包含固定值以降级')
+        if not isinstance(data.get('calculation'),dict): raise ValueError('VIG 计算设置必须为对象')
+        tolerance = data['calculation'].get('tolerance_mm')
+        if isinstance(tolerance, bool) or not isinstance(tolerance,(int,float)) or not math.isfinite(tolerance) or not .0001 <= tolerance <= 1.:
+            raise ValueError('VIG 匹配容差必须为 0.0001–1 mm')
     if not isinstance(data.get('name'),str) or not data['name'].strip():
         raise ValueError('组合 Recipe 名称不能为空')
     if type(data.get('include_base2')) is not bool:
         raise ValueError('组合 Recipe 必须明确保存是否参与单片 2')
-    if data['module']=='parallelism' and data['include_base2']:
+    if data['module']!='thickness' and data['include_base2']:
         raise ValueError('平行度不能配置单片 2')
     roles = required_roles(data)
     if not isinstance(data.get('roles'),dict) or set(data['roles']) != set(roles):
@@ -153,10 +177,16 @@ def validate_composite(data):
 
 
 def build_composite(module, records, name, *, include_base2=False, registration=None,
-                    keywords=None, policy=None, export=None, app_version=''):
+                    keywords=None, policy=None, export=None, app_version='', electrodes=None, calculation=None):
     result = dict(recipe_type=COMPOSITE_TYPE, schema_version=COMPOSITE_SCHEMA, module=module,
                   name=name.strip(), include_base2=bool(include_base2) if module=='thickness' else False,
                   app_version=app_version)
+    if module == 'vig':
+        if not isinstance(electrodes,dict) or set(electrodes) != {'up','mid','low'}:
+            raise ValueError('必须明确保存三个电极的文件/固定值模式')
+        if any(not isinstance(v,dict) or v.get('mode') not in ('file','fixed') for v in electrodes.values()):
+            raise ValueError('电极模式必须为 file 或 fixed')
+        result.update(schema_version=2, electrodes=deepcopy(electrodes), calculation=deepcopy(calculation or {}))
     roles = required_roles(result)
     missing = [ROLE_LABELS[r] for r in roles if not records.get(r) or not records[r].get('single_recipe')]
     if missing:

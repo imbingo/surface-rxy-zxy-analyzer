@@ -1,0 +1,86 @@
+name: V5.0.7 review build (no publication)
+on:
+  push:
+    branches: ['feat/v5.0.7-workflows']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-validation:
+    runs-on: windows-latest
+    timeout-minutes: 55
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Bounded regression
+        timeout-minutes: 12
+        run: python -m pytest -q tests/test_v507.py tests/test_vig_module.py tests/test_composite_workflow.py tests/test_gap_registration.py tests/test_theme.py tests/test_judgment.py tests/test_module_host.py tests/test_format_extensions.py --junitxml=v507-tests.xml
+      - name: Source GUI and subprocess acceptance
+        timeout-minutes: 6
+        shell: pwsh
+        run: |
+          python -m surface_analyzer --check-v507 --vig-extension extensions/vig-image --output-json .qa/source-v507.json
+          if ($LASTEXITCODE -ne 0) { Get-Content .qa/source-v507.json; exit $LASTEXITCODE }
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (!(Get-Command ISCC.exe -ErrorAction SilentlyContinue) -and !(Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Build main and optional extension
+        timeout-minutes: 18
+        shell: pwsh
+        run: |
+          ./scripts/build_release.ps1 -Python python -SkipTests
+          ./scripts/build_module_extension.ps1
+      - name: Frozen EXE module, GUI, reports and real VIG worker
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          $exe=Join-Path $PWD 'dist/SurfaceRxyZxyAnalyzer/SurfaceRxyZxyAnalyzer.exe'
+          $extension=Join-Path $PWD 'extensions/vig-image'
+          function Check([string[]]$CheckArgs,[string]$Report) {
+            $p=Start-Process $exe -ArgumentList $CheckArgs -WindowStyle Hidden -PassThru
+            if (!$p.WaitForExit(210000)) { & taskkill /PID $p.Id /T /F; throw 'Frozen check timeout' }
+            $p.Refresh()
+            if ($p.ExitCode -ne 0) { if (Test-Path $Report) { Get-Content $Report }; throw "Frozen check failed: $($p.ExitCode)" }
+            $r=Get-Content $Report -Raw | ConvertFrom-Json
+            if (!$r.ok) { throw 'Frozen check returned failure' }
+          }
+          Check @('--check-module-extension',$extension,'--output-json',"$PWD/.qa/frozen-module.json") "$PWD/.qa/frozen-module.json"
+          Check @('--check-v507','--vig-extension',$extension,'--output-json',"$PWD/.qa/frozen-v507.json") "$PWD/.qa/frozen-v507.json"
+          Check @('--check-v507','--output-json',"$PWD/.qa/frozen-without-vig.json") "$PWD/.qa/frozen-without-vig.json"
+          $r=Get-Content .qa/frozen-v507.json -Raw | ConvertFrom-Json
+          if ($r.version -ne 'V5.0.7' -or $r.source_commit -ne '${{ github.sha }}') { throw 'Frozen provenance mismatch' }
+      - name: Isolated install and overwrite upgrade
+        timeout-minutes: 12
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force .qa/previous | Out-Null
+          gh release download v5.0.5 --pattern 'SurfaceRxyZxyAnalyzer_Setup_V5.0.5.exe' --dir .qa/previous
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/verify_v507_extension_install.ps1 -WorkRoot "$PWD/.qa/extension-install"
+          ./scripts/verify_release_installation.ps1 -Setup "$PWD/release/SurfaceRxyZxyAnalyzer_Setup_V5.0.7.exe" -PreviousSetup "$PWD/.qa/previous/SurfaceRxyZxyAnalyzer_Setup_V5.0.5.exe" -WorkRoot "$PWD/.qa/installer" -ExpectedVersion V5.0.7 -ExpectedCommit '${{ github.sha }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: V5.0.7-installers-and-validation
+          path: |
+            release/*
+            v507-tests.xml
+            .qa/**
+          include-hidden-files: true
+          if-no-files-found: warn

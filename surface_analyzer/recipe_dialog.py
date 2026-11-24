@@ -31,7 +31,7 @@ class RecipeLibraryDialog(QDialog):
         row.addWidget(self.search, 1)
         row.addWidget(self.filter)
         self.type_filter = QComboBox()
-        self.type_filter.addItems(['全部类型','单层 Recipe','膜厚组合 Recipe','平行度组合 Recipe'])
+        self.type_filter.addItems(['全部类型','单层 Recipe','膜厚组合 Recipe','平行度组合 Recipe','VIG 组合 Recipe'])
         self.type_filter.currentIndexChanged.connect(self.refresh)
         row.addWidget(self.type_filter)
         layout.addLayout(row)

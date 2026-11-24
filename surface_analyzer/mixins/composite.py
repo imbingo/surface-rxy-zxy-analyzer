@@ -38,7 +38,16 @@ class CompositeMixin:
             self._task_controls.extend((save,run))
         self._refresh_composite_save_buttons()
 
+    def _vig_composite_module(self):
+        for module in self._extension_modules:
+            if module.key == 'vig-image' and hasattr(module, 'compute_snapshot'):
+                return module
+        entries = self.module_extension_registry.entries()
+        detail = '; '.join(f"{e.get('name')}: {e.get('status')}" for e in entries if e['id'] == 'vig-image')
+        raise ValueError('未安装或不兼容的 VIG 模块扩展；请安装支持 V5.0.7 的扩展。' + detail)
+
     def _composite_records(self,module):
+        if module == 'vig': return self._vig_composite_module().slots
         if module=='parallelism':return dict(base=self.parallel_base,measure=self.parallel_measure)
         return dict(stack=self.data_stack,base1=self.data_base1,base2=self.data_base2)
 
@@ -58,9 +67,15 @@ class CompositeMixin:
             roles=('base1','base2') if include_base2 else ('base1',)
             registration=dict(mode=registration_mode,tolerance_mm=float(self.spin_tol.value()),
                 offsets={r:[float((records[r] or {}).get('offset_x',0)),float((records[r] or {}).get('offset_y',0))] for r in roles})
+        vig_options = {}
+        if module == 'vig':
+            vig = self._vig_composite_module()
+            vig_options = dict(electrodes={key: ({'mode':'file'} if records[key] is not None else
+                {'mode':'fixed','value_um':float(vig.thickness_spins[key].value())}) for key in ('up','mid','low')},
+                calculation={'tolerance_mm':float(vig.tolerance_spin.value())})
         recipe=build_composite(module,records,name,include_base2=include_base2,
-            registration=registration,keywords=keywords,policy=policy,export=export,app_version=self.APP_VERSION)
-        recipe['calculation']={'judgment':deepcopy(self._judgment_spec())}
+            registration=registration,keywords=keywords,policy=policy,export=export,app_version=self.APP_VERSION,**vig_options)
+        recipe.setdefault('calculation', {})['judgment'] = deepcopy(self._judgment_spec())
         return validate_composite(recipe)
 
     def save_composite_recipe(self,module):
@@ -76,11 +91,12 @@ class CompositeMixin:
     def choose_composite_recipe(self,module):
         from ..recipe_dialog import RecipeLibraryDialog
         dialog=RecipeLibraryDialog(self)
-        dialog.type_filter.setCurrentText('膜厚组合 Recipe' if module=='thickness' else '平行度组合 Recipe')
+        dialog.type_filter.setCurrentText({'thickness':'膜厚组合 Recipe','parallelism':'平行度组合 Recipe','vig':'VIG 组合 Recipe'}[module])
         dialog.exec()
 
     def open_composite_run(self,recipe):
         validate_composite(recipe)  # Must precede every workspace mutation.
+        if recipe['module'] == 'vig': self._vig_composite_module()
         if self._task_thread is not None:return False
         from ..composite_dialog import CompositeRunDialog
         dialog=CompositeRunDialog(self,recipe)
@@ -96,6 +112,7 @@ class CompositeMixin:
         from ..composite_runner import run_groups
         # Clear only module slots/results. Single-layer data stays available;
         # every worker role is isolated and never applies Recipe to this UI.
+        if recipe['module'] == 'vig': self._vig_composite_module()
         self._composite_module=recipe['module']
         self._clear_composite_result()
         self.centralWidget().setEnabled(False)
@@ -121,7 +138,11 @@ class CompositeMixin:
         return started
 
     def _clear_composite_result(self):
-        if getattr(self,'_composite_module',None)=='parallelism':self.clear_parallel_surfaces()
+        if getattr(self,'_composite_module',None)=='vig':
+            module = self._vig_composite_module()
+            module.slots = dict.fromkeys(('two','three','up','mid','low'))
+            module._invalidate_result(); module._sync_slot_labels()
+        elif getattr(self,'_composite_module',None)=='parallelism':self.clear_parallel_surfaces()
         else:self.clear_all_memory_slots()
 
     def _close_composite_progress(self):
@@ -139,11 +160,25 @@ class CompositeMixin:
     def _finish_composite_run(self,payload):
         self._close_composite_progress();self.last_composite_run=payload
         judgment=payload.get('recipe',{}).get('calculation',{}).get('judgment')
-        if judgment is not None:self.set_judgment_spec(judgment,persist=False)
+        if judgment is not None:self.set_judgment_spec(judgment,persist=False,update_single=False)
         snapshot=payload.get('snapshot')
         if snapshot:
             records=snapshot['records']
-            if snapshot['module']=='parallelism':
+            if snapshot['module'] == 'vig':
+                module = self._vig_composite_module()
+                module.slots = {role: records.get(role) for role in ('two','three','up','mid','low')}
+                config = payload['recipe']
+                for key in ('up','mid','low'):
+                    if config['electrodes'][key]['mode'] == 'fixed':
+                        spin = module.thickness_spins[key]
+                        spin.blockSignals(True); spin.setValue(config['electrodes'][key]['value_um']); spin.blockSignals(False)
+                module.tolerance_spin.blockSignals(True)
+                module.tolerance_spin.setValue(config['calculation']['tolerance_mm'])
+                module.tolerance_spin.blockSignals(False)
+                module._sync_slot_labels(); module._apply_vig_payload(snapshot['result'])
+                for index, descriptor in enumerate(self.module_descriptors):
+                    if descriptor.get('key') == module.key: self.tabs.setCurrentIndex(index)
+            elif snapshot['module']=='parallelism':
                 self.parallel_base=records['base'];self.parallel_measure=records['measure']
                 self._update_parallel_ui();self._apply_parallel_result(snapshot['result'])
                 self.tabs.setCurrentIndex(self.parallel_tab_index)

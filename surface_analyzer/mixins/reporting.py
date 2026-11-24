@@ -97,6 +97,9 @@ class ReportingMixin:
         lines = [f"识别格式: {source_format}",
                  f"源数据统计: 有效 {valid} | 缺测 {missing:,} | 坏行 {bad:,}{topology}"]
         lines.extend(derived_trace)
+        if info.get('memory_result'):
+            lines.append('内存结果编辑副本；源 VIG 结果保持不变，不可直接保存为文件型组合槽。')
+            lines.append('VIG 追溯: ' + json.dumps(info.get('memory_provenance', {}), ensure_ascii=False))
         if info.get('format_extension_id'):
             lines.append(f"格式扩展: {info['format_extension_id']} "
                          f"v{info.get('format_extension_version')} | "
@@ -264,6 +267,7 @@ class ReportingMixin:
             df_out['X_mm'] = fx - dx
             df_out['Y_mm'] = fy - dy
 
+            display_values = self._single_display_metrics or self.last_metrics
             pipeline_text = " -> ".join(self.transform_pipeline) if self.transform_pipeline else "原始状态"
             filter_text = self.cb_filter.currentText()
             if self.cb_filter.currentIndex() == 2:
@@ -329,6 +333,7 @@ class ReportingMixin:
                         f"# 当前显示残差: {display_order}阶 PV = "
                         f"{display_model['residual_pv_um']:.3f} µm | RMS = "
                         f"{display_model['residual_rms_um']:.3f} µm")
+            meta.append('# 当前显示面型实际指标: ' + json.dumps(display_values, ensure_ascii=False, default=lambda value: value.tolist() if isinstance(value, np.ndarray) else str(value)))
             meta.extend(f"# {line}" for line in self._import_trace_text(self.import_info))
             if quality['warning']:
                 meta.append(f"# 警告: {quality['warning']}")
@@ -917,6 +922,10 @@ class ReportingMixin:
                     local_bar.update_ticks()
 
         # 顶部：元信息（较小字号）
+        from ..display_metrics import display_metrics
+        fit_idx = np.asarray(active_idx, dtype=int)
+        metrics = display_metrics(tx[fit_idx], ty[fit_idx], tz[fit_idx], display_surface_mode, display_model)
+        coeffs = metrics['coeffs']
         quality = self._metric_quality_from_import(import_info)
         relation = "≈" if quality['estimated'] else "="
         high_order_warnings = []
@@ -963,23 +972,19 @@ class ReportingMixin:
                      fontsize=10.0, linespacing=1.55, color='#34495e', transform=ax_meta.transAxes)
 
         # 中部：关键结果卡片（大字号 + 高亮底色，手机上一眼可读）
-        display_residual_text = ''
-        if display_model is not None:
-            display_residual_text = (
-                f"\n{display_order}阶残差 PV   {relation} "
-                f"{display_model['residual_pv_um']:.3f} µm"
-                f" | RMS {display_model['residual_rms_um']:.3f} µm")
+        pv_title = '平面法向 PV' if display_surface_mode == 'raw' else '显示残差 PV'
         results_text = (
             "【分析结果】\n\n"
             f"平面方程   Z {relation} {metrics['a']:.4f}·X + {metrics['b']:.4f}·Y + {metrics['c']:.4f}\n\n"
-            f"平均厚度 Z    {relation} {metrics['mean_z']:.5f} mm\n"
-            f"PV(BF平面残差) {relation} {metrics['pv']:.3f} µm\n"
+            f"Mean Z       {relation} {metrics['mean_z']:.5f} mm\n"
+            f"{pv_title}   {relation} {metrics['pv']:.3f} µm\n"
             f"TTV(Z 极差)   {relation} {metrics['ttv']:.3f} µm\n"
-            f"物料 Rx       {relation} {metrics['rx']:.2f} µrad\n"
-            f"物料 Ry       {relation} {metrics['ry']:.2f} µrad"
-            f"{display_residual_text}"
+            f"当前 Z 的 Rx  {relation} {metrics['rx']:.2f} µrad\n"
+            f"当前 Z 的 Ry  {relation} {metrics['ry']:.2f} µrad\n"
+            f"3σ(总体 ddof=0) = {metrics['std3']:.3f} µm\n"
+            f"指标显示口径: {display_surface_mode}\n"
         )
-        judgment = judgment_summary(self.current_judgment('single', {k: metrics.get(k) for k in ('rx', 'ry', 'pv', 'ttv')}))
+        judgment = judgment_summary(self.current_judgment('single', metrics))
         if judgment:
             results_text += f"\n\n{judgment}"
         result_face = '#fff4e5' if quality['estimated'] else '#eaf2fb'

@@ -29,6 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="surface-analyzer", description=f"面型及Rxy分析工具 {APP_VERSION}")
     parser.add_argument("--composite-worker", help=argparse.SUPPRESS)
     parser.add_argument("--check", action="store_true", help="检查依赖和模块导入后退出")
+    parser.add_argument("--check-v507", action="store_true", help="隔离设置验证 V5.0.7 页面、报告和可选 VIG 子进程后退出")
+    parser.add_argument("--vig-extension", metavar="DIR", help="V5.0.7 自检使用的 VIG 扩展目录；不指定时验证未安装情形")
     parser.add_argument("--check-adjustment", action="store_true", help="隔离设置运行装调页面自检后退出")
     parser.add_argument("--check-composite", action="store_true", help="隔离设置验证组合任务、子进程与取消后退出")
     parser.add_argument("--check-workspace", action="store_true", help="隔离设置验证派生列、ROI 色标和报告后退出")
@@ -244,6 +246,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.composite_worker:
         from .composite_runner import child_main
         return child_main(args.composite_worker)
+    if args.check_v507:
+        from .v507_smoke import run
+        return run(args.vig_extension, args.output_json)
     if args.check_composite:
         from .composite_smoke import run
         return run(args.output_json)

@@ -39,6 +39,8 @@ hiddenimports = collect_submodules("surface_analyzer") + [
     "matplotlib.backends.backend_qtagg",
     "matplotlib.backends.backend_agg",
     "mpl_toolkits.mplot3d",
+    "mpl_toolkits.axes_grid1",
+    "mpl_toolkits.axes_grid1.axes_divider",
     "scipy.ndimage",
     "scipy.optimize",
     "scipy.spatial._ckdtree",

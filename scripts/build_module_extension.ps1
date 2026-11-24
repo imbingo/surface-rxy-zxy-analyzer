@@ -8,10 +8,12 @@ if ($Manifest.api_version -ne 1 -or $Manifest.id -ne $Id) {
     throw 'Invalid module extension manifest.'
 }
 $Candidates = @(
+    (Get-Command "ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),
     (Join-Path $env:LOCALAPPDATA 'Programs/Inno Setup 6/ISCC.exe'),
-    'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
+    'C:/Program Files (x86)/Inno Setup 6/ISCC.exe',
+    'C:/Program Files/Inno Setup 6/ISCC.exe'
 )
-$Compiler = $Candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+$Compiler = $Candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 if (-not $Compiler) { throw 'Inno Setup 6 is required.' }
 & $Compiler (Join-Path $Root 'installer/VigImageExtension.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Module extension installer compilation failed.' }

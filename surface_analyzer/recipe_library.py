@@ -25,6 +25,9 @@ def validate_recipe(data):
         raise ValueError('Recipe schema_version 必须是有效整数') from None
     if not 1 <= schema <= 11:
         raise ValueError(f'不支持 Recipe schema {schema}；当前支持 1–11')
+    if 'single_metrics' in data:
+        from .display_metrics import normalize_single_config
+        normalize_single_config(data['single_metrics'])
     worksheet = data.get('worksheet')
     if worksheet is not None:
         if schema < 11 or not isinstance(worksheet, dict):

@@ -17,27 +17,26 @@ class JudgmentMixin:
     def _judgment_spec(self):
         spec = getattr(self, 'judgment_spec', None)
         if spec is None:
-            raw = '{}'
-            settings = getattr(self, 'settings', None)
-            if settings is not None:
-                raw = str(settings.value(JUDGMENT_SETTINGS_KEY, '{}') or '{}')
-            try:
-                spec = normalize_judgment_spec(json.loads(raw))
-            except (ValueError, TypeError):
-                spec = normalize_judgment_spec({})
+            # Startup is deliberately blank, regardless of the previous session.
+            spec = normalize_judgment_spec({})
             self.judgment_spec = spec
         return spec
 
-    def set_judgment_spec(self, spec, persist=True):
+    def set_judgment_spec(self, spec, persist=True, update_single=True):
         self.judgment_spec = normalize_judgment_spec(spec)
         if persist and getattr(self, 'settings', None) is not None:
             self.settings.setValue(JUDGMENT_SETTINGS_KEY, json.dumps(self.judgment_spec))
+        if update_single:
+            from ..display_metrics import normalize_single_config
+            self.single_metric_config = normalize_single_config({'limits': self.judgment_spec})
+            self._layout_single_metric_cards()
         self._refresh_all_judgments()
 
     def open_judgment_spec_dialog(self):
-        dialog = JudgmentSpecDialog(self, self._judgment_spec())
+        dialog = JudgmentSpecDialog(self, self._judgment_spec(), self._single_metric_config())
         if dialog.exec():
-            self.set_judgment_spec(dialog.spec())
+            self.set_judgment_spec(dialog.spec(), update_single=False)
+            self.set_single_metric_config(dialog.single_config())
             if hasattr(self, '_show_status'):
                 self._show_status("判定规格已更新。", 4000)
 
@@ -78,8 +77,9 @@ class JudgmentMixin:
 
     def _judgment_values(self, module):
         if module == 'single':
-            metrics = getattr(self, 'last_metrics', None) or {}
-            return {key: metrics.get(key) for key in ('rx', 'ry', 'pv', 'ttv')}
+            values = getattr(self, '_single_display_metrics', None)
+            if values is not None: return values
+            return (getattr(self, 'last_metrics', None) or {}) if getattr(self, 'display_surface_mode', 'raw') == 'raw' else {}
         if module == 'gap':
             payload = getattr(self, 'gap_result', None)
             metrics = (payload or {}).get('plane_metrics') or {}
@@ -92,7 +92,7 @@ class JudgmentMixin:
 
     def _judgment_metric_labels(self, module):
         if module == 'single':
-            names = {'rx': 'lbl_rx', 'ry': 'lbl_ry', 'pv': 'lbl_pv', 'ttv': 'lbl_ttv'}
+            names = {'rx': 'lbl_rx', 'ry': 'lbl_ry', 'pv': 'lbl_pv', 'ttv': 'lbl_ttv', 'std3': 'lbl_std3', 'mean_z': 'lbl_z'}
         elif module == 'parallel':
             names = {'parallel': 'lbl_par_angle'}
         else:
@@ -105,6 +105,9 @@ class JudgmentMixin:
         return labels
 
     def current_judgment(self, module, values=None):
+        if module == 'single':
+            from ..display_metrics import judge_single
+            return judge_single(self._judgment_values(module) if values is None else values, self._single_metric_config())
         extension = getattr(self, '_extension_judgment_registry', {}).get(module)
         scope = 'parallel' if module == 'parallel' else 'surface'
         if values is None:
@@ -137,3 +140,57 @@ class JudgmentMixin:
     def _refresh_all_judgments(self):
         for module in tuple(getattr(self, '_judgment_widgets', {})):
             self._refresh_judgment(module)
+
+    def _single_metric_config(self):
+        from ..display_metrics import normalize_single_config
+        if not hasattr(self, 'single_metric_config'):
+            self.single_metric_config = normalize_single_config()
+        return self.single_metric_config
+
+    def set_single_metric_config(self, config):
+        from ..display_metrics import normalize_single_config
+        self.single_metric_config = normalize_single_config(config)
+        self._layout_single_metric_cards()
+        self._refresh_judgment('single')
+
+    def _layout_single_metric_cards(self):
+        if not hasattr(self, '_single_cards'):
+            return
+        visible = self._single_metric_config()['visible']
+        active = [card for key, card in self._single_cards.items() if key in visible]
+        for key, card in self._single_cards.items():
+            card.setVisible(key in visible)
+        active.append(self._judgment_widgets['single'][0])
+        for card in self._metric_cards: self._metric_grid.removeWidget(card)
+        width = self._results_strip.width()
+        columns = min(len(active), max(1, width // 150))
+        for col in range(len(self._metric_cards)): self._metric_grid.setColumnStretch(col, 0)
+        for index, card in enumerate(active): self._metric_grid.addWidget(card, index // columns, index % columns)
+        for col in range(columns): self._metric_grid.setColumnStretch(col, 1)
+        self._metric_columns = columns
+
+    def _refresh_single_display_metrics(self):
+        from ..display_metrics import display_metrics
+        self._single_display_metrics = None
+        if self.last_metrics is None or self._high_order_inputs is None:
+            return
+        mode = self.display_surface_mode
+        order = int(mode.rsplit('_', 1)[1]) if mode != 'raw' else None
+        model = self.high_order_models.get(order) if order else None
+        if order and model is None:
+            for label in (self.lbl_z,self.lbl_pv,self.lbl_ttv,self.lbl_rx,self.lbl_ry,self.lbl_std3):label.setText('--')
+            self._refresh_judgment('single', {})
+            return
+        values = display_metrics(*self._high_order_inputs, mode, model)
+        quality = self._current_metric_quality()
+        values.update(_estimated=quality['estimated'], _quality_warning=quality.get('warning',''))
+        self._single_display_metrics = values
+        self._single_cards['pv'].findChildren(QLabel)[0].setText(
+            '平面法向 PV (µm)' if mode == 'raw' else '显示残差 PV (µm)')
+        self._single_cards['pv'].setToolTip('原始模式：现有最佳拟合平面法向残差极差。' if mode == 'raw' else '当前显示残差 Z 的极差，不再次去平面。')
+        approx = '≈' if quality['estimated'] else ''
+        for key, name in [('mean_z','lbl_z'),('pv','lbl_pv'),('ttv','lbl_ttv'),('rx','lbl_rx'),('ry','lbl_ry'),('std3','lbl_std3')]:
+            label = getattr(self, name)
+            label.setText(f"{approx}{values[key]:.6g}")
+            label.setToolTip(f"显示面型 {mode}；{key} = {values[key]:.12g}；3σ 使用总体标准差 ddof=0。")
+        self._refresh_judgment('single')

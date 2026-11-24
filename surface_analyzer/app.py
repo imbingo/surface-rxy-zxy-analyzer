@@ -56,6 +56,7 @@ from .mixins.composite import CompositeMixin
 from .mixins.roi import ROIMixin
 from .mixins.reporting import ReportingMixin
 from .mixins.judgment import JudgmentMixin
+from .widgets import AdaptiveMetricLabel
 from .workers import FunctionWorker
 from .module_extensions import (
     ModuleExtensionRegistry, ModuleHost, validate_module_object,
@@ -162,7 +163,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         had_layout_setting = self.settings.contains("input_layout_mode")
         self.pitch_source = str(self.settings.value(
             "pitch_source", "auto"))
-        self.use_system_frame = str(self.settings.value("use_system_frame", "false")).lower() in ("1", "true", "yes")
+        self.use_system_frame = False
         self.recent_files = [str(x) for x in self.settings.value("recent_files", [], type=list)]
         self.roi_enabled = False           # 人工/Smart ROI 保留区域开关
         self.roi_shapes = []               # list[dict]，人工ROI记录XY/XZ/YZ二维几何
@@ -1055,9 +1056,9 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
 
     @staticmethod
     def _is_supported_drop_file(path):
-        return Path(path).suffix.lower() in {
-            ".csv", ".txt", ".tsv", ".dat", ".asc", ".xyz", ".xlsx", ".xls", ".xlsm"
-        }
+        from .composite_recipe import supported_suffixes
+        return Path(path).is_file() and Path(path).suffix.casefold() in supported_suffixes()
+
 
     def _resize_edge_at(self, gpos):
         """根据全局光标位置判断是否贴近窗口边缘，返回组合 Qt.Edge 或 None。"""
@@ -1102,18 +1103,9 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
                 and hasattr(self, 'current_recipe_name')):
             self._set_recipe_identity(self.current_recipe_name)
         if obj is getattr(self, '_results_strip', None) and event.type() == QEvent.Type.Resize:
-            width = obj.width()
-            columns = len(self._metric_cards) if width >= 900 else 3 if width >= 450 else 2
-            if columns != getattr(self, '_metric_columns', None):
-                self._metric_columns = columns
-                for card in self._metric_cards:
-                    self._metric_grid.removeWidget(card)
-                for i, card in enumerate(self._metric_cards):
-                    self._metric_grid.addWidget(card, i//columns, i%columns)
-                for i in range(len(self._metric_cards)):
-                    self._metric_grid.setColumnStretch(i, 1 if i < columns else 0)
+            self._layout_single_metric_cards()
             self.lbl_eqn.hide()
-            self.lbl_surface_residual_metrics.setVisible(True)
+            self.lbl_surface_residual_metrics.hide()
         if obj is getattr(self, '_appbar', None) and not self.use_system_frame:
             et = event.type()
             if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
@@ -1196,7 +1188,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self.cb_surface_display.setFixedWidth(178)
         self.cb_surface_display.setToolTip(
             "切换右侧四幅图的显示面型。高阶残差仅用于显示、框选和独立诊断指标，\n"
-            "不会改变现有 Rx/Ry、TTV 或最佳拟合平面残差 PV 的权威口径。")
+            "顶部单层指标和判定使用当前显示面型；残差 PV 不再二次去平面。")
         self.cb_surface_display.currentIndexChanged.connect(self._on_surface_display_changed)
         self.lbl_surface_residual_metrics = SourceLabel("原始高度显示")
         self.lbl_surface_residual_metrics.setObjectName("mutedNote")
@@ -1214,11 +1206,12 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         cards = QGridLayout()
         cards.setSpacing(13)
         cards.setContentsMargins(4, 2, 4, 4)
-        self.lbl_z = QLabel("--")
-        self.lbl_pv = QLabel("--")
-        self.lbl_ttv = QLabel("--")
-        self.lbl_rx = QLabel("--")
-        self.lbl_ry = QLabel("--")
+        self.lbl_z = AdaptiveMetricLabel("--")
+        self.lbl_pv = AdaptiveMetricLabel("--")
+        self.lbl_ttv = AdaptiveMetricLabel("--")
+        self.lbl_rx = AdaptiveMetricLabel("--")
+        self.lbl_ry = AdaptiveMetricLabel("--")
+        self.lbl_std3 = AdaptiveMetricLabel("--")
         self._metric_cards = [self._make_metric_card("Mean Z (mm)", self.lbl_z)]
         pv_card = self._make_metric_card("平面残差 PV (µm)", self.lbl_pv, accent=True)
         pv_card.setToolTip("相对最佳拟合平面的法向残差极差：仅去除整体高度和一阶倾斜，未去除二阶及以上曲率。")
@@ -1226,11 +1219,14 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             self._make_metric_card("TTV·Z极差 (µm)", self.lbl_ttv),
             self._make_metric_card("Rx (µrad)", self.lbl_rx),
             self._make_metric_card("Ry (µrad)", self.lbl_ry),
+            self._make_metric_card('3σ (µm)', self.lbl_std3),
             self._make_judgment_card('single')]
         for i, card in enumerate(self._metric_cards):
             cards.addWidget(card,0,i)
         self._metric_grid = cards
         self._results_strip = strip
+        self._single_cards = dict(zip(('mean_z','pv','ttv','rx','ry','std3'), self._metric_cards[:-1]))
+        self._layout_single_metric_cards()
         strip.installEventFilter(self)
         metric_surface = QFrame()
         metric_surface.setObjectName("metricSurface")
@@ -1258,6 +1254,8 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         return strip
 
     def _clear_result_labels(self):
+        self._single_display_metrics = None
+        self.lbl_std3.setText("--")
         if not hasattr(self, 'lbl_eqn'):
             return
         self.lbl_eqn.setText("--")
@@ -2350,7 +2348,23 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         cv.addWidget(self.gap_match_canvas, 1)
         self._add_shadow(card, blur=20, dy=3, alpha=30)
         outer.addWidget(card, 1)
-        return panel
+        self.gap_result_pages = QStackedWidget()
+        self.gap_result_pages.addWidget(panel)
+        result_panel = QWidget()
+        results = QVBoxLayout(result_panel)
+        self.gap_result_summary = QLabel('尚未计算膜厚')
+        self.gap_result_summary.setWordWrap(True)
+        results.addWidget(self.gap_result_summary)
+        from matplotlib.figure import Figure
+        from .theme import ThemedFigureCanvas
+        self.gap_result_figure = Figure(figsize=(10, 7), constrained_layout=True)
+        self.gap_result_canvas = ThemedFigureCanvas(self.gap_result_figure)
+        results.addWidget(self.gap_result_canvas, 1)
+        self.gap_result_pages.addWidget(result_panel)
+        self.gap_parameter_tabs.currentChanged.connect(
+            lambda index: self.gap_result_pages.setCurrentIndex(1 if index == 2 else 0))
+        self._refresh_gap_result_views()
+        return self.gap_result_pages
 
     def _build_parallel_right_panel(self):
         panel = QWidget()
@@ -2681,6 +2695,8 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
                     continue
 
     def _update_surface_display_metrics(self):
+        self._refresh_single_display_metrics()
+        self.lbl_surface_residual_metrics.hide()
         mode = getattr(self, 'display_surface_mode', 'raw')
         if mode == 'raw':
             if self.cb_filter.currentIndex() == 4:

@@ -4,6 +4,7 @@ import re
 import copy
 from datetime import datetime
 from pathlib import Path
+from copy import deepcopy
 
 import pandas as pd
 import numpy as np
@@ -85,6 +86,8 @@ class GapAnalysisMixin:
             self.btn_export_gap_csv.setEnabled(result_ready and not busy)
         if hasattr(self, 'btn_export_gap_report'):
             self.btn_export_gap_report.setEnabled(result_ready and not busy)
+
+        self._refresh_gap_result_views()
 
     def _invalidate_gap_result(self, reason=None):
         old = getattr(self, 'gap_result', None)
@@ -636,6 +639,14 @@ class GapAnalysisMixin:
         plane_metrics = AnalysisMixin.compute_plane_metrics(sx[valid], sy[valid], gap_z)
         return {
             'x': sx[valid], 'y': sy[valid], 'z': gap_z, 'name': gap_name,
+            'matching_xy': {
+                'stack': {'x': sx.copy(), 'y': sy.copy()},
+                'base1': {'x': b1x.copy(), 'y': b1y.copy()},
+                **({} if base2 is None else {'base2': {'x': b2x.copy(), 'y': b2y.copy()}}),
+            },
+            'input_traces': {key: {field: deepcopy(rec.get(field)) for field in
+                ('name', 'pipeline', 'filter', 'single_recipe', 'metric_quality', 'import_info')}
+                for key, rec in (('stack', stack), ('base1', base1), ('base2', base2)) if rec is not None},
             'plane_metrics': plane_metrics, 'plane_metric_count': len(gap_z),
             'details': details,
             'reports': reports, 'tolerance': float(tolerance),
@@ -806,101 +817,72 @@ class GapAnalysisMixin:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return re.sub(r'[<>:"/\\|?*\r\n]+', '_', f"Gap_Report_{stamp}.png")
 
+    def _refresh_gap_result_views(self):
+        if not hasattr(self, 'gap_result_figure'):
+            return
+        payload = self.gap_result
+        if getattr(self, '_gap_view_payload', object()) is payload:
+            return
+        self._gap_view_payload = payload
+        self.gap_result_figure.clear()
+        from ..result_views import draw_four_views
+        if payload is None:
+            self.gap_result_summary.setText('尚未计算膜厚；配准和数据层操作保持不变')
+            self.gap_result_figure.text(.5, .5, '暂无膜厚结果', ha='center', va='center')
+        else:
+            m = self._gap_plane_metrics(payload)
+            self.gap_result_summary.setText(
+                f"有效匹配 {len(payload['z']):,} 点 · Mean {m['mean_z']:.6g} mm · "
+                f"PV {m['pv']:.5g} µm · TTV {m['ttv']:.5g} µm · "
+                f"Rx {m['rx']:.5g} / Ry {m['ry']:.5g} µrad · 原始扣减快照")
+            draw_four_views(self.gap_result_figure, payload['x'], payload['y'], payload['z'],
+                            quantity='Inner Gap', unit='mm')
+        self.gap_result_canvas.draw_idle()
+
     def _render_gap_report_figure(self):
         if self.gap_result is None:
-            raise ValueError("暂无有效胶厚结果。")
-        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
-        plt.rcParams['axes.unicode_minus'] = False
+            raise ValueError('暂无有效胶厚结果。')
+        from ..result_views import draw_four_views, snapshot_report
+        from textwrap import fill
         payload = self.gap_result
-        z = np.asarray(payload['z'], dtype=float)
-        metrics = self._gap_plane_metrics(payload)
-        fig = Figure(figsize=(16.0, 9.2), constrained_layout=True)
+        m = self._gap_plane_metrics(payload)
+        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+        fig = Figure(constrained_layout=True, facecolor='white')
         FigureCanvasAgg(fig)
-        grid = fig.add_gridspec(2, 2, width_ratios=[0.82, 1.75], height_ratios=[1, 1])
-        ax_info = fig.add_subplot(grid[:, 0]); ax_info.axis('off')
-        ax_layers = fig.add_subplot(grid[0, 1])
-        ax_gap = fig.add_subplot(grid[1, 1])
-
-        layers = payload['layers']
-        lines = [
-            "结果摘要",
-            f"有效匹配点  {len(z):,}",
-            f"平面拟合点  {int(payload.get('plane_metric_count', len(z))):,}",
-            f"容差窗口  {payload['tolerance']:.3f} mm",
-            f"平均胶厚  {metrics['mean_z']:.6f} mm",
-            f"Gap Rx  {metrics['rx']:.2f} µrad",
-            f"Gap Ry  {metrics['ry']:.2f} µrad",
-            f"平面残差 PV  {metrics['pv']:.3f} µm",
-            f"平面残差 RMS  {metrics['rms']:.3f} µm",
-            f"TTV  {metrics['ttv']:.3f} µm",
-            f"最小 / 最大  {np.min(z):.6f} / {np.max(z):.6f} mm",
-            "",
-            "XY 配准位移（堆叠固定）",
-            f"单片 1  ΔX {layers['base1']['offset_x']:+.5f} mm  ΔY {layers['base1']['offset_y']:+.5f} mm  "
-            f"{self.GAP_REGISTRATION_MODE_LABELS.get(layers['base1'].get('registration_mode', 'none'), '未配准')}",
-        ]
-        if layers['base2'] is not None:
-            lines.append(
-                f"单片 2  ΔX {layers['base2']['offset_x']:+.5f} mm  ΔY {layers['base2']['offset_y']:+.5f} mm  "
-                f"{self.GAP_REGISTRATION_MODE_LABELS.get(layers['base2'].get('registration_mode', 'none'), '未配准')}")
+        left = [f"{key}: {record['name']}" for key, record in payload['layers'].items() if record]
+        for key, trace in payload.get('input_traces', {}).items():
+            left.append(f"{key} 处理: {trace.get('pipeline', '原始状态')} / {trace.get('filter', '关闭')}")
+            quality = trace.get('metric_quality') or {}
+            left.append(f"{key} 质量: {quality.get('label', '')} {quality.get('warning', '')}")
+        right = [f"匹配 {len(payload['z']):,} 点 / 堆叠 {payload['layers']['stack']['n']:,} 点 · "
+                 f"匹配率 {len(payload['z']) / max(1, payload['layers']['stack']['n']):.2%}",
+                 f"容差 {payload['tolerance']:.6g} mm · Mean {m['mean_z']:.6g} mm",
+                 f"法向 PV {m['pv']:.6g} µm · RMS {m['rms']:.6g} µm · TTV {m['ttv']:.6g} µm",
+                 f"Rx {m['rx']:.6g} / Ry {m['ry']:.6g} µrad",
+                 judgment_summary(self.current_judgment('gap')),
+                 '全部图表来自同一原始扣减快照，不含主控后续编辑。']
         for key, tag in (('base1_distance', '单片 1'), ('base2_distance', '单片 2')):
-            dist = payload.get('details', {}).get(key)
-            if dist is not None and len(dist):
-                dist = np.asarray(dist, dtype=float) * 1000
-                lines.append(f"{tag}  配准误差 均值 {np.mean(dist):.2f} µm  RMS {np.sqrt(np.mean(dist ** 2)):.2f} µm")
-        judgment = judgment_summary(self.current_judgment('gap'))
-        if judgment:
-            lines[1:1] = [judgment]
-        lines.extend(["", "数据来源", f"堆叠  {Path(str(layers['stack']['name'])).name}",
-                      f"单片 1  {Path(str(layers['base1']['name'])).name}"])
-        if layers['base2'] is not None:
-            lines.append(f"单片 2  {Path(str(layers['base2']['name'])).name}")
-        lines.extend(["", "口径", "XY 最近邻欧氏距离不大于容差的点参与扣减。",
-                      "指标与图表均使用全部有效匹配点的胶厚快照。",
-                      "不包含主控后续旋转、ROI或滤波。",
-                      "自动精对齐与手动拖动只改变单片层 XY 平移，不改变 Z。"])
-        ax_info.text(0.02, 0.98, "\n".join(lines), va='top', ha='left', fontsize=10.5,
-                     linespacing=1.55, color='#334155', transform=ax_info.transAxes,
-                     bbox=dict(boxstyle='round,pad=0.7', fc='#f8fafc', ec='#dbe3ec'))
-
-        def sample(x, y, limit=35000):
-            x, y = np.asarray(x), np.asarray(y)
-            if len(x) > limit:
-                pick = np.linspace(0, len(x) - 1, limit, dtype=int)
-                return x[pick], y[pick]
-            return x, y
-
-        for key, rec, label in (
-                ('stack', self.data_stack, '堆叠总成'),
-                ('base1', self.data_base1, '单片 1'),
-                ('base2', self.data_base2, '单片 2')):
-            if rec is None:
-                continue
-            x, y = self._shifted_xy(rec)
-            x, y = sample(x, y)
-            ax_layers.scatter(x, y, s=8, alpha=0.58, edgecolors='none',
-                              c=self.GAP_LAYER_COLORS[key], label=label, rasterized=True)
-        vx, vy = sample(payload['x'], payload['y'])
-        ax_layers.scatter(vx, vy, s=24, facecolors='none',
-                          edgecolors=self.GAP_LAYER_COLORS['matched'], linewidths=0.8,
-                          alpha=0.92, label='全部参与扣减点', rasterized=True)
-        ax_layers.set_title("XY 配准与容差匹配")
-        ax_layers.set_xlabel("X (mm)"); ax_layers.set_ylabel("Y (mm)")
-        ax_layers.grid(True, color='#edf0f3'); ax_layers.set_aspect('equal', adjustable='datalim')
-        ax_layers.legend(loc='best', fontsize=8)
-
-        gx, gy, gz = payload['x'], payload['y'], payload['z']
-        if len(gz) > 50000:
-            pick = np.linspace(0, len(gz) - 1, 50000, dtype=int)
-            gx, gy, gz = gx[pick], gy[pick], gz[pick]
-        scatter = ax_gap.scatter(gx, gy, c=gz, cmap='turbo', s=12, alpha=0.85,
-                                 edgecolors='none', rasterized=True)
-        ax_gap.set_title("Inner Gap XY 分布")
-        ax_gap.set_xlabel("X (mm)"); ax_gap.set_ylabel("Y (mm)")
-        ax_gap.grid(True, color='#edf0f3'); ax_gap.set_aspect('equal', adjustable='datalim')
-        colorbar = fig.colorbar(scatter, ax=ax_gap, shrink=0.88, pad=0.02)
-        colorbar.set_label("Inner Gap (mm)")
-        fig.suptitle(f"多层胶厚扣减报告 ({self.APP_VERSION})", fontsize=17, fontweight='bold')
+            distances = np.asarray(payload.get('details', {}).get(key, []), dtype=float)
+            if len(distances):
+                right.append(f"{tag} 匹配距离均值 {distances.mean()*1000:.6g} µm / RMS {np.sqrt(np.mean(distances**2))*1000:.6g} µm")
+        four, matching = snapshot_report(fig, f'多层胶厚扣减报告 ({self.APP_VERSION})', left, right, fifth=True)
+        draw_four_views(fig, payload['x'], payload['y'], payload['z'], spec=four,
+                        quantity='Inner Gap', unit='mm')
+        ax = fig.add_subplot(matching)
+        xy = payload.get('matching_xy', {})
+        # Legacy snapshots only contain matched point coordinates. Never read
+        # current slots here: they may belong to another measurement now.
+        for key, label in (('stack', '堆叠总成'), ('base1', '单片 1'), ('base2', '单片 2')):
+            rec = xy.get(key)
+            if rec is not None:
+                count = len(rec['x']);pick = np.linspace(0, count-1, min(count,35000), dtype=int)
+                ax.scatter(np.asarray(rec['x'])[pick], np.asarray(rec['y'])[pick],
+                           c=self.GAP_LAYER_COLORS[key], s=8, alpha=.5, label=label)
+        pick = np.linspace(0,len(payload['x'])-1,min(len(payload['x']),35000),dtype=int)
+        ax.scatter(np.asarray(payload['x'])[pick],np.asarray(payload['y'])[pick],s=18,
+                   facecolors='none',edgecolors=self.GAP_LAYER_COLORS['matched'],label='参与扣减点')
+        ax.set(title='XY 配准与容差匹配',xlabel='X (mm)',ylabel='Y (mm)',aspect='equal')
+        ax.legend(loc='best',fontsize=8);ax.grid(True,alpha=.2)
         return fig
 
     def export_gap_report(self):
