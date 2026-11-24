@@ -129,7 +129,13 @@ class MainAcceptance(Base):
             self.assertAlmostEqual(float(w.lbl_std3.text()),values['std3'],delta=max(1e-9,abs(values['std3'])*1e-5))
             config=normalize_single_config({'visible':['pv','std3'],'limits':{'std3':values['std3']+1,'rx':0}})
             w.set_single_metric_config(config);self.assertEqual(w.current_judgment('single')['verdict'],'pass')
-        self.assertFalse(w.lbl_surface_residual_metrics.isVisible())
+        self.assertTrue(w.lbl_surface_residual_metrics.isHidden())
+        condition=w.high_order_models[3]['condition']
+        w.high_order_models[3]['condition']=1e9;w._update_surface_display_metrics()
+        self.assertFalse(w.lbl_surface_residual_metrics.isHidden())
+        self.assertIn('拟合病态',w.lbl_surface_residual_metrics.text())
+        self.assertNotIn('RMS',w.lbl_surface_residual_metrics.text())
+        w.high_order_models[3]['condition']=condition;w._update_surface_display_metrics()
         spec=w._current_recipe_dict();self.assertEqual(spec['single_metrics'],w._single_metric_config())
         w.set_single_metric_config(normalize_single_config())
         w.apply_recipe(spec,show_message=False)
@@ -139,12 +145,20 @@ class MainAcceptance(Base):
         w.manual_mask=np.zeros(len(w.df_raw),dtype=bool);w.manual_mask[[0,1,5]]=True
         w.update_analysis();self.assertIsNotNone(w.last_metrics)
         self.assertIsNone(w._single_display_metrics);self.assertEqual(w.lbl_std3.text(),'--')
+        self.assertIn('不可用',w.lbl_surface_residual_metrics.text())
         path=self.root/'unavailable-display.csv'
         with patch.object(QFileDialog,'getSaveFileName',return_value=(str(path),'CSV')),patch.object(QMessageBox,'critical') as error:
             w.save_file()
         error.assert_not_called()
         line=next(line for line in path.read_text(encoding='utf-8-sig').splitlines() if line.startswith('# 当前显示面型实际指标:'))
         self.assertEqual(json.loads(line.split(': ',1)[1]),{'display_mode':'residual_3','available':False})
+        w.cb_surface_display.setCurrentIndex(w.cb_surface_display.findData('raw'))
+        w.cb_surface_display.setCurrentIndex(w.cb_surface_display.findData('residual_3'))
+        deadline=time.monotonic()+15
+        while w._task_thread is not None and time.monotonic()<deadline:self.qt.processEvents()
+        self.qt.processEvents();self.assertIsNone(w._task_thread)
+        self.assertEqual(w.cb_surface_display.currentData(),'raw')
+        self.assertEqual(w.display_surface_mode,'raw')
 
     def test_blank_zero_hidden_limits_and_dialog(self):
         w=self.w;config=normalize_single_config({'visible':['pv','std3'],'limits':{'pv':None,'std3':0,'rx':0}})
@@ -232,7 +246,9 @@ class VigAcceptance(Base):
             self.assertFalse(np.shares_memory(self.w.df_raw.Z.to_numpy(),result['image']))
             self.w.manual_mask[0]=False;self.w.update_analysis()
             self.assertEqual(len(self.w.active_idx),len(original)-1)
+            self.w.spin_gaussian_sigma.setValue(1.2)
             self.w.cb_filter.setCurrentIndex(4);self.w.update_analysis()
+            self.assertFalse(np.allclose(self.w._analysis_z_full,self.w.df_raw.Z))
             np.testing.assert_array_equal(result['image'],original)
         self.assertIsNone(self.w._slot_single_recipe_snapshot())
         self.assertTrue(self.w.import_info['memory_result'])

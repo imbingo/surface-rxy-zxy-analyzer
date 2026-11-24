@@ -2637,10 +2637,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
                 order = 1
             if self.high_order_models.get(order) is None:
                 if not self._start_high_order_diagnostic(order, mode):
-                    self.cb_surface_display.blockSignals(True)
-                    self.cb_surface_display.setCurrentIndex(
-                        max(0, self.cb_surface_display.findData('raw')))
-                    self.cb_surface_display.blockSignals(False)
+                    self._restore_surface_display_selection()
                 return
         self.display_surface_mode = mode
         self.display_detrended = mode != 'raw'
@@ -2649,9 +2646,20 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         # 重新 autoscale；保留旧 ylim 会把绝大多数残差点裁出视野。
         self.update_plots_only(preserve_view=False)
 
+    def _restore_surface_display_selection(self):
+        mode = self.display_surface_mode
+        if mode != 'raw' and self.high_order_models.get(int(mode.rsplit('_',1)[1])) is None:
+            mode = 'raw'
+        self.display_surface_mode = mode
+        self.display_detrended = mode != 'raw'
+        self.cb_surface_display.blockSignals(True)
+        self.cb_surface_display.setCurrentIndex(max(0,self.cb_surface_display.findData(mode)))
+        self.cb_surface_display.blockSignals(False)
+        self._update_surface_display_metrics()
+
     def _start_high_order_diagnostic(self, order, requested_mode):
         inputs = self._high_order_inputs
-        if inputs is None or self._task_thread is not None:
+        if inputs is None or self.last_metrics is None or self._task_thread is not None:
             self._show_status(f"{order}阶诊断暂不可用或已有后台任务。", 5000)
             return False
         revision = int(self._analysis_revision)
@@ -2677,10 +2685,20 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
                 self._update_surface_display_metrics()
                 self.update_plots_only(preserve_view=False)
 
+        def restore_selection():
+            if revision != self._analysis_revision:
+                return
+            if str(self.cb_surface_display.currentData() or 'raw') == requested_mode:
+                self._restore_surface_display_selection()
+
+        def failed(message):
+            if revision != self._analysis_revision:return
+            restore_selection()
+            self._show_status(f"{order}阶诊断计算失败: {message}", 8000)
+
         return self._run_background_task(
-            f"{order}阶诊断", work, accept,
-            on_error=lambda message: self._show_status(
-                f"{order}阶诊断计算失败: {message}", 8000))
+            f"{order}阶诊断", work, accept, on_error=failed,
+            on_cancel=restore_selection)
 
     def _ensure_all_high_order_models(self):
         """Materialize export diagnostics on demand for output compatibility."""
@@ -2699,33 +2717,25 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self.lbl_surface_residual_metrics.hide()
         mode = getattr(self, 'display_surface_mode', 'raw')
         if mode == 'raw':
-            if self.cb_filter.currentIndex() == 4:
-                self.lbl_surface_residual_metrics.setText(
-                    f"空间高斯后高度 | σ={self.spin_gaussian_sigma.value():.4g} mm")
-            else:
-                self.lbl_surface_residual_metrics.setText("原始高度显示")
             return
-        try:
-            order = int(mode.rsplit('_', 1)[1])
-        except (ValueError, IndexError):
-            order = 1
+        order = int(mode.rsplit('_', 1)[1])
         model = self.high_order_models.get(order)
         if model is None:
-            self.lbl_surface_residual_metrics.setText(f"{order}阶残差暂不可用")
-            return
-        ill_conditioned = float(model.get('condition', 0.0)) > 1e8
-        warning = " | ⚠ 拟合病态" if ill_conditioned else ""
-        self.lbl_surface_residual_metrics.setText(
-            f"残差 PV {model['residual_pv_um']:.3f} µm | RMS {model['residual_rms_um']:.3f} µm{warning}")
-        self.lbl_surface_residual_metrics.setToolTip(
-            "高阶设计矩阵条件数过大，结果对采样分布与噪声敏感，不宜作为判定依据。"
-            if ill_conditioned else "高阶残差仅用于诊断，不改变Rx/Ry及BF平面残差PV的权威口径。")
+            self.lbl_surface_residual_metrics.setText(f'⚠ {order}阶显示面型不可用')
+            self.lbl_surface_residual_metrics.setToolTip('当前有效点无法拟合所选阶数；请调整 ROI 或选择可用的显示面型。')
+            self.lbl_surface_residual_metrics.show()
+        elif float(model.get('condition', 0.0)) > 1e8:
+            # Retain quality warnings; only the duplicate PV/RMS numbers were
+            # removed. Hiding this warning would silently discard diagnostics.
+            self.lbl_surface_residual_metrics.setText(f'⚠ {order}阶拟合病态')
+            self.lbl_surface_residual_metrics.setToolTip('高阶设计矩阵条件数过大，结果对采样分布与噪声敏感，不宜作为判定依据。')
+            self.lbl_surface_residual_metrics.show()
 
     def _get_plot_z(self, tx, ty, tz):
         """返回绘图/框选使用的Z值和轴标签。
         原始模式：Z使用内部单位mm；
         去倾斜模式：Z为相对当前最佳拟合平面的残差，单位µm。
-        注意：该函数只服务显示/框选，不改变原始数据和拟合指标。"""
+        该函数返回显示/框选坐标；顶部指标由 display_metrics 按同一面型计算，原始测量数据不变。"""
         mode = getattr(self, 'display_surface_mode', 'raw')
         if mode != 'raw':
             try:
