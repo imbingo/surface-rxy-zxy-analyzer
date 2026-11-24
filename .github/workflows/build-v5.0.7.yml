@@ -82,16 +82,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./scripts/verify_v507_extension_install.ps1 -WorkRoot "$PWD/.qa/extension-install"
           ./scripts/verify_release_installation.ps1 -Setup "$PWD/release/SurfaceRxyZxyAnalyzer_Setup_V5.0.7.exe" -PreviousSetup "$PWD/.qa/previous/SurfaceRxyZxyAnalyzer_Setup_V5.0.5.exe" -WorkRoot "$PWD/.qa/installer" -ExpectedVersion V5.0.7 -ExpectedCommit '${{ github.sha }}'
+      - name: Verify and freeze complete review package
+        timeout-minutes: 3
+        run: python scripts/prepare_v507_artifacts.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: V5.0.7-installers-and-validation
-          path: |
-            release/*
-            v507-tests.xml
-            .qa/**
-            !.qa/previous/**
-            !.qa/extension-install/previous-source/**
-            !.qa/extension-install/previous.zip
+          path: review_package/
           include-hidden-files: true
           if-no-files-found: warn

@@ -17,3 +17,4 @@ installer/generated_version_info.txt
 installer/generated_build_info.json
 
 .qa/
+review_package/
