@@ -1,0 +1,13 @@
+{
+  "version": "V5.0.8",
+  "vig_version": "1.2.0",
+  "source_commit": "5d59a8a306f4921e3170d2f36818bdd3222f2bea",
+  "collected_tests": 102,
+  "installer_sha256": {
+    "SurfaceRxyZxyAnalyzer_Setup_V5.0.8.exe": "3661b8568a5bf7d15194dc577c9fe4e42017939f932ce357069822bdadf82066",
+    "SurfaceAnalyzer_VigImageExtension_Setup_V1.2.0.exe": "7fe23ab810ee9744d9abae2db8cfd5b860dc6d80a164625a66c394e61e0f8e15"
+  },
+  "frozen_vig": true,
+  "main_install_upgrade": true,
+  "extension_install_upgrade": true
+}

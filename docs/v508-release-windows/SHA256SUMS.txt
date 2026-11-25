@@ -1,0 +1,2 @@
+3661b8568a5bf7d15194dc577c9fe4e42017939f932ce357069822bdadf82066  release/SurfaceRxyZxyAnalyzer_Setup_V5.0.8.exe
+7fe23ab810ee9744d9abae2db8cfd5b860dc6d80a164625a66c394e61e0f8e15  release/SurfaceAnalyzer_VigImageExtension_Setup_V1.2.0.exe

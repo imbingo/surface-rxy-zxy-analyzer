@@ -1,17 +1,17 @@
 # Surface Rxy ZXY Analyzer V5.0.8
 
-本轮源码布局修订（尚未打包／发布）见 [报告全图与整体界面复核](docs/V5.0.8_LAYOUT_REVIEW.md)，包含默认隐藏主控 3σ、Recipe 显式恢复显示及搜索框配色检查。
+**V5.0.8 已正式发布：[下载安装包](https://github.com/imbingo/surface-rxy-zxy-analyzer/releases/tag/v5.0.8) · [Windows 验证与校验值](docs/V5.0.8_RELEASE_VERIFICATION.md)。** 最新布局修订见 [报告全图与整体界面复核](docs/V5.0.8_LAYOUT_REVIEW.md)，包含默认隐藏主控 3σ、Recipe 显式恢复显示及搜索框配色检查。
 
 面型及 Rxy 分析工具 **V5.0 — 统一分析工作台**。独立模块导航、单层/膜厚/平行度参数页、四视图共享色标及导入策略页签。V5.0.5 新增单层导出按有效点左下角归零选项；V5.0.4 新增组合 Recipe、按文件夹批量运行，并修复 VR 高度矩阵长前缀导入，详见 [发布说明](docs/RELEASE_NOTES_V5.0.5.md)。
 
-## V5.0.8（待审核构建）
+## V5.0.8（已发布）
 
 - 膜厚／平行度／VIG 从已完成示例直接批量运行；组合 Recipe 统一在管理器保存和复用。
 - 膜厚计算后自动载入单层主控独立编辑副本，使用原主控报告；平行度报告按确认布局重排。
 - 修复显示面型及色标范围标签／下拉框位置。
 - VIG 扩展 1.2.0（最低主程序 V5.0.8）检查物理输入，追溯共同匹配、无效间距和计算失败点，并突出部分结果。
 
-操作、验证和限制见 [V5.0.8 修改说明](docs/V5.0.8_CHANGES.md)。审阅构建只上传 Actions 附件，不自动发布。
+操作、验证和限制见 [V5.0.8 修改说明](docs/V5.0.8_CHANGES.md)。正式安装包已包含报告布局、搜索框配色和主控默认隐藏 3σ 的修订。
 
 ## V5.0.7（历史变更）
 
@@ -25,9 +25,9 @@
 
 ## 当前版本入口
 
-- Windows 安装包由 GitHub Actions 验证并构建，发布成功后在 GitHub Release 下载 `SurfaceRxyZxyAnalyzer_Setup_V5.0.5.exe` 及校验文件；以 Release 实际附件为准。
+- Windows 安装包由 GitHub Actions 验证并构建，在 GitHub Release 下载 `SurfaceRxyZxyAnalyzer_Setup_V5.0.8.exe`、可选 VIG 1.2.0 扩展及校验文件。
 - 源码用户双击 `start_surface_analyzer_v5_0_5.bat`，首次运行需要 Python 及依赖下载访问。
-- Python 入口为 `面型及Rxy分析工具V5.0.5.py`，也可执行 `python -m surface_analyzer`。
+- 推荐 Python 入口为 `python -m surface_analyzer`；旧版本命名的入口仍可启动当前模块。
 - 环境检查执行 `start_surface_analyzer_v5_0_5.bat --check`。
 - 旧版本启动脚本仍可启动当前模块。
 
