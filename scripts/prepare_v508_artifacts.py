@@ -85,10 +85,12 @@ def main():
         target.parent.mkdir(parents=True,exist_ok=True)
         shutil.copy2(path,target)
     docs = DEST/'docs';docs.mkdir()
-    for name in ('V5.0.8_CHANGES.md','composite-recipes.md'):
+    for name in ('V5.0.8_CHANGES.md','V5.0.8_LAYOUT_REVIEW.md','RELEASE_NOTES_V5.0.8.md','composite-recipes.md'):
         shutil.copy2(ROOT/'docs'/name,docs/name)
     if (ROOT/'docs/v508-screenshots').is_dir():
         shutil.copytree(ROOT/'docs/v508-screenshots',docs/'v508-screenshots')
+    if (ROOT/'docs/v508-layout-review').is_dir():
+        shutil.copytree(ROOT/'docs/v508-layout-review',docs/'v508-layout-review')
     (DEST/'SHA256SUMS.txt').write_text(''.join(f'{value}  release/{name}\n'
         for name,value in checksums.items()),encoding='ascii')
     summary = dict(version='V5.0.8',vig_version='1.2.0',source_commit=expected,
