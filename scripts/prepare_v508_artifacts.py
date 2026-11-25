@@ -53,7 +53,7 @@ def main():
             ('app_id_preserved','isolated_install','upgrade','frozen_vig','uninstall')):
         raise ValueError('Extension installer acceptance failed')
     tests = read_json(qa/'tests/results.json')
-    if len(tests) != 9 or any(item['exit_code'] for item in tests):
+    if len(tests) != 11 or any(item['exit_code'] for item in tests):
         raise ValueError('Directed tests did not all pass')
     collected = 0
     for item in tests:

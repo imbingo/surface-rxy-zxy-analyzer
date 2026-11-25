@@ -409,7 +409,7 @@ class ParallelismMixin:
         ax.tick_params(labelsize=8, colors='#94a3b8')
         ax.view_init(elev=24, azim=-52)
         ax.grid(True, linestyle=':', linewidth=0.7, color='#dce3ea')
-        set_surface_box_aspect(ax, x, y, z, zoom=1.06)
+        set_surface_box_aspect(ax, x, y, z, zoom=0.90)
         for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
             pane.set_facecolor('#fbfcfd')
             pane.set_edgecolor('#e6eaee')
@@ -423,7 +423,7 @@ class ParallelismMixin:
             color='#334155',
             bbox=dict(boxstyle='round,pad=0.35', fc='white', ec='#dbe3ec', alpha=0.9)
         )
-        cbar = fig.colorbar(sc, ax=ax, shrink=0.68, aspect=24, pad=0.10)
+        cbar = fig.colorbar(sc, ax=ax, shrink=0.68, aspect=24, pad=0.10, panchor=False)
         cbar.set_label("Z (mm)", fontsize=9)
         cbar.ax.tick_params(labelsize=8)
 

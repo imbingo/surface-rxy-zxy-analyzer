@@ -63,10 +63,12 @@ def dark_color(prop, source):
     r, g, b, _ = rgb.getRgb()
     value = (r + g + b) / 3
     sat = max(r, g, b) - min(r, g, b)
+    if prop == "placeholder-text-color":
+        return MUTED
     if prop in ("color", "selection-color"):
         if key in ("#b42318", "#b4453a"):
             return FAIL
-        if key == "white" or (value < 70 and sat < 26):
+        if key in ("white", "#233445") or (value < 70 and sat < 26):
             return TEXT
         if key in ("#b6bdc4", "#aebfd0", "#c8ced4"):
             return DISABLED

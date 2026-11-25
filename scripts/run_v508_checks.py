@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-FILES = ('test_v508', 'test_v507', 'test_vig_module', 'test_composite_workflow',
+FILES = ('test_layout_review', 'test_report_layout', 'test_v508', 'test_v507', 'test_vig_module', 'test_composite_workflow',
          'test_gap_registration', 'test_theme', 'test_judgment',
          'test_module_host', 'test_format_extensions')
 

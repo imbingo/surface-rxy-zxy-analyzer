@@ -710,6 +710,7 @@ class GapAnalysisMixin:
     def _apply_gap_payload(self, payload):
         self.gap_result = payload
         self._gap_plane_metrics(payload)
+        self._refresh_gap_registration(preserve_view=True)
         self._sync_gap_action_state()
         self.load_gap_secondary()
         self._show_status(f"膜厚计算完成，已载入主控编辑副本，共 {len(payload['z']):,} 点。", 8000)

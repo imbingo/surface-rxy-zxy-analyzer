@@ -54,7 +54,7 @@ def draw_four_views(figure, x, y, z, *, spec=None, quantity='Z', unit='mm'):
     for ax in axes[1:]:
         ax.grid(True, alpha=.2)
     figure.colorbar(ScalarMappable(norm=Normalize(*limits), cmap=colormaps['turbo']),
-                    ax=axes, shrink=.8, pad=.025, label=label)
+                    ax=axes, shrink=.8, pad=.025, label=label, panchor=False)
     return axes
 
 

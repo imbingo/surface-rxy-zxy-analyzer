@@ -42,7 +42,8 @@ class JudgmentMixin:
                 self._show_status("判定规格已更新。", 4000)
 
     def _make_judgment_card(self, module):
-        label = QLabel("--")
+        from ..widgets import AdaptiveMetricLabel
+        label = AdaptiveMetricLabel("--")
         card = self._make_metric_card("结果判定", label)
         card.setCursor(Qt.CursorShape.PointingHandCursor)
         card.mousePressEvent = lambda event: self.open_judgment_spec_dialog()
@@ -146,7 +147,7 @@ class JudgmentMixin:
     def _single_metric_config(self):
         from ..display_metrics import normalize_single_config
         if not hasattr(self, 'single_metric_config'):
-            self.single_metric_config = normalize_single_config()
+            self.single_metric_config = normalize_single_config({'visible':['mean_z','pv','ttv','rx','ry']})
         return self.single_metric_config
 
     def set_single_metric_config(self, config):
@@ -171,11 +172,21 @@ class JudgmentMixin:
         # a nearly empty second row, with the verdict always at the far right.
         metric_columns = max(1, (len(active) + rows - 1) // rows)
         columns = metric_columns + 1 if active else 1
-        for col in range(len(self._metric_cards)): self._metric_grid.setColumnStretch(col, 0)
-        for index, card in enumerate(active):
-            self._metric_grid.addWidget(card, index // metric_columns, index % metric_columns)
-        self._metric_grid.addWidget(verdict, 0, columns - 1, rows, 1)
-        for col in range(columns): self._metric_grid.setColumnStretch(col, 1)
+        import math
+        counts = [min(metric_columns, len(active)-row*metric_columns) for row in range(rows)] if active else []
+        units = math.lcm(*counts) if counts else 0
+        verdict_units = max(1, units//metric_columns)
+        for col in range(max(self._metric_grid.columnCount(), units+1)):
+            self._metric_grid.setColumnStretch(col, 0)
+        offset = 0
+        for row, count in enumerate(counts):
+            span = units//count
+            for col in range(count):
+                self._metric_grid.addWidget(active[offset], row, col*span, 1, span)
+                offset += 1
+        self._metric_grid.addWidget(verdict, 0, units, rows, 1)
+        for col in range(units):self._metric_grid.setColumnStretch(col, 1)
+        self._metric_grid.setColumnStretch(units, verdict_units)
         self._metric_columns = columns
 
     def _refresh_single_display_metrics(self):

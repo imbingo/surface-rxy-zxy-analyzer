@@ -56,7 +56,7 @@ from .mixins.composite import CompositeMixin
 from .mixins.roi import ROIMixin
 from .mixins.reporting import ReportingMixin
 from .mixins.judgment import JudgmentMixin
-from .widgets import AdaptiveMetricLabel
+from .widgets import AdaptiveMetricLabel, ResponsiveMetricLayout
 from .workers import FunctionWorker
 from .module_extensions import (
     ModuleExtensionRegistry, ModuleHost, validate_module_object,
@@ -1142,7 +1142,8 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         v.setContentsMargins(12, 9, 12, 9)
         v.setSpacing(4)
         t = QLabel(title)
-        t.setMinimumHeight(18)
+        t.setWordWrap(True)
+        t.setMinimumHeight(max(32, 2*t.fontMetrics().lineSpacing()))
         t.setObjectName("metricTitleAccent" if accent else "metricTitle")
         value_label.setObjectName("metricValueAccent" if accent else "metricValue")
         v.addWidget(t)
@@ -2323,14 +2324,14 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
 
         strip = QFrame()
         strip.setObjectName("metricSurface")
-        sl = QHBoxLayout(strip)
+        sl = ResponsiveMetricLayout(strip)
         sl.setContentsMargins(10, 4, 10, 8)
         sl.setSpacing(12)
-        self.lbl_gap_matched = QLabel("--")
-        self.lbl_gap_unmatched = QLabel("--")
-        self.lbl_gap_tolerance = QLabel("--")
-        self.lbl_gap_reg_mean = QLabel("--")
-        self.lbl_gap_state = QLabel("待计算")
+        self.lbl_gap_matched = AdaptiveMetricLabel("--")
+        self.lbl_gap_unmatched = AdaptiveMetricLabel("--")
+        self.lbl_gap_tolerance = AdaptiveMetricLabel("--")
+        self.lbl_gap_reg_mean = AdaptiveMetricLabel("--")
+        self.lbl_gap_state = AdaptiveMetricLabel("待计算")
         sl.addWidget(self._make_value_card("成功匹配点", self.lbl_gap_matched, accent=True), 1)
         sl.addWidget(self._make_value_card("未参与扣减点", self.lbl_gap_unmatched, accent=True), 1)
         self.gap_reg_mean_card = self._make_value_card("配准误差均值 (µm)", self.lbl_gap_reg_mean)
@@ -2369,14 +2370,14 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
 
         strip = QFrame()
         strip.setObjectName("metricSurface")
-        sl = QHBoxLayout(strip)
+        sl = ResponsiveMetricLayout(strip)
         sl.setContentsMargins(10, 4, 10, 8)
         sl.setSpacing(12)
-        self.lbl_par_drx = QLabel("--")
-        self.lbl_par_dry = QLabel("--")
-        self.lbl_par_angle = QLabel("--")
-        self.lbl_par_step = QLabel("--")
-        self.lbl_par_state = QLabel("待计算")
+        self.lbl_par_drx = AdaptiveMetricLabel("--")
+        self.lbl_par_dry = AdaptiveMetricLabel("--")
+        self.lbl_par_angle = AdaptiveMetricLabel("--")
+        self.lbl_par_step = AdaptiveMetricLabel("--")
+        self.lbl_par_state = AdaptiveMetricLabel("待计算")
         sl.addWidget(self._make_value_card("平行度 ΔRx (µrad)", self.lbl_par_drx, accent=True), 1)
         sl.addWidget(self._make_value_card("平行度 ΔRy (µrad)", self.lbl_par_dry, accent=True), 1)
         sl.addWidget(self._make_value_card("合成夹角 (µrad)", self.lbl_par_angle), 1)

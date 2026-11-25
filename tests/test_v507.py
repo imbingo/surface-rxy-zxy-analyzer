@@ -101,7 +101,7 @@ class MainAcceptance(Base):
         try:
             self.assertFalse(other.use_system_frame)
             self.assertTrue(other.windowFlags() & Qt.WindowType.FramelessWindowHint)
-            config=other._single_metric_config();self.assertEqual(len(config['visible']),6)
+            config=other._single_metric_config();self.assertEqual(len(config['visible']),5);self.assertNotIn('std3',config['visible'])
             self.assertTrue(all(v is None for v in config['limits'].values()))
             self.assertEqual(other.current_judgment('single')['verdict'],'unset')
             self.assertEqual(other._judgment_widgets['single'][1].text(),'未设规格')

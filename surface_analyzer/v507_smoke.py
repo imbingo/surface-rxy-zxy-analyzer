@@ -54,7 +54,8 @@ def run(extension, output):
             window.import_x_unit = window.import_y_unit = window.import_z_unit = 'mm'
             assert not window.use_system_frame
             assert window.windowFlags() & Qt.WindowType.FramelessWindowHint
-            assert len(window._single_metric_config()['visible']) == 6
+            assert len(window._single_metric_config()['visible']) == 5
+            assert 'std3' not in window._single_metric_config()['visible']
             assert all(v is None for v in window._single_metric_config()['limits'].values())
             assert window.current_judgment('single')['verdict'] == 'unset'
             x, y = np.meshgrid(np.linspace(-3,3,7), np.linspace(-2,2,7))
@@ -91,7 +92,7 @@ def run(extension, output):
             window.set_theme_preference('light',persist=False)
             window.set_single_metric_config(normalize_single_config({'visible':['pv','std3']}))
             window.resize(1180,820);capture('single-two-metrics')
-            window.set_single_metric_config(normalize_single_config())
+            window.set_single_metric_config(normalize_single_config({'visible':['mean_z','pv','ttv','rx','ry']}))
             window._set_system_frame_enabled(True);assert window.use_system_frame
             window._set_system_frame_enabled(False);assert not window.use_system_frame
             window.showMinimized();application.processEvents();window.showNormal()

@@ -140,7 +140,7 @@ class VigImageModule:
     def _group(self, title):
         group = QGroupBox(title)
         group.setLayout(QVBoxLayout())
-        group.layout().setContentsMargins(10, 8, 10, 8)
+        group.layout().setContentsMargins(10, max(28, group.fontMetrics().lineSpacing()+12), 10, 8)
         group.layout().setSpacing(6)
         return group
 
@@ -198,7 +198,8 @@ class VigImageModule:
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(8, 6, 8, 6)
             card_layout.addWidget(QLabel(title))
-            label = QLabel(value)
+            from surface_analyzer.widgets import AdaptiveMetricLabel
+            label = AdaptiveMetricLabel(value)
             label.setObjectName('metricValue')
             card_layout.addWidget(label)
             grid.addWidget(card, index // 3, index % 3)

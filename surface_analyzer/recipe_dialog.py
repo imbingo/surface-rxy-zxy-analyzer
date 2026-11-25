@@ -18,12 +18,19 @@ class RecipeLibraryDialog(QDialog):
         self.resize(820, 510)
         self.setStyleSheet('QTreeWidget { border: 1px solid #dce4ec; border-radius: 6px; }'
                            'QTreeWidget::item { height: 28px; }'
-                           'QHeaderView::section { background: #edf3f9; padding: 6px; border: none; }')
+                           'QHeaderView::section { background: #edf3f9; padding: 6px; border: none; }'
+                           'QLineEdit#recipeSearch { background: #ffffff; color: #233445; '
+                           'placeholder-text-color: #52657a; selection-background-color: #dce8f3; '
+                           'selection-color: #173b5e; border: 1px solid #b7c3cf; '
+                           'border-radius: 5px; padding: 5px 8px; }'
+                           'QLineEdit#recipeSearch:focus { border-color: #4779a6; }')
         layout = QVBoxLayout(self)
         self.current = QLabel('当前 Recipe：' + getattr(owner, 'current_recipe_name', '未选择'))
         layout.addWidget(self.current)
         row = QHBoxLayout()
         self.search = QLineEdit()
+        self.search.setObjectName('recipeSearch')
+        self.search.setMinimumHeight(34)
         self.search.setPlaceholderText('搜索 Recipe 名称、版本或文件名')
         self.search.setClearButtonEnabled(True)
         self.filter = QComboBox()

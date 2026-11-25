@@ -776,7 +776,7 @@ class ReportingMixin:
         # YaHei 同时含中文与 µ(U+00B5)，避免报告图里 µm/µrad 出现缺字方块；其余字体兜底
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
         plt.rcParams['axes.unicode_minus'] = False
-        fig = Figure(figsize=(17, 9), constrained_layout=True)
+        fig = Figure(figsize=(17, 9), constrained_layout=False)
         FigureCanvasAgg(fig)
         gs = fig.add_gridspec(2, 3, width_ratios=[1.15, 1.0, 1.0])
         # 左栏再切成 元信息 / 结果卡片 / 脚注 三段，互不重叠
@@ -916,7 +916,7 @@ class ReportingMixin:
             xx, yy = np.meshgrid(np.linspace(dx.min(), dx.max(), 10), np.linspace(dy.min(), dy.max(), 10))
             zz = np.zeros_like(xx) if display_surface_mode != 'raw' else coeffs[0] * xx + coeffs[1] * yy + coeffs[2]
             ax3d.plot_surface(xx, yy, zz, color='#3498db', alpha=0.3, edgecolor='none')
-            set_surface_box_aspect(ax3d, dx, dy, dz, zoom=0.82, z_tick_count=3)
+            set_surface_box_aspect(ax3d, dx, dy, dz, zoom=0.90, z_tick_count=3)
             # 颜色条：标明散点配色对应的高度/残差量级
             cbar = fig.colorbar(m_xy, ax=ax_xy, location='right',
                                 shrink=0.80, aspect=28, pad=0.04)
@@ -930,7 +930,7 @@ class ReportingMixin:
             if scales['local'] and scales['detail_limits'] is not None:
                 from matplotlib.cm import ScalarMappable
                 local_bar = fig.colorbar(ScalarMappable(norm=Normalize(*detail_limits),cmap='turbo'),
-                                         ax=ax3d,location='right',shrink=.80,aspect=28,pad=.04)
+                                         ax=ax3d,location='right',shrink=.80,aspect=28,pad=.04,panchor=False)
                 local_bar.set_label('当前 ROI · '+zlab,fontsize=10)
                 local_bar.ax.tick_params(labelsize=8)
                 if scales['detail_flat'] is not None:
@@ -1034,8 +1034,9 @@ class ReportingMixin:
     def _layout_report_text(fig, grid, axes):
         """Measure wrapped CJK text before allocating report sections in inches."""
         fig.set_layout_engine(None)
+        grid.set_width_ratios([1.05, 1., 1.])
         grid.update(left=0.035, right=0.96, bottom=0.07, top=0.91,
-                    wspace=0.48, hspace=0.38)
+                    wspace=0.35, hspace=0.38)
         renderer = fig.canvas.get_renderer()
         width = 4.75 * fig.dpi
         heights = []
@@ -1058,6 +1059,19 @@ class ReportingMixin:
             heights.append(label.get_window_extent(renderer).height / fig.dpi + 0.36)
         height = max(9.0, sum(heights) + 1.25)
         fig.set_size_inches(17, height)
+        # Pure Figure objects are not pyplot-managed: GridSpec.update does not
+        # move their axes. Reapply specs after final page sizing, including the
+        # nested slots reserved for colorbars.
+        for plot_axis in fig.axes:
+            if plot_axis not in axes:
+                spec = plot_axis.get_subplotspec()
+                if spec is not None:
+                    cell = spec.get_position(fig)
+                    plot_axis.set_position(cell)
+                    if plot_axis.get_title():
+                        plot_axis.set_title(plot_axis.get_title(), y=1.)
+                        plot_axis.title.set_transform(fig.transFigure)
+                        plot_axis.title.set_position((cell.x0+cell.width/2,cell.y1+.015))
         top = height - 0.8
         for ax, section_height in zip(axes, heights):
             ax.set_position([0.035, (top-section_height)/height,
