@@ -273,6 +273,9 @@ class MultiViewCanvas(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Do not let Matplotlib's initial 480px canvas size dictate each row's
+        # preferred height inside a height-for-width scroll area.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
         # YaHei 同时含中文与 µ(U+00B5)，去倾斜显示的 µm 轴标签也不再出现缺字方块
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
         plt.rcParams['axes.unicode_minus'] = False

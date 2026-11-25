@@ -48,6 +48,19 @@ class LayoutReview(Base):
         self.assertTrue(w._single_cards['std3'].isHidden())
         self.assertEqual(w.current_judgment('single')['verdict'],'unset')
 
+    def test_main_four_views_fit_after_resize_and_focus_restore(self):
+        w=self.w;w.show();w.tabs.setCurrentIndex(0)
+        for width in (1100,1600):
+            w.resize(width,900)
+            for _ in range(12):self.qt.processEvents()
+        for focus in ('3D',None):
+            w.canvas.set_focused_view(focus)
+            for _ in range(12):self.qt.processEvents()
+        scroll=w.right_stack.widget(0)
+        self.assertEqual(scroll.verticalScrollBar().maximum(),0)
+        self.assertGreater(w.canvas.height(),460)
+        self.assertTrue(all(card.isVisible() for card in w.canvas._cards))
+
     def test_narrow_module_titles_and_values_are_not_clipped(self):
         w=self.w;w.resize(1100,900);w.show()
         for index in (0,1,2):
