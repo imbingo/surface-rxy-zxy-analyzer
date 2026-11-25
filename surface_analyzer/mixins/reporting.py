@@ -97,6 +97,24 @@ class ReportingMixin:
         lines = [f"识别格式: {source_format}",
                  f"源数据统计: 有效 {valid} | 缺测 {missing:,} | 坏行 {bad:,}{topology}"]
         lines.extend(derived_trace)
+        if info.get('memory_result'):
+            lines.append('内存结果编辑副本；源计算结果保持不变，不可直接保存为文件型组合槽。')
+            from .parallelism import ParallelismMixin
+            short_text = ParallelismMixin._short_report_text
+            provenance = info.get('memory_provenance', {})
+            inputs = provenance.get('inputs', {})
+            names = [short_text(Path(str(v.get('name', '--'))).name, 35) for v in inputs.values() if isinstance(v,dict)]
+            errors = provenance.get('errors', [])
+            error_text = short_text('; '.join(str(e.get('message','')) for e in errors[:2]), 80)
+            lines.append(str(provenance.get('result_type', 'VIG')) + ' 来源: ' + ' / '.join(names[:2]) + f"；失败 {provenance.get('n_errors',0)} 点 {error_text}；完整追溯见 CSV")
+            if provenance.get('result_type') == '膜厚':
+                lines.append(f"膜厚匹配：{provenance.get('original_points', 0):,} 点；容差 {provenance.get('tolerance', 0):.6g} mm")
+                for role, record in inputs.items():
+                    if role != 'stack' and record is not None:
+                        lines.append(f"配准 {role}：ΔX {record.get('offset_x',0):+.6g} / ΔY {record.get('offset_y',0):+.6g} mm")
+                for line in provenance.get('reports', []):
+                    lines.append('匹配信息：' + short_text(line, 85))
+            lines.append(str(provenance.get('result_type', 'VIG')) + ' 追溯: ' + json.dumps(provenance, ensure_ascii=False))
         if info.get('format_extension_id'):
             lines.append(f"格式扩展: {info['format_extension_id']} "
                          f"v{info.get('format_extension_version')} | "
@@ -264,6 +282,10 @@ class ReportingMixin:
             df_out['X_mm'] = fx - dx
             df_out['Y_mm'] = fy - dy
 
+            display_values = self._single_display_metrics
+            if display_values is None:
+                mode = getattr(self,'display_surface_mode','raw')
+                display_values = self.last_metrics if mode == 'raw' else {'display_mode':mode,'available':False}
             pipeline_text = " -> ".join(self.transform_pipeline) if self.transform_pipeline else "原始状态"
             filter_text = self.cb_filter.currentText()
             if self.cb_filter.currentIndex() == 2:
@@ -329,6 +351,7 @@ class ReportingMixin:
                         f"# 当前显示残差: {display_order}阶 PV = "
                         f"{display_model['residual_pv_um']:.3f} µm | RMS = "
                         f"{display_model['residual_rms_um']:.3f} µm")
+            meta.append('# 当前显示面型实际指标: ' + json.dumps(display_values, ensure_ascii=False, default=lambda value: value.tolist() if isinstance(value, np.ndarray) else str(value)))
             meta.extend(f"# {line}" for line in self._import_trace_text(self.import_info))
             if quality['warning']:
                 meta.append(f"# 警告: {quality['warning']}")
@@ -753,7 +776,7 @@ class ReportingMixin:
         # YaHei 同时含中文与 µ(U+00B5)，避免报告图里 µm/µrad 出现缺字方块；其余字体兜底
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
         plt.rcParams['axes.unicode_minus'] = False
-        fig = Figure(figsize=(17, 9), constrained_layout=True)
+        fig = Figure(figsize=(17, 9), constrained_layout=False)
         FigureCanvasAgg(fig)
         gs = fig.add_gridspec(2, 3, width_ratios=[1.15, 1.0, 1.0])
         # 左栏再切成 元信息 / 结果卡片 / 脚注 三段，互不重叠
@@ -893,7 +916,7 @@ class ReportingMixin:
             xx, yy = np.meshgrid(np.linspace(dx.min(), dx.max(), 10), np.linspace(dy.min(), dy.max(), 10))
             zz = np.zeros_like(xx) if display_surface_mode != 'raw' else coeffs[0] * xx + coeffs[1] * yy + coeffs[2]
             ax3d.plot_surface(xx, yy, zz, color='#3498db', alpha=0.3, edgecolor='none')
-            set_surface_box_aspect(ax3d, dx, dy, dz, zoom=0.82, z_tick_count=3)
+            set_surface_box_aspect(ax3d, dx, dy, dz, zoom=0.90, z_tick_count=3)
             # 颜色条：标明散点配色对应的高度/残差量级
             cbar = fig.colorbar(m_xy, ax=ax_xy, location='right',
                                 shrink=0.80, aspect=28, pad=0.04)
@@ -907,7 +930,7 @@ class ReportingMixin:
             if scales['local'] and scales['detail_limits'] is not None:
                 from matplotlib.cm import ScalarMappable
                 local_bar = fig.colorbar(ScalarMappable(norm=Normalize(*detail_limits),cmap='turbo'),
-                                         ax=ax3d,location='right',shrink=.80,aspect=28,pad=.04)
+                                         ax=ax3d,location='right',shrink=.80,aspect=28,pad=.04,panchor=False)
                 local_bar.set_label('当前 ROI · '+zlab,fontsize=10)
                 local_bar.ax.tick_params(labelsize=8)
                 if scales['detail_flat'] is not None:
@@ -917,6 +940,10 @@ class ReportingMixin:
                     local_bar.update_ticks()
 
         # 顶部：元信息（较小字号）
+        from ..display_metrics import display_metrics
+        fit_idx = np.asarray(active_idx, dtype=int)
+        metrics = display_metrics(tx[fit_idx], ty[fit_idx], tz[fit_idx], display_surface_mode, display_model)
+        coeffs = metrics['coeffs']
         quality = self._metric_quality_from_import(import_info)
         relation = "≈" if quality['estimated'] else "="
         high_order_warnings = []
@@ -953,7 +980,7 @@ class ReportingMixin:
                 f"导出坐标原点: 有效点左下角（X−{dx:.4f}, Y−{dy:.4f} mm）")
         import_trace = self._import_trace_text(import_info)
         if import_trace:
-            meta_lines.extend(import_trace[:4])
+            meta_lines.extend([line for line in import_trace if ' 追溯: ' not in line][:8])
         if roi_info.get('shape_lines'):
             roi_shape_text = "；".join(roi_info['shape_lines'][:4])
             if len(roi_info['shape_lines']) > 4:
@@ -963,23 +990,19 @@ class ReportingMixin:
                      fontsize=10.0, linespacing=1.55, color='#34495e', transform=ax_meta.transAxes)
 
         # 中部：关键结果卡片（大字号 + 高亮底色，手机上一眼可读）
-        display_residual_text = ''
-        if display_model is not None:
-            display_residual_text = (
-                f"\n{display_order}阶残差 PV   {relation} "
-                f"{display_model['residual_pv_um']:.3f} µm"
-                f" | RMS {display_model['residual_rms_um']:.3f} µm")
+        pv_title = '平面法向 PV' if display_surface_mode == 'raw' else '显示残差 PV'
         results_text = (
             "【分析结果】\n\n"
             f"平面方程   Z {relation} {metrics['a']:.4f}·X + {metrics['b']:.4f}·Y + {metrics['c']:.4f}\n\n"
-            f"平均厚度 Z    {relation} {metrics['mean_z']:.5f} mm\n"
-            f"PV(BF平面残差) {relation} {metrics['pv']:.3f} µm\n"
+            f"Mean Z       {relation} {metrics['mean_z']:.5f} mm\n"
+            f"{pv_title}   {relation} {metrics['pv']:.3f} µm\n"
             f"TTV(Z 极差)   {relation} {metrics['ttv']:.3f} µm\n"
-            f"物料 Rx       {relation} {metrics['rx']:.2f} µrad\n"
-            f"物料 Ry       {relation} {metrics['ry']:.2f} µrad"
-            f"{display_residual_text}"
+            f"当前 Z 的 Rx  {relation} {metrics['rx']:.2f} µrad\n"
+            f"当前 Z 的 Ry  {relation} {metrics['ry']:.2f} µrad\n"
+            f"3σ(总体 ddof=0) = {metrics['std3']:.3f} µm\n"
+            f"指标显示口径: {display_surface_mode}\n"
         )
-        judgment = judgment_summary(self.current_judgment('single', {k: metrics.get(k) for k in ('rx', 'ry', 'pv', 'ttv')}))
+        judgment = judgment_summary(self.current_judgment('single', metrics))
         if judgment:
             results_text += f"\n\n{judgment}"
         result_face = '#fff4e5' if quality['estimated'] else '#eaf2fb'
@@ -992,9 +1015,12 @@ class ReportingMixin:
         # 底部：脚注
         fit_warning_text = ("高阶警告: " + "；".join(high_order_warnings) + "\n"
                             if high_order_warnings else "")
+        pv_note = ('PV 为相对最佳拟合平面的法向残差极差，仅去倾斜、未去曲率。'
+                   if display_surface_mode == 'raw' else
+                   'PV 为当前显示残差 Z 的极差，不再次去平面；Rx/Ry 也基于当前显示 Z。')
         foot_text = (f"警告: {quality['warning']}\n" if quality['warning'] else "") + fit_warning_text + (
                      "注: Rx≈+dZ/dY, Ry≈-dZ/dX，符号约定需标准件校准。\n"
-                     "PV 为相对最佳拟合平面的法向残差极差，仅去倾斜、未去曲率。批量无手动删点。")
+                     + pv_note)
         ax_foot.text(0.02, 0.9, foot_text,
                      va='top', ha='left', fontsize=9, style='italic',
                      color='#b42318' if quality['warning'] or high_order_warnings else '#7f8c8d',
@@ -1008,8 +1034,9 @@ class ReportingMixin:
     def _layout_report_text(fig, grid, axes):
         """Measure wrapped CJK text before allocating report sections in inches."""
         fig.set_layout_engine(None)
+        grid.set_width_ratios([1.05, 1., 1.])
         grid.update(left=0.035, right=0.96, bottom=0.07, top=0.91,
-                    wspace=0.48, hspace=0.38)
+                    wspace=0.35, hspace=0.38)
         renderer = fig.canvas.get_renderer()
         width = 4.75 * fig.dpi
         heights = []
@@ -1032,6 +1059,19 @@ class ReportingMixin:
             heights.append(label.get_window_extent(renderer).height / fig.dpi + 0.36)
         height = max(9.0, sum(heights) + 1.25)
         fig.set_size_inches(17, height)
+        # Pure Figure objects are not pyplot-managed: GridSpec.update does not
+        # move their axes. Reapply specs after final page sizing, including the
+        # nested slots reserved for colorbars.
+        for plot_axis in fig.axes:
+            if plot_axis not in axes:
+                spec = plot_axis.get_subplotspec()
+                if spec is not None:
+                    cell = spec.get_position(fig)
+                    plot_axis.set_position(cell)
+                    if plot_axis.get_title():
+                        plot_axis.set_title(plot_axis.get_title(), y=1.)
+                        plot_axis.title.set_transform(fig.transFigure)
+                        plot_axis.title.set_position((cell.x0+cell.width/2,cell.y1+.015))
         top = height - 0.8
         for ax, section_height in zip(axes, heights):
             ax.set_position([0.035, (top-section_height)/height,

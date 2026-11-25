@@ -161,6 +161,7 @@ class RecipeMixin:
                 'matrix_rows': int(getattr(self, 'height_matrix_rows', 0)),
             },
             'gap': {'tolerance_mm': float(self.spin_tol.value()) if hasattr(self, 'spin_tol') else 0.05},
+            'single_metrics': copy.deepcopy(self._single_metric_config()),
             'judgment': dict(self._judgment_spec()) if hasattr(self, '_judgment_spec') else {},
         }
 
@@ -353,6 +354,8 @@ class RecipeMixin:
             self.spin_tol.setValue(float(gap.get('tolerance_mm', self.spin_tol.value())))
         if isinstance(recipe.get('judgment'), dict) and hasattr(self, 'set_judgment_spec'):
             self.set_judgment_spec(recipe['judgment'])
+        if 'single_metrics' in recipe:
+            self.set_single_metric_config(recipe['single_metrics'])
         if remap_current_data and self.absolute_raw_df is not None:
             self.apply_mapping(preserve_analysis_settings=True)
         valid_actions = {'CW90', 'CCW90', 'ROT180', 'SWAP', 'FLIPX', 'FLIPY', 'ORIGIN(0,0)'}

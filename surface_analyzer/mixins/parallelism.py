@@ -38,6 +38,9 @@ from ..judgment import judgment_summary
 
 class ParallelismMixin:
     def _current_parallel_record(self):
+        if getattr(self,'_task_thread',None) is not None or getattr(self,'_pending_sigma_reanalysis',False):
+            QMessageBox.warning(self,'单层处理尚未完成','请等待滤波或后台任务完成后再写入平行度数据槽。')
+            return None
         if self.df_raw is None or self.active_idx is None:
             QMessageBox.warning(self, "暂无数据", "请先在主页面导入并处理数据。")
             return None
@@ -406,7 +409,7 @@ class ParallelismMixin:
         ax.tick_params(labelsize=8, colors='#94a3b8')
         ax.view_init(elev=24, azim=-52)
         ax.grid(True, linestyle=':', linewidth=0.7, color='#dce3ea')
-        set_surface_box_aspect(ax, x, y, z, zoom=1.06)
+        set_surface_box_aspect(ax, x, y, z, zoom=0.90)
         for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
             pane.set_facecolor('#fbfcfd')
             pane.set_edgecolor('#e6eaee')
@@ -420,142 +423,63 @@ class ParallelismMixin:
             color='#334155',
             bbox=dict(boxstyle='round,pad=0.35', fc='white', ec='#dbe3ec', alpha=0.9)
         )
-        cbar = fig.colorbar(sc, ax=ax, shrink=0.68, aspect=24, pad=0.10)
+        cbar = fig.colorbar(sc, ax=ax, shrink=0.68, aspect=24, pad=0.10, panchor=False)
         cbar.set_label("Z (mm)", fontsize=9)
         cbar.ax.tick_params(labelsize=8)
 
     def _render_parallel_report_figure(self):
-        """生成平行度分析报告图，返回 Figure(Agg 后端)。"""
+        """V5.0.8: reserved regions for sources, metrics, surfaces and notes."""
+        import textwrap
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
-        plt.rcParams['axes.unicode_minus'] = False
         if self.parallel_result is None:
             self.parallel_result = self._compute_parallel_result()
-
-        b_rec, m_rec = self.parallel_base, self.parallel_measure
-        b, m = b_rec['metrics'], m_rec['metrics']
         r = self.parallel_result
-
-        fig = Figure(figsize=(17.6, 10.0), constrained_layout=False)
+        base, measure = self.parallel_base, self.parallel_measure
+        b, m = base['metrics'], measure['metrics']
+        traces = [self._parallel_trace(rec) for rec in (base, measure)]
+        source_lines = []
+        for title, rec, trace in zip(('基准面','测量面'), (base,measure), traces):
+            source_lines.extend(textwrap.wrap(f"{title}：{rec['name']}", 35))
+            source_lines.extend(textwrap.wrap(f"处理：{trace['pipeline']} / {trace['filter']}",35))
+            source_lines.append(f"有效点：{rec['n']:,}；{trace['quality']}")
+        source_lines.append('导入：' + ' / '.join(t['import_strategy'] for t in traces))
+        # Source height grows with actual wrapped text, never overlaps the table.
+        height = max(10.5, 7.8 + .19 * len(source_lines))
+        fig = Figure(figsize=(18,height), facecolor='white')
         FigureCanvasAgg(fig)
-        gs = fig.add_gridspec(
-            1, 3, width_ratios=[1.08, 1.42, 1.42],
-            left=0.035, right=0.985, top=0.90, bottom=0.06, wspace=0.16)
-        gs_left = gs[0, 0].subgridspec(4, 1, height_ratios=[1.65, 1.45, 3.15, 1.35], hspace=0.32)
-        ax_meta = fig.add_subplot(gs_left[0, 0]); ax_meta.axis('off')
-        ax_result = fig.add_subplot(gs_left[1, 0]); ax_result.axis('off')
-        ax_table = fig.add_subplot(gs_left[2, 0]); ax_table.axis('off')
-        ax_note = fig.add_subplot(gs_left[3, 0]); ax_note.axis('off')
-        ax_base = fig.add_subplot(gs[0, 1], projection='3d')
-        ax_meas = fig.add_subplot(gs[0, 2], projection='3d')
-
-        ax_meta.text(0.02, 0.98, "报告信息", va='top', ha='left',
-                     fontsize=12.2, fontweight='bold', color='#1f2937',
-                     transform=ax_meta.transAxes)
-        base_trace = self._parallel_trace(b_rec)
-        measure_trace = self._parallel_trace(m_rec)
-        meta_lines = [
-            f"时间  {datetime.now():%Y-%m-%d %H:%M:%S}",
-            f"基准  {self._short_report_text(b_rec['name'], 42)}",
-            f"测量  {self._short_report_text(m_rec['name'], 42)}",
-            f"点数  基准 {b_rec['n']:,} / 测量 {m_rec['n']:,}",
-            f"基准处理  {self._short_report_text(base_trace['pipeline'], 34)}",
-            f"测量处理  {self._short_report_text(measure_trace['pipeline'], 34)}",
-            f"基准滤波  {self._short_report_text(base_trace['filter'], 34)}",
-            f"测量滤波  {self._short_report_text(measure_trace['filter'], 34)}",
-            f"基准导入  {self._short_report_text(base_trace['import_strategy'], 34)}",
-            f"测量导入  {self._short_report_text(measure_trace['import_strategy'], 34)}",
-            f"基准抽样/质量  {base_trace['sampled']} / {base_trace['quality']}",
-            f"测量抽样/质量  {measure_trace['sampled']} / {measure_trace['quality']}",
-        ]
-        ax_meta.text(0.02, 0.80, "\n".join(meta_lines), va='top', ha='left',
-                     fontsize=8.7, linespacing=1.32, color='#475569',
-                     transform=ax_meta.transAxes,
-                     bbox=dict(boxstyle='round,pad=0.45', facecolor='#f8fafc',
-                               edgecolor='#dbe3ec', linewidth=1.0))
-
-        ax_result.add_patch(FancyBboxPatch(
-            (0.0, 0.03), 0.98, 0.90,
-            boxstyle='round,pad=0.018,rounding_size=0.035',
-            transform=ax_result.transAxes,
-            facecolor='#eaf2fb', edgecolor='#2f6db0', linewidth=1.35,
-            zorder=0, clip_on=False))
-        ax_result.text(0.04, 0.84, "平行度结果", va='center', ha='left',
-                       fontsize=11.8, fontweight='bold', color='#11447a',
-                       transform=ax_result.transAxes, zorder=2)
-        result_prefix = "≈" if r.get('estimated') else ""
-        result_rows = [
-            ("ΔRx", f"{result_prefix}{r['drx']:.2f}", "µrad"),
-            ("ΔRy", f"{result_prefix}{r['dry']:.2f}", "µrad"),
-            ("合成夹角", f"{result_prefix}{r['angle']:.2f}", "µrad"),
-            ("台阶高度差", f"{result_prefix}{r['step_height']:.5f}", "mm"),
-        ]
-        y0 = 0.66
-        for i, (name, value, unit) in enumerate(result_rows):
-            y = y0 - i * 0.17
-            ax_result.text(0.04, y, name, va='center', ha='left',
-                           fontsize=10.2, color='#64748b', transform=ax_result.transAxes, zorder=2)
-            ax_result.text(0.72, y, value, va='center', ha='right',
-                           fontsize=17.0, fontweight='bold', color='#11447a',
-                           transform=ax_result.transAxes, zorder=2)
-            ax_result.text(0.76, y, unit, va='center', ha='left',
-                           fontsize=10.2, color='#64748b', transform=ax_result.transAxes, zorder=2)
-
-        base_prefix = "≈" if b_rec.get('metric_quality', {}).get('estimated') else ""
-        measure_prefix = "≈" if m_rec.get('metric_quality', {}).get('estimated') else ""
-        table_rows = [
-            ["Rx (µrad)", f"{base_prefix}{b['rx']:.2f}", f"{measure_prefix}{m['rx']:.2f}", f"{result_prefix}{r['drx']:.2f}"],
-            ["Ry (µrad)", f"{base_prefix}{b['ry']:.2f}", f"{measure_prefix}{m['ry']:.2f}", f"{result_prefix}{r['dry']:.2f}"],
-            ["RMS (µm)", f"{base_prefix}{b['rms']:.3f}", f"{measure_prefix}{m['rms']:.3f}", "--"],
-            ["PV 法向 (µm)", f"{base_prefix}{b['pv']:.3f}", f"{measure_prefix}{m['pv']:.3f}", "--"],
-            ["TTV Z极差 (µm)", f"{base_prefix}{b['ttv']:.3f}", f"{measure_prefix}{m['ttv']:.3f}", "--"],
-            ["平均 Z (mm)", f"{base_prefix}{b['mean_z']:.5f}", f"{measure_prefix}{m['mean_z']:.5f}", "--"],
-        ]
-        ax_table.text(0.02, 0.99, "单面拟合指标", va='top', ha='left',
-                      fontsize=12.2, fontweight='bold', color='#1f2937',
-                      transform=ax_table.transAxes)
-        tbl = ax_table.table(
-            cellText=table_rows,
-            colLabels=["指标", "基准面", "测量面", "差值"],
-            bbox=[0.0, 0.02, 1.0, 0.84],
-            cellLoc='center',
-            colLoc='center',
-            colWidths=[0.32, 0.23, 0.23, 0.22],
-        )
-        tbl.auto_set_font_size(False)
-        tbl.set_fontsize(9.6)
-        tbl.scale(1, 1.26)
-        for (row, col), cell in tbl.get_celld().items():
-            cell.set_edgecolor('#d7dee8')
-            cell.set_linewidth(0.8)
-            if row == 0:
-                cell.set_facecolor('#edf3f9')
-                cell.set_text_props(weight='bold', color='#334155')
-            elif col == 3 and row in (1, 2):
-                cell.set_facecolor('#eaf2fb')
-                cell.set_text_props(weight='bold', color='#11447a')
-            else:
-                cell.set_facecolor('#ffffff')
-
-        ax_note.text(0.02, 0.98, "口径说明", va='top', ha='left',
-                     fontsize=11.3, fontweight='bold', color='#1f2937',
-                     transform=ax_note.transAxes)
-        note = (
-            "不做对应点相减；两个文件可为空间不重叠区域。\n"
-            "分别拟合 Z = aX + bY + c，再计算测量面 - 基准面的 Rx/Ry 差值。\n"
-            f"台阶高度差在两面质心中点处计算，参考点 X={r['ref_x']:.5f}, Y={r['ref_y']:.5f}。\n"
-            "Rx/Ry 符号约定需用标准件校准。"
-        )
+        fig.text(.035,.958,f'平行度分析报告 ({self.APP_VERSION})',fontsize=18,fontweight='bold',color='#243b50')
+        prefix = '≈' if r.get('estimated') else ''
+        values = [('ΔRx',f"{prefix}{r['drx']:+.3f} µrad"),('ΔRy',f"{prefix}{r['dry']:+.3f} µrad"),
+                  ('合成夹角',f"{prefix}{r['angle']:.3f} µrad"),('台阶高度差',f"{prefix}{r['step_height']:+.6f} mm")]
+        for i,(title,value) in enumerate(values):
+            ax=fig.add_axes([.035+i*.2325,.853,.224,.075]);ax.set_facecolor('#f1f5f9');ax.set_xticks([]);ax.set_yticks([])
+            for spine in ax.spines.values(): spine.set_visible(False)
+            ax.text(.05,.74,title,fontsize=9,color='#64748b',transform=ax.transAxes)
+            ax.text(.05,.21,value,fontsize=14,color='#365f85',transform=ax.transAxes)
+        fig.text(.035,.80,'来源与处理信息',fontsize=11,fontweight='bold',color='#243b50')
+        fig.text(.035,.77,'\n'.join(source_lines),va='top',fontsize=9,linespacing=1.45,color='#475569')
+        ax=fig.add_axes([.035,.185,.26,.29]);ax.axis('off')
+        ax.text(0,1.07,'单面拟合指标',fontsize=11,fontweight='bold',color='#243b50')
+        rows=[]
+        for title,key,digits in [('Rx (µrad)','rx',3),('Ry (µrad)','ry',3),('RMS (µm)','rms',4),('法向 PV (µm)','pv',4),('TTV (µm)','ttv',3),('平均 Z (mm)','mean_z',6)]:
+            rows.append([title, ('≈' if base.get('metric_quality',{}).get('estimated') else '')+f'{b[key]:.{digits}f}',
+                         ('≈' if measure.get('metric_quality',{}).get('estimated') else '')+f'{m[key]:.{digits}f}'])
+        table=ax.table(cellText=rows,colLabels=['指标','基准面','测量面'],bbox=[0,0,1,.96],cellLoc='center',colWidths=[.4,.3,.3])
+        table.auto_set_font_size(False);table.set_fontsize(9)
+        for (row,col),cell in table.get_celld().items():
+            cell.set_edgecolor('#d7dee8');cell.set_facecolor('#edf3f9' if row==0 else 'white')
+        for rec,title,color,pos in [(base,'基准面 3D 拟合预览','#2f6db0',[.33,.29,.26,.44]),
+                                    (measure,'测量面 3D 拟合预览','#f59e0b',[.66,.29,.26,.44])]:
+            axis=fig.add_axes(pos,projection='3d')
+            self._draw_parallel_report_surface(fig,axis,rec,title,color)
+            axis.set_position(pos);fig.axes[-1].set_position([pos[0]+pos[2]+.012,.33,.009,.34])
+        note = ('分别拟合两面，再计算测量面 − 基准面的 Rx/Ry 差值；不要求逐点对应。\n'
+                f"台阶高度差参考点：两面质心中点（X={r['ref_x']:.5f}, Y={r['ref_y']:.5f} mm）。Rx/Ry 符号约定需用标准件校准。")
         if r.get('estimated'):
-            note = "警告: 本报告含抽样估计值，不可直接用于产线放行。\n" + note
-        ax_note.text(0.02, 0.76, note, va='top', ha='left',
-                     fontsize=9.3, linespacing=1.45, color='#b42318' if r.get('estimated') else '#6b7280',
-                     transform=ax_note.transAxes,
-                     bbox=dict(boxstyle='round,pad=0.45', facecolor='#f8fafc',
-                               edgecolor='#e2e8f0', linewidth=1.0))
-
-        self._draw_parallel_report_surface(fig, ax_base, b_rec, "基准面 3D 拟合预览", '#2f6db0')
-        self._draw_parallel_report_surface(fig, ax_meas, m_rec, "测量面 3D 拟合预览", '#f59e0b')
-        fig.suptitle(f"平行度分析报告 ({self.APP_VERSION})", fontsize=17, fontweight='bold', y=0.965)
+            note = '警告：含抽样估计值，不可直接用于产线放行。\n' + note
+        fig.text(.035,.115,'口径说明',fontsize=11,fontweight='bold',color='#243b50')
+        fig.text(.035,.095,note,va='top',fontsize=9,linespacing=1.5,color='#b42318' if r.get('estimated') else '#64748b')
+        fig.text(.66,.80,judgment_summary(self.current_judgment('parallel')),fontsize=10,color='#475569')
         return fig
 
     def export_parallel_report(self):

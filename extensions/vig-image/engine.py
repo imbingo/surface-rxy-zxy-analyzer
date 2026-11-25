@@ -531,12 +531,25 @@ def compute_vig_image(
         'VIG_low': vig_low,
         'VIG_up': vig_up,
     })
-    valid_input = ~df_data.isnull().any(axis=1).to_numpy()
+    numeric = df_data.to_numpy(dtype=float)
+    finite_input = np.isfinite(numeric).all(axis=1)
+    positive = (df_data[['thickness_up','thickness_mid','thickness_low','VIG_low','VIG_up']].to_numpy() > 0).all(axis=1)
+    valid_input = finite_input & positive
+    errors = []
+    diagnostics = [{'reference_index': int(i), 'x': float(ref_x[i]), 'y': float(ref_y[i]),
+                    'status': 'unmatched',
+                    'missing_roles': [key for key, mapping in maps.items() if mapping[i] < 0]}
+                   for i in range(n_ref)]
+    for j, ref in enumerate(ref_indices):
+        diagnostics[int(ref)]['status'] = 'pending' if valid_input[j] else 'invalid_input'
+        if not valid_input[j]:
+            reason = '输入包含非有限值' if not finite_input[j] else '电极厚度及 VIG_up / VIG_low 间距必须大于 0'
+            diagnostics[int(ref)]['reason'] = reason
+            errors.append({'index': int(ref), 'x': float(ref_x[ref]), 'y': float(ref_y[ref]), 'stage':'input', 'message':reason})
     df_data = df_data.loc[valid_input].reset_index(drop=True)
     if df_data.empty:
-        raise ValueError('各图层 XY 坐标没有可配对的点，请检查容差和坐标原点')
+        raise ValueError(f'共同匹配 {len(ref_indices)} 点，但无物理有效输入：厚度和间距必须为正有限值')
 
-    errors = []
     started = time.perf_counter()
     last_update = [0.0]
 
@@ -557,7 +570,9 @@ def compute_vig_image(
         report(int(done * 100 / max(total, 1)), text)
 
     def on_error(index, message):
-        errors.append({'index': int(index), 'message': str(message)})
+        ref = int(ref_indices[valid_input][index])
+        errors.append({'index': ref, 'x':float(ref_x[ref]), 'y':float(ref_y[ref]), 'stage':'ray', 'message': str(message)})
+        diagnostics[ref].update(status='ray_failure', reason=str(message))
 
     results = calculate_zimg2low_from_df(
         df_data, check_cancel=cancel_check, progress=on_progress, on_error=on_error)
@@ -568,8 +583,21 @@ def compute_vig_image(
     )
     if not result_valid.any():
         raise ValueError('没有可用于 VIG 像面拟合的有效结果')
+    output_finite = np.isfinite(results[['X','Y','image']].to_numpy(dtype=float)).all(axis=1)
+    for j, ref in enumerate(ref_indices[valid_input]):
+        item = diagnostics[int(ref)]
+        if output_finite[j]:
+            item['status'] = 'success'
+        elif item['status'] != 'ray_failure':
+            on_error(j, '光线输出包含非有限值')
+    results.loc[~output_finite, 'image'] = np.nan
     plane_info = process_plane_from_df(results)
     valid = plane_info['valid_mask']
+
+    partial = int(valid.sum()) < n_ref
+    metric_quality['partial'] = partial
+    if partial:
+        metric_quality['warning'] += f' 仅部分结果：参考 {n_ref} 点，共同匹配 {len(ref_indices)} 点，成功 {int(valid.sum())} 点；请核对缺失区域。'
 
     plane_payload = {
         'rx': float(plane_info['Rx']),
@@ -594,6 +622,11 @@ def compute_vig_image(
         'plane': plane_payload,
         'n_points': int(valid.sum()),
         'n_errors': int(len(errors)),
+        'diagnostics': diagnostics,
+        'stage_counts': {'reference': n_ref, 'common_match': len(ref_indices),
+            'valid_input': int(valid_input.sum()), 'success': int(valid.sum()),
+            'unmatched': n_ref-len(ref_indices), 'invalid_input': int((~valid_input).sum()),
+            'ray_failure': int(valid_input.sum()-valid.sum())},
         'errors': errors,
         'tolerance': tolerance_mm,
         'match_reports': reports,

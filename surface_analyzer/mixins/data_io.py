@@ -371,6 +371,9 @@ class DataIOMixin:
     @staticmethod
     def _metric_quality_from_import(import_info=None):
         info = import_info or {}
+        if info.get('memory_quality'):
+            from copy import deepcopy
+            return deepcopy(info['memory_quality'])
         sampled = bool(info.get('sampled', False))
         if not sampled:
             return {
@@ -4675,6 +4678,48 @@ class DataIOMixin:
             df, reader=('Excel point table' if suffix in self.EXCEL_SUFFIXES
                         else f'Text {layout_mode}'))
 
+    def load_memory_result(self, x, y, z_mm, *, name, quality=None, metadata=None):
+        from copy import deepcopy
+        arrays = [np.asarray(v, dtype=float).copy() for v in (x, y, z_mm)]
+        if any(v.ndim != 1 for v in arrays) or len({len(v) for v in arrays}) != 1:
+            raise ValueError('内存结果坐标长度不一致')
+        valid = np.logical_and.reduce([np.isfinite(v) for v in arrays])
+        if valid.sum() < 3:
+            raise ValueError('内存结果有效点不足')
+        self.df_raw = pd.DataFrame(dict(zip(('X','Y','Z'), (v[valid] for v in arrays))))
+        self.absolute_raw_df = None  # Not a replayable source file.
+        self.derived_columns = []; self.worksheet_data = None; self.pending_recipe = None
+        self._df_version += 1
+        self.current_source_name = str(name)
+        q = deepcopy(quality or {})
+        q.setdefault('estimated', False)
+        q.setdefault('sampled', False)
+        q.setdefault('label', '抽样估计' if q['estimated'] else '全量计算')
+        q.setdefault('warning', '输入包含估计值，请核对结果质量。' if q['estimated'] else '')
+        self.import_info = {'source_path': '', 'source_sha256': '', 'strategy': '内存结果编辑副本',
+            'source_format': (metadata or {}).get('result_type', 'VIG image'), 'input_layout_mode': 'point_table',
+            'import_rows': len(self.df_raw), 'valid_rows': len(self.df_raw),
+            'source_valid_rows': len(self.df_raw), 'source_total_rows': len(self.df_raw),
+            'sampled': bool(q.get('estimated')), 'extrema_preserved': q.get('extrema_preserved', True),
+            'memory_result': True, 'memory_quality': q, 'memory_provenance': deepcopy(metadata or {})}
+        self.transform_pipeline = []; self.manual_delete_operations = []
+        self._manual_delete_mask_history = []; self.pending_delete_operation = None
+        self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
+        self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
+        self._sigma_async_result = None; self._spatial_async_result = None
+        self.cb_filter.setCurrentIndex(0)
+        self.cb_surface_display.setCurrentIndex(0)
+        self.display_surface_mode = 'raw'; self.display_detrended = False
+        self.clear_rois(update=False)
+        self._invalidate_smart_roi_runtime_cache(topology=True, masks=True, reason='载入内存结果编辑副本')
+        for cb, name_ in ((self.cb_x_col,'X'),(self.cb_y_col,'Y'),(self.cb_z_col,'Z')):
+            cb.clear(); cb.addItems(['X','Y','Z']); cb.setCurrentText(name_)
+        for cb in (self.cb_x_unit,self.cb_y_unit,self.cb_z_unit):cb.setCurrentText('mm')
+        self.lbl_source.setText('当前数据: ' + str(name))
+        self.update_analysis()
+        self.tabs.setCurrentIndex(0)
+        return True
+
     def load_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "载入数据", dialog_initial_path('import'),
@@ -4990,7 +5035,7 @@ class DataIOMixin:
 
     def apply_mapping(self, preserve_analysis_settings=False):
         if self.absolute_raw_df is None:
-            self._show_status("当前无原始文件可映射（Gap 结果状态下映射已锁定）", 5000)
+            self._show_status("当前无原始文件可映射（计算／内存结果不支持重新映射）", 5000)
             return
         try:
             derived_z = self.cb_z_col.currentText() in {d['name'] for d in getattr(self, 'derived_columns', [])}

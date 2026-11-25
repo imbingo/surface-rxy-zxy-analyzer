@@ -9,9 +9,9 @@ from surface_analyzer.module_extensions import ModuleExtensionRegistry
 from surface_analyzer.workers import TaskCancelled
 
 _extension_dir = Path(__file__).parents[1] / 'extensions' / 'vig-image'
-_registry = ModuleExtensionRegistry(_extension_dir.parent, app_version='5.0.6')
+_registry = ModuleExtensionRegistry(_extension_dir.parent, app_version='5.0.8')
 _entry = next(entry for entry in _registry.entries() if entry['id'] == 'vig-image')
-_registry.load(_entry, SimpleNamespace(api_version=1, app_version='5.0.6'))
+_registry.load(_entry, SimpleNamespace(api_version=1, app_version='5.0.8'))
 _package = _entry['_package']
 engine = _package.engine
 calculate_zimg2low_from_df = engine.calculate_zimg2low_from_df

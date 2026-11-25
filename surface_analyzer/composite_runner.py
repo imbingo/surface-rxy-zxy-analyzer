@@ -84,6 +84,7 @@ def execute_group(recipe, files, output, report=lambda value,text:None):
             settings=QSettings(str(output/f'.{role}.ini'),QSettings.Format.IniFormat)
             w=RoleWorkspace(settings=settings);windows.append(w)
             w._automation_mode=True
+            if recipe['module'] == 'vig': w._vig_composite_module()
             single=deepcopy(recipe['roles'][role])
             w.apply_recipe(single,remap_current_data=False,show_message=False)
             source=Path(files[role]).resolve()
@@ -122,7 +123,22 @@ def execute_group(recipe, files, output, report=lambda value,text:None):
         registration_results={}
         if recipe.get('calculation',{}).get('judgment'):
             target.set_judgment_spec(recipe['calculation']['judgment'],persist=False)
-        if recipe['module']=='parallelism':
+        if recipe['module'] == 'vig':
+            target._set_export_origin_zero_active_points(recipe['export'].get('zero_origin_active_points',False))
+            report(70, '调用可选扩展现有 VIG 光线追迹')
+            module = target._vig_composite_module()
+            result = module.compute_snapshot(records, recipe,
+                progress=lambda value,text: report(70+int(value*.18),text))
+            module.slots = {key: records.get(key) for key in ('two','three','up','mid','low')}
+            module._apply_vig_payload(result)
+            for error in result.get('errors', []):
+                warnings.append(f"VIG 点 {error['index']}: {error['message']}")
+            plane = result['plane']
+            metrics = {'rx_urad':plane['rx']*1e6,'ry_urad':plane['ry']*1e6,
+                       'rms_um':plane['rms']*1e6,'std3_um':plane['std3']*1e6,
+                       'p97_half_um':plane['p97_half']*1e6,'matched_points':result['n_points'],
+                       'failed_points':result.get('n_errors',0)}
+        elif recipe['module']=='parallelism':
             report(70,'调用现有平行度计算')
             result=target._compute_parallel_result_from_records(records['base'],records['measure'])
             target.parallel_base=records['base'];target.parallel_measure=records['measure'];target.parallel_result=result
@@ -156,11 +172,19 @@ def execute_group(recipe, files, output, report=lambda value,text:None):
         paths={}
         if recipe['export']['csv']:
             path=output/'result.csv'
-            if recipe['module']=='thickness':target._gap_result_frame().to_csv(path,index=False,encoding='utf-8-sig')
+            if recipe['module'] == 'vig': module.write_csv(path)
+            elif recipe['module']=='thickness':target._gap_result_frame().to_csv(path,index=False,encoding='utf-8-sig')
             else:pd.DataFrame([metrics]).to_csv(path,index=False,encoding='utf-8-sig')
             paths['csv']=str(path.resolve())
+        if recipe['export']['report'] and recipe['module']=='thickness':
+            target.load_gap_secondary()
+            x,y,z=target.get_final_transformed_data(target.df_raw)
+            figure=target._render_report_figure(target.current_source_name,x,y,z,target.active_idx,
+                target.compute_plane_metrics(x[target.active_idx],y[target.active_idx],z[target.active_idx]),target.n_filtered,'原始状态','关闭',target.import_info,display_surface_mode='raw')
+        elif recipe['export']['report']:
+            figure=(module._render_vig_report_figure() if recipe['module']=='vig' else
+                    target._render_gap_report_figure() if recipe['module']=='thickness' else target._render_parallel_report_figure())
         if recipe['export']['report']:
-            figure=target._render_gap_report_figure() if recipe['module']=='thickness' else target._render_parallel_report_figure()
             path=output/'report.png';figure.savefig(path,dpi=150);figure.clear()
             paths['report']=str(path.resolve())
         display_diagnostic=(target._registration_diagnostic(records['stack'],records['base1'],records.get('base2'),recipe['registration']['tolerance_mm']) if recipe['module']=='thickness' else None)
@@ -169,6 +193,7 @@ def execute_group(recipe, files, output, report=lambda value,text:None):
         metadata=dict(status='success',recipe=recipe,inputs=provenance,metrics=metrics,
                       registration_results=registration_results,warnings=warnings,
                       quality={r:records[r]['metric_quality'] for r in roles},outputs=paths,
+                      calculation_errors=result.get('errors', []), failed_points=result.get('n_errors',0),
                       completed_at=datetime.now(timezone.utc).isoformat())
         atomic_json(output/'run.json',plain(metadata))
         report(100,'本组成功完成')

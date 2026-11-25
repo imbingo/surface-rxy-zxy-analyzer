@@ -24,8 +24,8 @@ from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QFrame, QSizePolicy, QGraphicsDropShadowEffect,
     QStackedWidget, QSizeGrip, QToolButton, QStyle, QStyleOption, QStyledItemDelegate, QStyleOptionViewItem,
 )
-from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSize, QRectF, pyqtSignal
-from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen
+from PyQt6.QtCore import Qt, QPoint, QPointF, QEvent, QSize, QRectF, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QPixmap, QPainter, QPen, QFont, QFontMetricsF, QPalette
 from scipy.spatial import cKDTree
 
 from .plotting import (
@@ -34,6 +34,88 @@ from .plotting import (
 )
 from .pose_icons import focus_icon
 
+
+
+class AdaptiveMetricLabel(QLabel):
+    """Render the complete metric at a size that fits, without elision.
+
+    Paint-only sizing keeps theme/acceptance color styles and the stored text
+    intact. Qt's layout may give a two-card strip much wider cards than a
+    seven-card strip; do not bake a fixed minimum width into every value.
+    """
+    def __init__(self, text='--', parent=None):
+        super().__init__(text, parent)
+        self.setMinimumWidth(0)
+        self.setMinimumHeight(30)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        font = QFont(self.font())
+        rect = self.contentsRect().adjusted(0, 1, -2, -1)
+        size = min(30, max(12, rect.height() - 2))
+        font.setPixelSize(size)
+        while size > 7 and QFontMetricsF(font).horizontalAdvance(self.text()) > rect.width():
+            size -= 1
+            font.setPixelSize(size)
+        painter.setFont(font)
+        painter.setPen(self.palette().color(QPalette.ColorRole.WindowText))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.text())
+
+
+class ResponsiveMetricLayout(QGridLayout):
+    """Wrap module metrics as whole cards, keeping judgment at the far right."""
+    def __init__(self, parent=None):
+        self._shape = None
+        super().__init__(parent)
+        self._reflow_timer = QTimer(self)
+        self._reflow_timer.setSingleShot(True)
+        self._reflow_timer.timeout.connect(self._resize_cards)
+        if parent is not None:
+            parent.installEventFilter(self)
+
+    def addWidget(self, widget, stretch=0):
+        super().addWidget(widget, 0, self.count())
+        self._reflow(self.parentWidget().width())
+
+    def _reflow(self, width):
+        cards = [self.itemAt(i).widget() for i in range(self.count())]
+        count = len(cards)
+        if not count:
+            return
+        capacity = max(1, min(count-1, max(2, int(width)//155)-1))
+        rows = max(1, (count-2+capacity)//capacity)
+        columns = max(1, (count-2+rows)//rows) if count > 1 else 0
+        shape = (count, rows, columns)
+        if shape == self._shape:
+            return
+        self._shape = shape
+        while self.count():
+            self.takeAt(0)
+        import math
+        counts = [min(columns, count-1-row*columns) for row in range(rows)] if columns else []
+        units = math.lcm(*counts) if counts else 0
+        for column in range(max(self.columnCount(), units+1)):
+            self.setColumnStretch(column, 1 if column < units else 0)
+        offset = 0
+        for row, items in enumerate(counts):
+            span = units//items
+            for column in range(items):
+                super().addWidget(cards[offset], row, column*span, 1, span)
+                offset += 1
+        self.setColumnStretch(units, max(1, units//columns) if columns else 1)
+        super().addWidget(cards[-1], 0, units, rows, 1)
+
+    def _resize_cards(self):
+        parent = self.parentWidget()
+        if parent is not None:
+            self._reflow(parent.width())
+
+    def eventFilter(self, watched, event):
+        if event.type() in (QEvent.Type.Resize,QEvent.Type.FontChange,QEvent.Type.StyleChange):
+            # Never mutate a Qt layout from inside its setGeometry traversal.
+            self._reflow_timer.start(0)
+        return False
 
 
 class ProjectionToolbar(QWidget):
@@ -191,6 +273,9 @@ class MultiViewCanvas(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Do not let Matplotlib's initial 480px canvas size dictate each row's
+        # preferred height inside a height-for-width scroll area.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
         # YaHei 同时含中文与 µ(U+00B5)，去倾斜显示的 µm 轴标签也不再出现缺字方块
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
         plt.rcParams['axes.unicode_minus'] = False
@@ -400,17 +485,17 @@ class ParallelismCanvas(FigureCanvas):
     def __init__(self, parent=None):
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
         plt.rcParams['axes.unicode_minus'] = False
-        self.fig = Figure(constrained_layout=True)
-        self.ax_base = self.fig.add_subplot(121, projection='3d')
-        self.ax_measure = self.fig.add_subplot(122, projection='3d')
+        self.fig = Figure(constrained_layout=False)
+        self.ax_base = self.fig.add_axes([.055,.12,.39,.60], projection='3d')
+        self.ax_measure = self.fig.add_axes([.555,.12,.39,.60], projection='3d')
         super().__init__(self.fig)
         self.setParent(parent)
-        self.setMinimumHeight(260)
+        self.setMinimumHeight(360)
         self.plot_records(None, None)
 
     def _empty_axis(self, ax, title):
         ax.clear()
-        ax.set_title(title, fontsize=11, color='#46505a')
+        ax.set_title('')
         ax.text2D(0.5, 0.5, "等待写入数据", transform=ax.transAxes,
                   ha='center', va='center', color='#8a94a3')
         ax.set_axis_off()
@@ -423,7 +508,7 @@ class ParallelismCanvas(FigureCanvas):
         m = rec['metrics']
         ax.clear()
         ax.set_axis_on()
-        ax.set_title(f"{title}: {rec['name']}", fontsize=10)
+        ax.set_title('')
         ax.set_xlabel("X (mm)")
         ax.set_ylabel("Y (mm)")
         ax.set_zlabel("Z (mm)")
@@ -454,12 +539,9 @@ class ParallelismCanvas(FigureCanvas):
         size = 8 if len(sx) <= 12000 else 5
         ax.scatter(sx, sy, sz, c=sz, s=size, cmap='turbo', alpha=0.78,
                    edgecolors='none', depthshade=False, rasterized=True)
-        ax.text2D(0.01, 0.98,
-                  f"点数 {n:,} | Rx {m['rx']:.2f} µrad | Ry {m['ry']:.2f} µrad",
-                  transform=ax.transAxes, ha='left', va='top', fontsize=8,
-                  color='#4b5563', bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='#e5e7eb', alpha=0.86))
         ax.view_init(elev=24, azim=-52)
-        set_surface_box_aspect(ax, x, y, z, zoom=1.08, z_tick_count=3)
+        set_surface_box_aspect(ax, x, y, z, zoom=0.84, z_tick_count=3)
+        ax.zaxis.labelpad = 3
         for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
             pane.set_facecolor('#fbfcfd')
             pane.set_edgecolor('#e6eaee')
@@ -467,11 +549,39 @@ class ParallelismCanvas(FigureCanvas):
 
     def plot_records(self, base_rec, measure_rec):
         self.fig.clear()
-        self.ax_base = self.fig.add_subplot(121, projection='3d')
-        self.ax_measure = self.fig.add_subplot(122, projection='3d')
+        self.ax_base = self.fig.add_axes([.055,.12,.39,.60], projection='3d')
+        self.ax_measure = self.fig.add_axes([.555,.12,.39,.60], projection='3d')
         self._draw_record(self.ax_base, base_rec, "基准面 3D 拟合预览", '#2f6db0')
         self._draw_record(self.ax_measure, measure_rec, "测量面 3D 拟合预览", '#f59e0b')
+        self._source_headers = []
+        names = []
+        for center, rec, title in ((.25, base_rec, '基准面 · 三维拟合'),(.75, measure_rec, '测量面 · 三维拟合')):
+            self.fig.text(center,.97,title,ha='center',va='top',fontsize=10)
+            name = str(rec['name']) if rec else '尚未写入'
+            label = self.fig.text(center,.90,'',ha='center',va='top',fontsize=8,color='#64748b',parse_math=False)
+            self._source_headers.append((label, name));names.append(name)
+            if rec:
+                m=rec['metrics']
+                self.fig.text(center,.84,f"点数 {rec['n']:,} · Rx {m['rx']:.2f} µrad",ha='center',va='top',fontsize=8)
+                self.fig.text(center,.79,f"Ry {m['ry']:.2f} µrad",ha='center',va='top',fontsize=8)
+        self.setToolTip('基准面：'+names[0]+'\n测量面：'+names[1])
+        self._fit_source_headers()
         self.draw()
+
+    def _fit_source_headers(self):
+        if not getattr(self, '_source_headers', None):
+            return
+        renderer=self.fig.canvas.get_renderer()
+        width=self.fig.bbox.width*.42
+        for label, original in getattr(self,'_source_headers',[]):
+            text=original
+            while len(text)>1 and renderer.get_text_width_height_descent(text,label.get_fontproperties(),False)[0]>width:
+                text=text[:-2]+'…'
+            label.set_text(text)
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        self._fit_source_headers()
 
 
 class GapMatchCanvas(FigureCanvas):

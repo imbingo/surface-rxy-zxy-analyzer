@@ -4,6 +4,7 @@ import math
 
 from PyQt6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QGridLayout, QLabel, QVBoxLayout,
+    QLineEdit, QTabWidget, QWidget, QMessageBox,
 )
 
 # key, 显示名, 单位, 适用范围（surface: 单层/胶厚平面指标；parallel: 平行度）
@@ -87,7 +88,7 @@ def judgment_summary(result):
 class JudgmentSpecDialog(QDialog):
     """勾选需要判定的指标并填写上限；未勾选的指标不参与判定。"""
 
-    def __init__(self, parent=None, spec=None):
+    def __init__(self, parent=None, spec=None, single_config=None, *, initial_scope="single"):
         super().__init__(parent)
         self.setWindowTitle("判定规格")
         spec = normalize_judgment_spec(spec)
@@ -98,6 +99,31 @@ class JudgmentSpecDialog(QDialog):
                       "Rx/Ry 按绝对值判定，平行度按合成夹角判定。")
         note.setObjectName("mutedNote")
         layout.addWidget(note)
+        self._single_rows = {}
+        if single_config is not None:
+            from .display_metrics import SINGLE_ITEMS, normalize_single_config
+            config = normalize_single_config(single_config)
+            tabs = QTabWidget()
+            page = QWidget(); single_grid = QGridLayout(page)
+            single_grid.addWidget(QLabel('显示 / 参与判定'), 0, 0)
+            single_grid.addWidget(QLabel('规格上限（留空 = 不判定，0 为有效上限）'), 0, 1)
+            for row, (key, label, unit) in enumerate(SINGLE_ITEMS, 1):
+                check = QCheckBox(f'{label} ({unit})')
+                check.setChecked(key in config['visible'])
+                edit = QLineEdit('' if config['limits'][key] is None else str(config['limits'][key]))
+                edit.setPlaceholderText('未设置')
+                edit.setEnabled(check.isChecked()); check.toggled.connect(edit.setEnabled)
+                single_grid.addWidget(check, row, 0); single_grid.addWidget(edit, row, 1)
+                self._single_rows[key] = (check, edit)
+            single_grid.addWidget(QLabel('3σ 使用总体标准差 ddof=0；全部单层指标跟随显示面型。'), len(SINGLE_ITEMS)+1, 0, 1, 2)
+            tabs.addTab(page, '单层指标与规格')
+            other = QWidget(); other_layout = QVBoxLayout(other)
+            tabs.addTab(other, '膜厚 / 平行度 / 扩展规格')
+            self.scope_tabs = tabs
+            tabs.setCurrentIndex(0 if initial_scope == 'single' else 1)
+            layout.addWidget(tabs)
+        else:
+            other_layout = layout
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(8)
@@ -119,7 +145,7 @@ class JudgmentSpecDialog(QDialog):
             grid.addWidget(spin, row, 1)
             grid.addWidget(unit_label, row, 2)
             self._rows[key] = (check, spin)
-        layout.addLayout(grid)
+        other_layout.addLayout(grid)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
@@ -129,3 +155,21 @@ class JudgmentSpecDialog(QDialog):
     def spec(self):
         return {key: (float(spin.value()) if check.isChecked() else None)
                 for key, (check, spin) in self._rows.items()}
+
+    def single_config(self):
+        from .display_metrics import normalize_single_config
+        limits = {}
+        for key, (check, edit) in self._single_rows.items():
+            text = edit.text().strip()
+            if text and check.isChecked():
+                try: limits[key] = float(text)
+                except ValueError: raise ValueError('规格上限必须是数字或留空') from None
+            else: limits[key] = None
+        return normalize_single_config({'visible': [k for k,(c,e) in self._single_rows.items() if c.isChecked()], 'limits': limits})
+
+    def accept(self):
+        if self._single_rows:
+            try: self.single_config()
+            except ValueError as exc:
+                QMessageBox.warning(self, '规格无效', str(exc)); return
+        super().accept()

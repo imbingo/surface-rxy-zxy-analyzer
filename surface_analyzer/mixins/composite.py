@@ -4,7 +4,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt,QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (QMessageBox,QPushButton,QDialog,QVBoxLayout,QHBoxLayout,
-    QLabel,QPlainTextEdit,QProgressBar,QTableWidget,QTableWidgetItem,QHeaderView)
+    QDialogButtonBox,QLabel,QPlainTextEdit,QProgressBar,QTableWidget,QTableWidgetItem,QHeaderView)
 from ..composite_recipe import build_composite,validate_composite
 
 
@@ -28,17 +28,50 @@ class CompositeMixin:
             page=tabs.widget(1 if module=='parallelism' else 2)
             container=page.widget() if hasattr(page,'widget') else page
             layout=container.layout()
-            save=QPushButton('保存组合 Recipe');save.setToolTip('保存各槽写入时的独立单层参数副本')
-            save.clicked.connect(lambda checked=False,m=module:self.save_composite_recipe(m))
+            save=QPushButton('批量运行');save.setToolTip('保存各槽写入时的独立单层参数副本')
+            save.clicked.connect(lambda checked=False,m=module:self.batch_from_example(m))
             run=QPushButton('运行组合 Recipe / 批量运行')
             run.clicked.connect(lambda checked=False,m=module:self.choose_composite_recipe(m))
             layout.insertWidget(max(0,layout.count()-1),save)
-            layout.insertWidget(max(0,layout.count()-1),run)
+            run.hide()
             self._composite_save_buttons[module]=save
             self._task_controls.extend((save,run))
         self._refresh_composite_save_buttons()
 
+    def batch_from_example(self, module):
+        """Freeze per-slot settings; no library write and no manual deletion replay."""
+        from ..composite_dialog import CompositeSaveDialog
+        from ..composite_recipe import ROLE_LABELS
+        result = (self._vig_composite_module().result if module == 'vig' else
+                  self.parallel_result if module == 'parallelism' else self.gap_result)
+        if result is None:
+            QMessageBox.warning(self, '请先完成示例分析', '请先完成一组计算并确认结果，再启动批量运行。')
+            return False
+        dialog = CompositeSaveDialog(self, module)
+        dialog.setWindowTitle('批量运行 · 确认示例参数')
+        dialog.layout().insertWidget(dialog.layout().count()-1, QLabel('本次批量复用各槽参数和 ROI，不重放手动删点；不必先保存 Recipe。'))
+        dialog.deletion.hide()
+        for label in dialog.findChildren(QLabel):
+            if label.text() == '手动删点重放': label.hide()
+        dialog.name.setText({'thickness':'膜厚','parallelism':'平行度','vig':'VIG'}[module] + '当前示例')
+        dialog.buttons.button(QDialogButtonBox.StandardButton.Save).setText('下一步：确认分组')
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        recipe = deepcopy(dialog.recipe)
+        for role in recipe['roles'].values():
+            role['manual_deletion'] = {}
+        return self.open_composite_run(recipe)
+
+    def _vig_composite_module(self):
+        for module in self._extension_modules:
+            if module.key == 'vig-image' and hasattr(module, 'compute_snapshot'):
+                return module
+        entries = self.module_extension_registry.entries()
+        detail = '; '.join(f"{e.get('name')}: {e.get('status')}" for e in entries if e['id'] == 'vig-image')
+        raise ValueError('未安装或不兼容的 VIG 模块扩展；请安装支持 V5.0.7 的扩展。' + detail)
+
     def _composite_records(self,module):
+        if module == 'vig': return self._vig_composite_module().slots
         if module=='parallelism':return dict(base=self.parallel_base,measure=self.parallel_measure)
         return dict(stack=self.data_stack,base1=self.data_base1,base2=self.data_base2)
 
@@ -58,9 +91,17 @@ class CompositeMixin:
             roles=('base1','base2') if include_base2 else ('base1',)
             registration=dict(mode=registration_mode,tolerance_mm=float(self.spin_tol.value()),
                 offsets={r:[float((records[r] or {}).get('offset_x',0)),float((records[r] or {}).get('offset_y',0))] for r in roles})
+        vig_options = {}
+        if module == 'vig':
+            export = deepcopy(export or {'csv':True,'report':True})
+            export['zero_origin_active_points'] = self._export_origin_zero_active_points_enabled()
+            vig = self._vig_composite_module()
+            vig_options = dict(electrodes={key: ({'mode':'file'} if records[key] is not None else
+                {'mode':'fixed','value_um':float(vig.thickness_spins[key].value())}) for key in ('up','mid','low')},
+                calculation={'tolerance_mm':float(vig.tolerance_spin.value())})
         recipe=build_composite(module,records,name,include_base2=include_base2,
-            registration=registration,keywords=keywords,policy=policy,export=export,app_version=self.APP_VERSION)
-        recipe['calculation']={'judgment':deepcopy(self._judgment_spec())}
+            registration=registration,keywords=keywords,policy=policy,export=export,app_version=self.APP_VERSION,**vig_options)
+        recipe.setdefault('calculation', {})['judgment'] = deepcopy(self._judgment_spec())
         return validate_composite(recipe)
 
     def save_composite_recipe(self,module):
@@ -76,11 +117,12 @@ class CompositeMixin:
     def choose_composite_recipe(self,module):
         from ..recipe_dialog import RecipeLibraryDialog
         dialog=RecipeLibraryDialog(self)
-        dialog.type_filter.setCurrentText('膜厚组合 Recipe' if module=='thickness' else '平行度组合 Recipe')
+        dialog.type_filter.setCurrentText({'thickness':'膜厚组合 Recipe','parallelism':'平行度组合 Recipe','vig':'VIG 组合 Recipe'}[module])
         dialog.exec()
 
     def open_composite_run(self,recipe):
         validate_composite(recipe)  # Must precede every workspace mutation.
+        if recipe['module'] == 'vig': self._vig_composite_module()
         if self._task_thread is not None:return False
         from ..composite_dialog import CompositeRunDialog
         dialog=CompositeRunDialog(self,recipe)
@@ -96,6 +138,7 @@ class CompositeMixin:
         from ..composite_runner import run_groups
         # Clear only module slots/results. Single-layer data stays available;
         # every worker role is isolated and never applies Recipe to this UI.
+        if recipe['module'] == 'vig': self._vig_composite_module()
         self._composite_module=recipe['module']
         self._clear_composite_result()
         self.centralWidget().setEnabled(False)
@@ -121,7 +164,11 @@ class CompositeMixin:
         return started
 
     def _clear_composite_result(self):
-        if getattr(self,'_composite_module',None)=='parallelism':self.clear_parallel_surfaces()
+        if getattr(self,'_composite_module',None)=='vig':
+            module = self._vig_composite_module()
+            module.slots = dict.fromkeys(('two','three','up','mid','low'))
+            module._invalidate_result(); module._sync_slot_labels()
+        elif getattr(self,'_composite_module',None)=='parallelism':self.clear_parallel_surfaces()
         else:self.clear_all_memory_slots()
 
     def _close_composite_progress(self):
@@ -139,11 +186,26 @@ class CompositeMixin:
     def _finish_composite_run(self,payload):
         self._close_composite_progress();self.last_composite_run=payload
         judgment=payload.get('recipe',{}).get('calculation',{}).get('judgment')
-        if judgment is not None:self.set_judgment_spec(judgment,persist=False)
+        if judgment is not None:self.set_judgment_spec(judgment,persist=False,update_single=False)
         snapshot=payload.get('snapshot')
         if snapshot:
             records=snapshot['records']
-            if snapshot['module']=='parallelism':
+            if snapshot['module'] == 'vig':
+                module = self._vig_composite_module()
+                module.slots = {role: records.get(role) for role in ('two','three','up','mid','low')}
+                config = payload['recipe']
+                self._set_export_origin_zero_active_points(config['export'].get('zero_origin_active_points',False))
+                for key in ('up','mid','low'):
+                    if config['electrodes'][key]['mode'] == 'fixed':
+                        spin = module.thickness_spins[key]
+                        spin.blockSignals(True); spin.setValue(config['electrodes'][key]['value_um']); spin.blockSignals(False)
+                module.tolerance_spin.blockSignals(True)
+                module.tolerance_spin.setValue(config['calculation']['tolerance_mm'])
+                module.tolerance_spin.blockSignals(False)
+                module._sync_slot_labels(); module._apply_vig_payload(snapshot['result'])
+                for index, descriptor in enumerate(self.module_descriptors):
+                    if descriptor.get('key') == module.key: self.tabs.setCurrentIndex(index)
+            elif snapshot['module']=='parallelism':
                 self.parallel_base=records['base'];self.parallel_measure=records['measure']
                 self._update_parallel_ui();self._apply_parallel_result(snapshot['result'])
                 self.tabs.setCurrentIndex(self.parallel_tab_index)
@@ -152,7 +214,7 @@ class CompositeMixin:
                 self.gap_result=snapshot['result'];self.spin_tol.blockSignals(True);self.spin_tol.setValue(self.gap_result['tolerance']);self.spin_tol.blockSignals(False)
                 self._update_gap_slot_labels()
                 self._refresh_gap_registration(preserve_view=False,diagnostic=snapshot.get('display_diagnostic'))
-                self._sync_gap_action_state();self.tabs.setCurrentIndex(self.math_tab_index)
+                self._sync_gap_action_state();self.load_gap_secondary()
         # The result table is also the display of successful group metrics.
         # Failed/cancelled rows contain no metric values.
         dialog=QDialog(self);dialog.setWindowTitle('组合运行结果');dialog.resize(1100,540)

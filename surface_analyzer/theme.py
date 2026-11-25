@@ -63,10 +63,12 @@ def dark_color(prop, source):
     r, g, b, _ = rgb.getRgb()
     value = (r + g + b) / 3
     sat = max(r, g, b) - min(r, g, b)
+    if prop == "placeholder-text-color":
+        return MUTED
     if prop in ("color", "selection-color"):
         if key in ("#b42318", "#b4453a"):
             return FAIL
-        if key == "white" or (value < 70 and sat < 26):
+        if key in ("white", "#233445") or (value < 70 and sat < 26):
             return TEXT
         if key in ("#b6bdc4", "#aebfd0", "#c8ced4"):
             return DISABLED
@@ -183,6 +185,34 @@ QDialog, QMessageBox {{ background: {PANEL}; }}
 QProgressBar {{ background: {FIELD}; border: 1px solid {BORDER}; border-radius: 5px; color: {TEXT}; text-align: center; }}
 QProgressBar::chunk {{ background: {INFO}; border-radius: 4px; }}
 """
+
+LIGHT_POPUP_QSS = """
+QComboBox QAbstractItemView, QMenu {
+    background: #ffffff; color: #233445; border: 1px solid #d4dce5;
+    selection-background-color: #dce8f3; selection-color: #173b5e;
+}
+QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected,
+QComboBox QAbstractItemView::item:focus, QMenu::item:selected {
+    background: #dce8f3; color: #173b5e;
+}
+QComboBox QAbstractItemView::item:disabled, QMenu::item:disabled { color: #89939f; }
+"""
+
+
+def light_palette(base):
+    # Do not capture an OS dark palette as the app's light baseline. In that
+    # case a white QSS popup inherited white Text/HighlightedText on Windows.
+    palette = QPalette(base)
+    values = dict(Window='#f7f6f5', WindowText='#233445', Base='#ffffff',
+        AlternateBase='#f3f6f9', Text='#233445', Button='#f7f6f5', ButtonText='#233445',
+        ToolTipBase='#ffffff', ToolTipText='#233445', Highlight='#dce8f3',
+        HighlightedText='#173b5e', PlaceholderText='#63758a')
+    for role, color in values.items():
+        palette.setColor(getattr(QPalette.ColorRole, role), QColor(color))
+    for role in ('Text', 'WindowText', 'ButtonText'):
+        palette.setColor(QPalette.ColorGroup.Disabled, getattr(QPalette.ColorRole, role), QColor('#89939f'))
+    return palette
+
 
 _PALETTE = {
     "Window": PANEL, "WindowText": TEXT, "Base": FIELD, "AlternateBase": CARD,
@@ -324,7 +354,7 @@ class ThemeManager(QObject):
         self.preference = "light"
         self.mode = "light"
         self.windows = weakref.WeakSet()
-        self._light_palette = QPalette(app.palette())
+        self._light_palette = light_palette(app.palette())
         self._light_app_qss = app.styleSheet()
         self._busy = False
         hints = QGuiApplication.styleHints()
@@ -357,7 +387,7 @@ class ThemeManager(QObject):
         else:
             self.app.removeEventFilter(self)
         self.app.setPalette(dark_palette(self._light_palette) if mode == "dark" else self._light_palette)
-        self.app.setStyleSheet(self._light_app_qss + (DARK_APP_QSS if mode == "dark" else ""))
+        self.app.setStyleSheet(self._light_app_qss + (DARK_APP_QSS if mode == "dark" else LIGHT_POPUP_QSS))
         widgets = self.app.allWidgets()
         for widget in widgets:
             self._sync(widget)
@@ -375,7 +405,7 @@ class ThemeManager(QObject):
 
     def _target(self, widget, light):
         if self.mode != "dark":
-            return light
+            return light + (LIGHT_POPUP_QSS if widget in self.windows else "")
         css = dark_qss(light)
         if widget in self.windows:
             css += DARK_WINDOW_QSS

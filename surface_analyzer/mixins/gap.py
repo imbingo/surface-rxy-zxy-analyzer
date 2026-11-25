@@ -1,9 +1,11 @@
 """Multi-layer gap registration, subtraction, and export workflow."""
 
 import re
+import json
 import copy
 from datetime import datetime
 from pathlib import Path
+from copy import deepcopy
 
 import pandas as pd
 import numpy as np
@@ -86,6 +88,8 @@ class GapAnalysisMixin:
         if hasattr(self, 'btn_export_gap_report'):
             self.btn_export_gap_report.setEnabled(result_ready and not busy)
 
+        self._refresh_gap_result_views()
+
     def _invalidate_gap_result(self, reason=None):
         old = getattr(self, 'gap_result', None)
         self.gap_result = None
@@ -99,6 +103,8 @@ class GapAnalysisMixin:
             self._show_status(f"胶厚结果已失效：{reason}，请重新计算。", 5000)
 
     def _current_gap_record(self):
+        if getattr(self,'_task_thread',None) is not None or getattr(self,'_pending_sigma_reanalysis',False):
+            raise ValueError('单层处理尚未完成，请等待滤波或后台任务完成后再写入数据槽')
         if self.df_raw is None or self.active_idx is None or len(self.active_idx) < 3:
             raise ValueError('请先完成单层分析后写入数据槽')
         tx, ty, tz = self.get_final_transformed_data(self.df_raw)
@@ -636,6 +642,14 @@ class GapAnalysisMixin:
         plane_metrics = AnalysisMixin.compute_plane_metrics(sx[valid], sy[valid], gap_z)
         return {
             'x': sx[valid], 'y': sy[valid], 'z': gap_z, 'name': gap_name,
+            'matching_xy': {
+                'stack': {'x': sx.copy(), 'y': sy.copy()},
+                'base1': {'x': b1x.copy(), 'y': b1y.copy()},
+                **({} if base2 is None else {'base2': {'x': b2x.copy(), 'y': b2y.copy()}}),
+            },
+            'input_traces': {key: {field: deepcopy(rec.get(field)) for field in
+                ('name', 'pipeline', 'filter', 'single_recipe', 'metric_quality', 'import_info')}
+                for key, rec in (('stack', stack), ('base1', base1), ('base2', base2)) if rec is not None},
             'plane_metrics': plane_metrics, 'plane_metric_count': len(gap_z),
             'details': details,
             'reports': reports, 'tolerance': float(tolerance),
@@ -695,41 +709,29 @@ class GapAnalysisMixin:
 
     def _apply_gap_payload(self, payload):
         self.gap_result = payload
-        self.df_raw = pd.DataFrame({'Z': payload['z'], 'X': payload['x'], 'Y': payload['y']})
-        self._df_version += 1
-        self._invalidate_smart_roi_runtime_cache(
-            topology=True, masks=True, reason='Gap结果替换当前数据')
-        self.absolute_raw_df = None
-        self.current_source_name = payload['name']
-        self.lbl_source.setText(f"当前数据: {payload['name']}")
-        self.import_info = {
-            'file_size_bytes': 0, 'file_size_mb': 0.0, 'source_path': '', 'source_sha256': '',
-            'strategy': 'Gap计算结果', 'sampled': payload['sampled'],
-            'sample_method_key': 'derived_gap', 'extrema_preserved': payload['extrema_preserved'],
-            'import_rows': len(self.df_raw), 'valid_rows': len(self.df_raw),
-            'display_limit': self._display_limit(), 'large_file_mode': self._bigfile_mode_label(),
-            'notes': '由已保存的多层 XY 配准位移与容差匹配计算生成',
-            'gap_result_stale': False,
-        }
-        self._update_import_status_label()
-        self.transform_pipeline = []
-        self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
-        self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
-        self.manual_delete_operations = []
-        self._manual_delete_mask_history = []
-        self.pending_delete_operation = None
-        self.current_coeffs = None
-        self.clear_rois(update=False)
-        self.update_analysis()
         self._gap_plane_metrics(payload)
-        self.tabs.setCurrentIndex(self.math_tab_index)
-        self._on_tab_changed(self.math_tab_index)
         self._refresh_gap_registration(preserve_view=True)
         self._sync_gap_action_state()
-        self._show_status(f"Gap 计算完成，共 {len(self.df_raw):,} 个有效匹配点。", 8000)
-        message = (f"成功配对并算出 Inner Gap\n容差设定: {payload['tolerance']} mm\n"
-                   f"成功对齐点数: {len(self.df_raw):,}\n\n匹配质量报告\n" + "\n".join(payload['reports']))
-        QMessageBox.information(self, "计算成功", message)
+        self.load_gap_secondary()
+        self._show_status(f"膜厚计算完成，已载入主控编辑副本，共 {len(payload['z']):,} 点。", 8000)
+
+    def load_gap_secondary(self):
+        payload = self.gap_result
+        if payload is None:
+            return False
+        estimated = bool(payload.get('sampled') or not payload.get('extrema_preserved', True) or
+                         any((t.get('metric_quality') or {}).get('estimated') for t in payload.get('input_traces', {}).values()))
+        quality = {'estimated': estimated,
+                   'sampled': payload.get('sampled', False),
+                   'extrema_preserved': payload.get('extrema_preserved', True)}
+        self.load_memory_result(payload['x'], payload['y'], payload['z'],
+            name=payload['name'] + '（膜厚编辑副本）', quality=quality,
+            metadata={'result_type':'膜厚', 'inputs':payload['layers'],
+                      'input_traces':payload.get('input_traces', {}),
+                      'tolerance':payload['tolerance'], 'reports':payload['reports'],
+                      'original_points':len(payload['z'])})
+        self.import_info['source_format'] = '膜厚扣减结果'
+        return True
 
     def _gap_result_frame(self):
         payload = self.gap_result
@@ -796,6 +798,7 @@ class GapAnalysisMixin:
                             f"# {label}: {rec['name']} | 点数 {rec['n']} | "
                             f"ΔX {rec['offset_x']:+.6f} mm | ΔY {rec['offset_y']:+.6f} mm | "
                             f"配准方式 {('固定基准' if key == 'stack' else self.GAP_REGISTRATION_MODE_LABELS.get(rec.get('registration_mode', 'none'), '未配准'))}\n")
+                handle.write('# 输入处理参数快照: ' + json.dumps(payload.get('input_traces', {}), ensure_ascii=False, default=lambda v: v.tolist() if isinstance(v,np.ndarray) else str(v)) + '\n')
                 handle.write(f"# 有效匹配点: {len(payload['z'])}\n")
                 self._gap_result_frame().to_csv(handle, index=False)
             self._show_status(f"胶厚 CSV 已导出: {path}", 6000)
@@ -806,118 +809,39 @@ class GapAnalysisMixin:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return re.sub(r'[<>:"/\\|?*\r\n]+', '_', f"Gap_Report_{stamp}.png")
 
-    def _render_gap_report_figure(self):
-        if self.gap_result is None:
-            raise ValueError("暂无有效胶厚结果。")
-        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
-        plt.rcParams['axes.unicode_minus'] = False
+    def _refresh_gap_result_views(self):
+        if not hasattr(self, 'gap_result_figure'):
+            return
         payload = self.gap_result
-        z = np.asarray(payload['z'], dtype=float)
-        metrics = self._gap_plane_metrics(payload)
-        fig = Figure(figsize=(16.0, 9.2), constrained_layout=True)
-        FigureCanvasAgg(fig)
-        grid = fig.add_gridspec(2, 2, width_ratios=[0.82, 1.75], height_ratios=[1, 1])
-        ax_info = fig.add_subplot(grid[:, 0]); ax_info.axis('off')
-        ax_layers = fig.add_subplot(grid[0, 1])
-        ax_gap = fig.add_subplot(grid[1, 1])
+        if getattr(self, '_gap_view_payload', object()) is payload:
+            return
+        self._gap_view_payload = payload
+        self.gap_result_figure.clear()
+        from ..result_views import draw_four_views
+        if payload is None:
+            self.gap_result_summary.setText('尚未计算膜厚；配准和数据层操作保持不变')
+            self.gap_result_figure.text(.5, .5, '暂无膜厚结果', ha='center', va='center')
+        else:
+            m = self._gap_plane_metrics(payload)
+            self.gap_result_summary.setText(
+                f"有效匹配 {len(payload['z']):,} 点 · Mean {m['mean_z']:.6g} mm · "
+                f"PV {m['pv']:.5g} µm · TTV {m['ttv']:.5g} µm · "
+                f"Rx {m['rx']:.5g} / Ry {m['ry']:.5g} µrad · 原始扣减快照")
+            draw_four_views(self.gap_result_figure, payload['x'], payload['y'], payload['z'],
+                            quantity='Inner Gap', unit='mm')
+        self.gap_result_canvas.draw_idle()
 
-        layers = payload['layers']
-        lines = [
-            "结果摘要",
-            f"有效匹配点  {len(z):,}",
-            f"平面拟合点  {int(payload.get('plane_metric_count', len(z))):,}",
-            f"容差窗口  {payload['tolerance']:.3f} mm",
-            f"平均胶厚  {metrics['mean_z']:.6f} mm",
-            f"Gap Rx  {metrics['rx']:.2f} µrad",
-            f"Gap Ry  {metrics['ry']:.2f} µrad",
-            f"平面残差 PV  {metrics['pv']:.3f} µm",
-            f"平面残差 RMS  {metrics['rms']:.3f} µm",
-            f"TTV  {metrics['ttv']:.3f} µm",
-            f"最小 / 最大  {np.min(z):.6f} / {np.max(z):.6f} mm",
-            "",
-            "XY 配准位移（堆叠固定）",
-            f"单片 1  ΔX {layers['base1']['offset_x']:+.5f} mm  ΔY {layers['base1']['offset_y']:+.5f} mm  "
-            f"{self.GAP_REGISTRATION_MODE_LABELS.get(layers['base1'].get('registration_mode', 'none'), '未配准')}",
-        ]
-        if layers['base2'] is not None:
-            lines.append(
-                f"单片 2  ΔX {layers['base2']['offset_x']:+.5f} mm  ΔY {layers['base2']['offset_y']:+.5f} mm  "
-                f"{self.GAP_REGISTRATION_MODE_LABELS.get(layers['base2'].get('registration_mode', 'none'), '未配准')}")
-        for key, tag in (('base1_distance', '单片 1'), ('base2_distance', '单片 2')):
-            dist = payload.get('details', {}).get(key)
-            if dist is not None and len(dist):
-                dist = np.asarray(dist, dtype=float) * 1000
-                lines.append(f"{tag}  配准误差 均值 {np.mean(dist):.2f} µm  RMS {np.sqrt(np.mean(dist ** 2)):.2f} µm")
-        judgment = judgment_summary(self.current_judgment('gap'))
-        if judgment:
-            lines[1:1] = [judgment]
-        lines.extend(["", "数据来源", f"堆叠  {Path(str(layers['stack']['name'])).name}",
-                      f"单片 1  {Path(str(layers['base1']['name'])).name}"])
-        if layers['base2'] is not None:
-            lines.append(f"单片 2  {Path(str(layers['base2']['name'])).name}")
-        lines.extend(["", "口径", "XY 最近邻欧氏距离不大于容差的点参与扣减。",
-                      "指标与图表均使用全部有效匹配点的胶厚快照。",
-                      "不包含主控后续旋转、ROI或滤波。",
-                      "自动精对齐与手动拖动只改变单片层 XY 平移，不改变 Z。"])
-        ax_info.text(0.02, 0.98, "\n".join(lines), va='top', ha='left', fontsize=10.5,
-                     linespacing=1.55, color='#334155', transform=ax_info.transAxes,
-                     bbox=dict(boxstyle='round,pad=0.7', fc='#f8fafc', ec='#dbe3ec'))
-
-        def sample(x, y, limit=35000):
-            x, y = np.asarray(x), np.asarray(y)
-            if len(x) > limit:
-                pick = np.linspace(0, len(x) - 1, limit, dtype=int)
-                return x[pick], y[pick]
-            return x, y
-
-        for key, rec, label in (
-                ('stack', self.data_stack, '堆叠总成'),
-                ('base1', self.data_base1, '单片 1'),
-                ('base2', self.data_base2, '单片 2')):
-            if rec is None:
-                continue
-            x, y = self._shifted_xy(rec)
-            x, y = sample(x, y)
-            ax_layers.scatter(x, y, s=8, alpha=0.58, edgecolors='none',
-                              c=self.GAP_LAYER_COLORS[key], label=label, rasterized=True)
-        vx, vy = sample(payload['x'], payload['y'])
-        ax_layers.scatter(vx, vy, s=24, facecolors='none',
-                          edgecolors=self.GAP_LAYER_COLORS['matched'], linewidths=0.8,
-                          alpha=0.92, label='全部参与扣减点', rasterized=True)
-        ax_layers.set_title("XY 配准与容差匹配")
-        ax_layers.set_xlabel("X (mm)"); ax_layers.set_ylabel("Y (mm)")
-        ax_layers.grid(True, color='#edf0f3'); ax_layers.set_aspect('equal', adjustable='datalim')
-        ax_layers.legend(loc='best', fontsize=8)
-
-        gx, gy, gz = payload['x'], payload['y'], payload['z']
-        if len(gz) > 50000:
-            pick = np.linspace(0, len(gz) - 1, 50000, dtype=int)
-            gx, gy, gz = gx[pick], gy[pick], gz[pick]
-        scatter = ax_gap.scatter(gx, gy, c=gz, cmap='turbo', s=12, alpha=0.85,
-                                 edgecolors='none', rasterized=True)
-        ax_gap.set_title("Inner Gap XY 分布")
-        ax_gap.set_xlabel("X (mm)"); ax_gap.set_ylabel("Y (mm)")
-        ax_gap.grid(True, color='#edf0f3'); ax_gap.set_aspect('equal', adjustable='datalim')
-        colorbar = fig.colorbar(scatter, ax=ax_gap, shrink=0.88, pad=0.02)
-        colorbar.set_label("Inner Gap (mm)")
-        fig.suptitle(f"多层胶厚扣减报告 ({self.APP_VERSION})", fontsize=17, fontweight='bold')
-        return fig
+    def _render_gap_report_figure(self):
+        """Compatibility API: use the ordinary main report for a fresh copy."""
+        if self.gap_result is None:
+            raise ValueError('暂无有效膜厚结果')
+        self.load_gap_secondary()
+        x,y,z = self.get_final_transformed_data(self.df_raw)
+        metrics = self.compute_plane_metrics(x[self.active_idx], y[self.active_idx], z[self.active_idx])
+        return self._render_report_figure(self.current_source_name,x,y,z,self.active_idx,
+            metrics,self.n_filtered,'原始状态','关闭',self.import_info,display_surface_mode='raw')
 
     def export_gap_report(self):
-        if self.gap_result is None:
-            QMessageBox.warning(self, "暂无结果", "请先完成容差匹配并计算胶厚。")
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "导出胶厚报告图",
-            dialog_initial_path('export', self._gap_report_default_name()),
-            "PNG 图片 (*.png);;All Files (*)")
-        if not path:
-            return
-        remember_dialog_path('export', path)
-        try:
-            fig = self._render_gap_report_figure()
-            fig.savefig(path, dpi=150)
-            self._show_status(f"胶厚报告图已导出: {path}", 6000)
-            QMessageBox.information(self, "导出成功", f"胶厚报告图已导出：\n{path}")
-        except Exception as exc:
-            QMessageBox.critical(self, "导出失败", str(exc))
+        # Legacy API forwards to the same main controls and export flow.
+        if self.load_gap_secondary():
+            self.export_report_image()

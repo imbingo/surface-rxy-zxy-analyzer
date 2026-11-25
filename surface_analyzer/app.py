@@ -56,6 +56,7 @@ from .mixins.composite import CompositeMixin
 from .mixins.roi import ROIMixin
 from .mixins.reporting import ReportingMixin
 from .mixins.judgment import JudgmentMixin
+from .widgets import AdaptiveMetricLabel, ResponsiveMetricLayout
 from .workers import FunctionWorker
 from .module_extensions import (
     ModuleExtensionRegistry, ModuleHost, validate_module_object,
@@ -162,7 +163,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         had_layout_setting = self.settings.contains("input_layout_mode")
         self.pitch_source = str(self.settings.value(
             "pitch_source", "auto"))
-        self.use_system_frame = str(self.settings.value("use_system_frame", "false")).lower() in ("1", "true", "yes")
+        self.use_system_frame = False
         self.recent_files = [str(x) for x in self.settings.value("recent_files", [], type=list)]
         self.roi_enabled = False           # 人工/Smart ROI 保留区域开关
         self.roi_shapes = []               # list[dict]，人工ROI记录XY/XZ/YZ二维几何
@@ -727,7 +728,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
                 'sidebar': tab_math, 'panel': gap_panel,
                 'panel_index': 2,
                 'export_actions': lambda: (
-                    ("导出膜厚报告图", self.export_gap_report, self.btn_export_gap_report.isEnabled()),
+                    ("载入膜厚结果到主控", self.load_gap_secondary, self.btn_export_gap_report.isEnabled()),
                     ("导出膜厚 CSV", self.export_gap_csv, self.btn_export_gap_csv.isEnabled()),
                 ),
                 'status_text': lambda: self._builtin_module_status('gap'),
@@ -931,8 +932,13 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self._refresh_composite_save_buttons()
         self._sync_status_widgets()
         if self._pending_sigma_reanalysis:
-            self._pending_sigma_reanalysis = False
-            QTimer.singleShot(0, self.update_analysis)
+            QTimer.singleShot(0, self._resume_pending_sigma_analysis)
+
+    def _resume_pending_sigma_analysis(self):
+        if self._task_thread is not None or not self._pending_sigma_reanalysis:
+            return  # A later task cleanup will resume a still-pending request.
+        self._pending_sigma_reanalysis = False
+        self.update_analysis()
 
     def _set_system_frame_enabled(self, enabled):
         self.use_system_frame = bool(enabled)
@@ -1055,9 +1061,9 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
 
     @staticmethod
     def _is_supported_drop_file(path):
-        return Path(path).suffix.lower() in {
-            ".csv", ".txt", ".tsv", ".dat", ".asc", ".xyz", ".xlsx", ".xls", ".xlsm"
-        }
+        from .composite_recipe import supported_suffixes
+        return Path(path).is_file() and Path(path).suffix.casefold() in supported_suffixes()
+
 
     def _resize_edge_at(self, gpos):
         """根据全局光标位置判断是否贴近窗口边缘，返回组合 Qt.Edge 或 None。"""
@@ -1102,18 +1108,9 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
                 and hasattr(self, 'current_recipe_name')):
             self._set_recipe_identity(self.current_recipe_name)
         if obj is getattr(self, '_results_strip', None) and event.type() == QEvent.Type.Resize:
-            width = obj.width()
-            columns = len(self._metric_cards) if width >= 900 else 3 if width >= 450 else 2
-            if columns != getattr(self, '_metric_columns', None):
-                self._metric_columns = columns
-                for card in self._metric_cards:
-                    self._metric_grid.removeWidget(card)
-                for i, card in enumerate(self._metric_cards):
-                    self._metric_grid.addWidget(card, i//columns, i%columns)
-                for i in range(len(self._metric_cards)):
-                    self._metric_grid.setColumnStretch(i, 1 if i < columns else 0)
+            self._layout_single_metric_cards()
             self.lbl_eqn.hide()
-            self.lbl_surface_residual_metrics.setVisible(True)
+            self.lbl_surface_residual_metrics.hide()
         if obj is getattr(self, '_appbar', None) and not self.use_system_frame:
             et = event.type()
             if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
@@ -1145,7 +1142,8 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         v.setContentsMargins(12, 9, 12, 9)
         v.setSpacing(4)
         t = QLabel(title)
-        t.setMinimumHeight(18)
+        t.setWordWrap(True)
+        t.setMinimumHeight(max(32, 2*t.fontMetrics().lineSpacing()))
         t.setObjectName("metricTitleAccent" if accent else "metricTitle")
         value_label.setObjectName("metricValueAccent" if accent else "metricValue")
         v.addWidget(t)
@@ -1196,11 +1194,12 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self.cb_surface_display.setFixedWidth(178)
         self.cb_surface_display.setToolTip(
             "切换右侧四幅图的显示面型。高阶残差仅用于显示、框选和独立诊断指标，\n"
-            "不会改变现有 Rx/Ry、TTV 或最佳拟合平面残差 PV 的权威口径。")
+            "顶部单层指标和判定使用当前显示面型；残差 PV 不再二次去平面。")
         self.cb_surface_display.currentIndexChanged.connect(self._on_surface_display_changed)
         self.lbl_surface_residual_metrics = SourceLabel("原始高度显示")
         self.lbl_surface_residual_metrics.setObjectName("mutedNote")
         self.lbl_surface_residual_metrics.setMaximumWidth(180)
+        display_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         head.addWidget(display_label)
         head.addWidget(self.cb_surface_display)
         self.cb_color_scale = NoWheelComboBox()
@@ -1209,16 +1208,19 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self.cb_color_scale.setFixedWidth(104)
         self.cb_color_scale.setToolTip('自动：有 ROI 时 XY 使用全局色标，3D/XZ/YZ 共用当前 ROI 色标；全局统一：四图使用同一全局范围。')
         self.cb_color_scale.currentIndexChanged.connect(lambda _: self.update_plots_only(preserve_view=True))
-        head.addWidget(QLabel('色标范围'))
+        color_label = QLabel('色标范围')
+        color_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        head.addWidget(color_label)
         head.addWidget(self.cb_color_scale)
         cards = QGridLayout()
         cards.setSpacing(13)
         cards.setContentsMargins(4, 2, 4, 4)
-        self.lbl_z = QLabel("--")
-        self.lbl_pv = QLabel("--")
-        self.lbl_ttv = QLabel("--")
-        self.lbl_rx = QLabel("--")
-        self.lbl_ry = QLabel("--")
+        self.lbl_z = AdaptiveMetricLabel("--")
+        self.lbl_pv = AdaptiveMetricLabel("--")
+        self.lbl_ttv = AdaptiveMetricLabel("--")
+        self.lbl_rx = AdaptiveMetricLabel("--")
+        self.lbl_ry = AdaptiveMetricLabel("--")
+        self.lbl_std3 = AdaptiveMetricLabel("--")
         self._metric_cards = [self._make_metric_card("Mean Z (mm)", self.lbl_z)]
         pv_card = self._make_metric_card("平面残差 PV (µm)", self.lbl_pv, accent=True)
         pv_card.setToolTip("相对最佳拟合平面的法向残差极差：仅去除整体高度和一阶倾斜，未去除二阶及以上曲率。")
@@ -1226,11 +1228,14 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             self._make_metric_card("TTV·Z极差 (µm)", self.lbl_ttv),
             self._make_metric_card("Rx (µrad)", self.lbl_rx),
             self._make_metric_card("Ry (µrad)", self.lbl_ry),
+            self._make_metric_card('3σ (µm)', self.lbl_std3),
             self._make_judgment_card('single')]
         for i, card in enumerate(self._metric_cards):
             cards.addWidget(card,0,i)
         self._metric_grid = cards
         self._results_strip = strip
+        self._single_cards = dict(zip(('mean_z','pv','ttv','rx','ry','std3'), self._metric_cards[:-1]))
+        self._layout_single_metric_cards()
         strip.installEventFilter(self)
         metric_surface = QFrame()
         metric_surface.setObjectName("metricSurface")
@@ -1251,13 +1256,16 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             groups.append(group)
         self.lbl_surface_residual_metrics.setMaximumWidth(16777215)
         self.lbl_surface_residual_metrics.setWordWrap(False)
-        groups[2].layout().addWidget(self.lbl_surface_residual_metrics, 1)
+        groups[2].layout().addWidget(self.lbl_surface_residual_metrics)
+        groups[2].layout().addStretch(1)
         toolbar = ProjectionToolbar(groups)
         toolbar.setObjectName("viewToolbar")
         outer.addWidget(toolbar)
         return strip
 
     def _clear_result_labels(self):
+        self._single_display_metrics = None
+        self.lbl_std3.setText("--")
         if not hasattr(self, 'lbl_eqn'):
             return
         self.lbl_eqn.setText("--")
@@ -1945,7 +1953,8 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self.btn_export_gap_csv.clicked.connect(self.export_gap_csv)
         self.btn_export_gap_report = QPushButton("导出报告图")
         self.btn_export_gap_report.setFixedHeight(32)
-        self.btn_export_gap_report.clicked.connect(self.export_gap_report)
+        self.btn_export_gap_report.setText("载入结果到主控")
+        self.btn_export_gap_report.clicked.connect(self.load_gap_secondary)
         export_row.addWidget(self.btn_export_gap_csv)
         export_row.addWidget(self.btn_export_gap_report)
         ll.addLayout(export_row)
@@ -2315,14 +2324,14 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
 
         strip = QFrame()
         strip.setObjectName("metricSurface")
-        sl = QHBoxLayout(strip)
+        sl = ResponsiveMetricLayout(strip)
         sl.setContentsMargins(10, 4, 10, 8)
         sl.setSpacing(12)
-        self.lbl_gap_matched = QLabel("--")
-        self.lbl_gap_unmatched = QLabel("--")
-        self.lbl_gap_tolerance = QLabel("--")
-        self.lbl_gap_reg_mean = QLabel("--")
-        self.lbl_gap_state = QLabel("待计算")
+        self.lbl_gap_matched = AdaptiveMetricLabel("--")
+        self.lbl_gap_unmatched = AdaptiveMetricLabel("--")
+        self.lbl_gap_tolerance = AdaptiveMetricLabel("--")
+        self.lbl_gap_reg_mean = AdaptiveMetricLabel("--")
+        self.lbl_gap_state = AdaptiveMetricLabel("待计算")
         sl.addWidget(self._make_value_card("成功匹配点", self.lbl_gap_matched, accent=True), 1)
         sl.addWidget(self._make_value_card("未参与扣减点", self.lbl_gap_unmatched, accent=True), 1)
         self.gap_reg_mean_card = self._make_value_card("配准误差均值 (µm)", self.lbl_gap_reg_mean)
@@ -2361,14 +2370,14 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
 
         strip = QFrame()
         strip.setObjectName("metricSurface")
-        sl = QHBoxLayout(strip)
+        sl = ResponsiveMetricLayout(strip)
         sl.setContentsMargins(10, 4, 10, 8)
         sl.setSpacing(12)
-        self.lbl_par_drx = QLabel("--")
-        self.lbl_par_dry = QLabel("--")
-        self.lbl_par_angle = QLabel("--")
-        self.lbl_par_step = QLabel("--")
-        self.lbl_par_state = QLabel("待计算")
+        self.lbl_par_drx = AdaptiveMetricLabel("--")
+        self.lbl_par_dry = AdaptiveMetricLabel("--")
+        self.lbl_par_angle = AdaptiveMetricLabel("--")
+        self.lbl_par_step = AdaptiveMetricLabel("--")
+        self.lbl_par_state = AdaptiveMetricLabel("待计算")
         sl.addWidget(self._make_value_card("平行度 ΔRx (µrad)", self.lbl_par_drx, accent=True), 1)
         sl.addWidget(self._make_value_card("平行度 ΔRy (µrad)", self.lbl_par_dry, accent=True), 1)
         sl.addWidget(self._make_value_card("合成夹角 (µrad)", self.lbl_par_angle), 1)
@@ -2623,21 +2632,39 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
                 order = 1
             if self.high_order_models.get(order) is None:
                 if not self._start_high_order_diagnostic(order, mode):
-                    self.cb_surface_display.blockSignals(True)
-                    self.cb_surface_display.setCurrentIndex(
-                        max(0, self.cb_surface_display.findData('raw')))
-                    self.cb_surface_display.blockSignals(False)
+                    self._restore_surface_display_selection()
                 return
         self.display_surface_mode = mode
         self.display_detrended = mode != 'raw'
+        self._refresh_after_surface_change()
+
+    def _refresh_after_surface_change(self):
+        if self.cb_filter.currentIndex() == 3 and self.cb_sigma_residual.currentData() == 'follow_detrend':
+            # The chosen face is an input to this existing filter mode. Reuse
+            # the normal processing chain so a written slot and Recipe replay
+            # describe the same effective data, without changing the filter.
+            self._sigma_async_result = None
+            self.update_analysis()
+            return
         self._update_surface_display_metrics()
         # raw(mm) 与 residual(µm) 的纵轴单位和数量级不同，必须按新数据
         # 重新 autoscale；保留旧 ylim 会把绝大多数残差点裁出视野。
         self.update_plots_only(preserve_view=False)
 
+    def _restore_surface_display_selection(self):
+        mode = self.display_surface_mode
+        if mode != 'raw' and self.high_order_models.get(int(mode.rsplit('_',1)[1])) is None:
+            mode = 'raw'
+        self.display_surface_mode = mode
+        self.display_detrended = mode != 'raw'
+        self.cb_surface_display.blockSignals(True)
+        self.cb_surface_display.setCurrentIndex(max(0,self.cb_surface_display.findData(mode)))
+        self.cb_surface_display.blockSignals(False)
+        self._update_surface_display_metrics()
+
     def _start_high_order_diagnostic(self, order, requested_mode):
         inputs = self._high_order_inputs
-        if inputs is None or self._task_thread is not None:
+        if inputs is None or self.last_metrics is None or self._task_thread is not None:
             self._show_status(f"{order}阶诊断暂不可用或已有后台任务。", 5000)
             return False
         revision = int(self._analysis_revision)
@@ -2660,13 +2687,22 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             if str(self.cb_surface_display.currentData() or 'raw') == mode:
                 self.display_surface_mode = mode
                 self.display_detrended = True
-                self._update_surface_display_metrics()
-                self.update_plots_only(preserve_view=False)
+                self._refresh_after_surface_change()
+
+        def restore_selection():
+            if revision != self._analysis_revision:
+                return
+            if str(self.cb_surface_display.currentData() or 'raw') == requested_mode:
+                self._restore_surface_display_selection()
+
+        def failed(message):
+            if revision != self._analysis_revision:return
+            restore_selection()
+            self._show_status(f"{order}阶诊断计算失败: {message}", 8000)
 
         return self._run_background_task(
-            f"{order}阶诊断", work, accept,
-            on_error=lambda message: self._show_status(
-                f"{order}阶诊断计算失败: {message}", 8000))
+            f"{order}阶诊断", work, accept, on_error=failed,
+            on_cancel=restore_selection)
 
     def _ensure_all_high_order_models(self):
         """Materialize export diagnostics on demand for output compatibility."""
@@ -2681,35 +2717,29 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
                     continue
 
     def _update_surface_display_metrics(self):
+        self._refresh_single_display_metrics()
+        self.lbl_surface_residual_metrics.hide()
         mode = getattr(self, 'display_surface_mode', 'raw')
         if mode == 'raw':
-            if self.cb_filter.currentIndex() == 4:
-                self.lbl_surface_residual_metrics.setText(
-                    f"空间高斯后高度 | σ={self.spin_gaussian_sigma.value():.4g} mm")
-            else:
-                self.lbl_surface_residual_metrics.setText("原始高度显示")
             return
-        try:
-            order = int(mode.rsplit('_', 1)[1])
-        except (ValueError, IndexError):
-            order = 1
+        order = int(mode.rsplit('_', 1)[1])
         model = self.high_order_models.get(order)
         if model is None:
-            self.lbl_surface_residual_metrics.setText(f"{order}阶残差暂不可用")
-            return
-        ill_conditioned = float(model.get('condition', 0.0)) > 1e8
-        warning = " | ⚠ 拟合病态" if ill_conditioned else ""
-        self.lbl_surface_residual_metrics.setText(
-            f"残差 PV {model['residual_pv_um']:.3f} µm | RMS {model['residual_rms_um']:.3f} µm{warning}")
-        self.lbl_surface_residual_metrics.setToolTip(
-            "高阶设计矩阵条件数过大，结果对采样分布与噪声敏感，不宜作为判定依据。"
-            if ill_conditioned else "高阶残差仅用于诊断，不改变Rx/Ry及BF平面残差PV的权威口径。")
+            self.lbl_surface_residual_metrics.setText(f'⚠ {order}阶显示面型不可用')
+            self.lbl_surface_residual_metrics.setToolTip('当前有效点无法拟合所选阶数；请调整 ROI 或选择可用的显示面型。')
+            self.lbl_surface_residual_metrics.show()
+        elif float(model.get('condition', 0.0)) > 1e8:
+            # Retain quality warnings; only the duplicate PV/RMS numbers were
+            # removed. Hiding this warning would silently discard diagnostics.
+            self.lbl_surface_residual_metrics.setText(f'⚠ {order}阶拟合病态')
+            self.lbl_surface_residual_metrics.setToolTip('高阶设计矩阵条件数过大，结果对采样分布与噪声敏感，不宜作为判定依据。')
+            self.lbl_surface_residual_metrics.show()
 
     def _get_plot_z(self, tx, ty, tz):
         """返回绘图/框选使用的Z值和轴标签。
         原始模式：Z使用内部单位mm；
         去倾斜模式：Z为相对当前最佳拟合平面的残差，单位µm。
-        注意：该函数只服务显示/框选，不改变原始数据和拟合指标。"""
+        该函数返回显示/框选坐标；顶部指标由 display_metrics 按同一面型计算，原始测量数据不变。"""
         mode = getattr(self, 'display_surface_mode', 'raw')
         if mode != 'raw':
             try:

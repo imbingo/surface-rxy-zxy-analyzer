@@ -17,38 +17,40 @@ class JudgmentMixin:
     def _judgment_spec(self):
         spec = getattr(self, 'judgment_spec', None)
         if spec is None:
-            raw = '{}'
-            settings = getattr(self, 'settings', None)
-            if settings is not None:
-                raw = str(settings.value(JUDGMENT_SETTINGS_KEY, '{}') or '{}')
-            try:
-                spec = normalize_judgment_spec(json.loads(raw))
-            except (ValueError, TypeError):
-                spec = normalize_judgment_spec({})
+            # Startup is deliberately blank, regardless of the previous session.
+            spec = normalize_judgment_spec({})
             self.judgment_spec = spec
         return spec
 
-    def set_judgment_spec(self, spec, persist=True):
+    def set_judgment_spec(self, spec, persist=True, update_single=True):
         self.judgment_spec = normalize_judgment_spec(spec)
         if persist and getattr(self, 'settings', None) is not None:
             self.settings.setValue(JUDGMENT_SETTINGS_KEY, json.dumps(self.judgment_spec))
+        if update_single:
+            from ..display_metrics import normalize_single_config
+            self.single_metric_config = normalize_single_config({'limits': self.judgment_spec})
+            self._layout_single_metric_cards()
         self._refresh_all_judgments()
 
     def open_judgment_spec_dialog(self):
-        dialog = JudgmentSpecDialog(self, self._judgment_spec())
+        scope = 'single' if self.tabs.currentIndex() == 0 else 'other'
+        dialog = JudgmentSpecDialog(self, self._judgment_spec(), self._single_metric_config(), initial_scope=scope)
         if dialog.exec():
-            self.set_judgment_spec(dialog.spec())
+            self.set_judgment_spec(dialog.spec(), update_single=False)
+            self.set_single_metric_config(dialog.single_config())
             if hasattr(self, '_show_status'):
                 self._show_status("判定规格已更新。", 4000)
 
     def _make_judgment_card(self, module):
-        label = QLabel("--")
+        from ..widgets import AdaptiveMetricLabel
+        label = AdaptiveMetricLabel("--")
         card = self._make_metric_card("结果判定", label)
         card.setCursor(Qt.CursorShape.PointingHandCursor)
         card.mousePressEvent = lambda event: self.open_judgment_spec_dialog()
         if not hasattr(self, '_judgment_widgets'):
             self._judgment_widgets = {}
         self._judgment_widgets[module] = (card, label)
+        self._refresh_judgment(module, values={})
         return card
 
     def _make_extension_judgment_card(self, module, metric_labels, keys):
@@ -78,8 +80,9 @@ class JudgmentMixin:
 
     def _judgment_values(self, module):
         if module == 'single':
-            metrics = getattr(self, 'last_metrics', None) or {}
-            return {key: metrics.get(key) for key in ('rx', 'ry', 'pv', 'ttv')}
+            values = getattr(self, '_single_display_metrics', None)
+            if values is not None: return values
+            return (getattr(self, 'last_metrics', None) or {}) if getattr(self, 'display_surface_mode', 'raw') == 'raw' else {}
         if module == 'gap':
             payload = getattr(self, 'gap_result', None)
             metrics = (payload or {}).get('plane_metrics') or {}
@@ -92,7 +95,7 @@ class JudgmentMixin:
 
     def _judgment_metric_labels(self, module):
         if module == 'single':
-            names = {'rx': 'lbl_rx', 'ry': 'lbl_ry', 'pv': 'lbl_pv', 'ttv': 'lbl_ttv'}
+            names = {'rx': 'lbl_rx', 'ry': 'lbl_ry', 'pv': 'lbl_pv', 'ttv': 'lbl_ttv', 'std3': 'lbl_std3', 'mean_z': 'lbl_z'}
         elif module == 'parallel':
             names = {'parallel': 'lbl_par_angle'}
         else:
@@ -105,6 +108,9 @@ class JudgmentMixin:
         return labels
 
     def current_judgment(self, module, values=None):
+        if module == 'single':
+            from ..display_metrics import judge_single
+            return judge_single(self._judgment_values(module) if values is None else values, self._single_metric_config())
         extension = getattr(self, '_extension_judgment_registry', {}).get(module)
         scope = 'parallel' if module == 'parallel' else 'surface'
         if values is None:
@@ -137,3 +143,74 @@ class JudgmentMixin:
     def _refresh_all_judgments(self):
         for module in tuple(getattr(self, '_judgment_widgets', {})):
             self._refresh_judgment(module)
+
+    def _single_metric_config(self):
+        from ..display_metrics import normalize_single_config
+        if not hasattr(self, 'single_metric_config'):
+            self.single_metric_config = normalize_single_config({'visible':['mean_z','pv','ttv','rx','ry']})
+        return self.single_metric_config
+
+    def set_single_metric_config(self, config):
+        from ..display_metrics import normalize_single_config
+        self.single_metric_config = normalize_single_config(config)
+        self._layout_single_metric_cards()
+        self._refresh_judgment('single')
+
+    def _layout_single_metric_cards(self):
+        if not hasattr(self, '_single_cards'):
+            return
+        visible = self._single_metric_config()['visible']
+        active = [card for key, card in self._single_cards.items() if key in visible]
+        for key, card in self._single_cards.items():
+            card.setVisible(key in visible)
+        verdict = self._judgment_widgets['single'][0]
+        for card in self._metric_cards: self._metric_grid.removeWidget(card)
+        width = self._results_strip.width()
+        capacity = max(1, min(len(active), max(2, width // 150) - 1))
+        rows = max(1, (len(active) + capacity - 1) // capacity)
+        # Balance wrapped rows: six visible metrics become 3 + 3, rather than
+        # a nearly empty second row, with the verdict always at the far right.
+        metric_columns = max(1, (len(active) + rows - 1) // rows)
+        columns = metric_columns + 1 if active else 1
+        import math
+        counts = [min(metric_columns, len(active)-row*metric_columns) for row in range(rows)] if active else []
+        units = math.lcm(*counts) if counts else 0
+        verdict_units = max(1, units//metric_columns)
+        for col in range(max(self._metric_grid.columnCount(), units+1)):
+            self._metric_grid.setColumnStretch(col, 0)
+        offset = 0
+        for row, count in enumerate(counts):
+            span = units//count
+            for col in range(count):
+                self._metric_grid.addWidget(active[offset], row, col*span, 1, span)
+                offset += 1
+        self._metric_grid.addWidget(verdict, 0, units, rows, 1)
+        for col in range(units):self._metric_grid.setColumnStretch(col, 1)
+        self._metric_grid.setColumnStretch(units, verdict_units)
+        self._metric_columns = columns
+
+    def _refresh_single_display_metrics(self):
+        from ..display_metrics import display_metrics
+        self._single_display_metrics = None
+        if self.last_metrics is None or self._high_order_inputs is None:
+            return
+        mode = self.display_surface_mode
+        order = int(mode.rsplit('_', 1)[1]) if mode != 'raw' else None
+        model = self.high_order_models.get(order) if order else None
+        if order and model is None:
+            for label in (self.lbl_z,self.lbl_pv,self.lbl_ttv,self.lbl_rx,self.lbl_ry,self.lbl_std3):label.setText('--')
+            self._refresh_judgment('single', {})
+            return
+        values = display_metrics(*self._high_order_inputs, mode, model)
+        quality = self._current_metric_quality()
+        values.update(_estimated=quality['estimated'], _quality_warning=quality.get('warning',''))
+        self._single_display_metrics = values
+        self._single_cards['pv'].findChildren(QLabel)[0].setText(
+            '平面法向 PV (µm)' if mode == 'raw' else '显示残差 PV (µm)')
+        self._single_cards['pv'].setToolTip('原始模式：现有最佳拟合平面法向残差极差。' if mode == 'raw' else '当前显示残差 Z 的极差，不再次去平面。')
+        approx = '≈' if quality['estimated'] else ''
+        for key, name in [('mean_z','lbl_z'),('pv','lbl_pv'),('ttv','lbl_ttv'),('rx','lbl_rx'),('ry','lbl_ry'),('std3','lbl_std3')]:
+            label = getattr(self, name)
+            label.setText(f"{approx}{values[key]:.6g}")
+            label.setToolTip(f"显示面型 {mode}；{key} = {values[key]:.12g}；3σ 使用总体标准差 ddof=0。")
+        self._refresh_judgment('single')

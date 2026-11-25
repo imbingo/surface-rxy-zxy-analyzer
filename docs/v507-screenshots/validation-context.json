@@ -1,0 +1,26 @@
+{
+  "runtime_source_commit": "0a237e26fe9f739e57a195f3b27e2b579ab724d9",
+  "platform": "Linux / Qt offscreen; synthetic inputs",
+  "scales_rendered": [
+    1,
+    1.5,
+    2
+  ],
+  "plux": {
+    "drag_enter": true,
+    "drop_event": true,
+    "source": "矩阵样品.PLUX",
+    "recent_file": true,
+    "points": 30
+  },
+  "secondary_operations": {
+    "delete": true,
+    "undo": true,
+    "roi": true,
+    "gaussian_filter": true,
+    "display_face": true,
+    "original_vig_isolated": true,
+    "memory_not_replayable": true,
+    "actual_thickness_slots": true
+  }
+}

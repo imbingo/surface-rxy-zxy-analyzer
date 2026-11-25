@@ -1,0 +1,41 @@
+[
+  {
+    "theme": "light",
+    "colors": {
+      "Text": "#233445",
+      "Base": "#ffffff",
+      "PlaceholderText": "#52657a",
+      "HighlightedText": "#173b5e",
+      "Highlight": "#dce8f3"
+    },
+    "input_contrast": 12.73811314440852,
+    "placeholder_contrast": 5.997826989827758,
+    "selection_contrast": 9.256165291963011
+  },
+  {
+    "theme": "dark",
+    "colors": {
+      "Text": "#ededed",
+      "Base": "#19191b",
+      "PlaceholderText": "#9a9a9f",
+      "HighlightedText": "#ededed",
+      "Highlight": "#26262a"
+    },
+    "input_contrast": 14.995206094567662,
+    "placeholder_contrast": 6.267182173102392,
+    "selection_contrast": 12.876003423754272
+  },
+  {
+    "theme": "light",
+    "colors": {
+      "Text": "#233445",
+      "Base": "#ffffff",
+      "PlaceholderText": "#52657a",
+      "HighlightedText": "#173b5e",
+      "Highlight": "#dce8f3"
+    },
+    "input_contrast": 12.73811314440852,
+    "placeholder_contrast": 5.997826989827758,
+    "selection_contrast": 9.256165291963011
+  }
+]

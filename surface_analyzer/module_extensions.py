@@ -174,6 +174,20 @@ class ModuleHost:
             'source_path', str((record.get('import_info') or {}).get('source_path') or ''))
         return record
 
+    def save_composite_recipe(self, module):
+        return self.__window.save_composite_recipe(module)
+
+    def batch_from_example(self, module):
+        return self.__window.batch_from_example(module)
+
+    def choose_composite_recipe(self, module):
+        return self.__window.choose_composite_recipe(module)
+
+    def load_result_copy(self, x, y, z_mm, *, name, quality=None, metadata=None):
+        """Load a detached mm dataset into the existing single-layer workflow."""
+        return self.__window.load_memory_result(x, y, z_mm, name=name,
+                                                quality=quality, metadata=metadata)
+
     def confirm_estimated_metrics(self, action):
         return self.__window._confirm_estimated_metrics(str(action))
 

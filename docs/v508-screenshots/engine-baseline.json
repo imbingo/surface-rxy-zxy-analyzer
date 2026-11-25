@@ -1,0 +1,5 @@
+{
+  "valid_outputs_bitwise_equal_to_v507": true,
+  "known_golden_abs_error_um": 1.12904175e-07,
+  "golden_tolerance_um": 1e-07
+}
