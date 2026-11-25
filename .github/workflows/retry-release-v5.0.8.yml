@@ -1,0 +1,151 @@
+name: Retry verified V5.0.8 release
+on:
+  push:
+    branches: ['main']
+    paths: ['.github/workflows/retry-release-v5.0.8.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: v508-release-final
+  cancel-in-progress: false
+jobs:
+  windows-validation:
+    runs-on: windows-latest
+    timeout-minutes: 55
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+      RELEASE_SOURCE_COMMIT: 5d59a8a306f4921e3170d2f36818bdd3222f2bea
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: v5.0.8
+      - name: Verify immutable release source
+        shell: pwsh
+        run: |
+          $actual=(git rev-parse HEAD).Trim()
+          if ($actual -ne $env:RELEASE_SOURCE_COMMIT) { throw 'Release source mismatch' }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Bounded regression
+        timeout-minutes: 18
+        run: python scripts/run_v508_checks.py
+      - name: Source GUI and subprocess acceptance
+        timeout-minutes: 6
+        shell: pwsh
+        run: |
+          python -m surface_analyzer --check-v508 --vig-extension extensions/vig-image --output-json .qa/source-v508.json
+          if ($LASTEXITCODE -ne 0) { Get-Content .qa/source-v508.json; exit $LASTEXITCODE }
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (!(Get-Command ISCC.exe -ErrorAction SilentlyContinue) -and !(Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Build main and optional extension
+        timeout-minutes: 18
+        shell: pwsh
+        run: |
+          ./scripts/build_release.ps1 -Python python -SkipTests
+          ./scripts/build_module_extension.ps1
+          '## Installer SHA-256' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          Get-ChildItem release/*.exe | ForEach-Object {
+            $hash=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$($_.Name): $hash" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          }
+      - name: Frozen EXE module, GUI, reports and real VIG worker
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          $exe=Join-Path $PWD 'dist/SurfaceRxyZxyAnalyzer/SurfaceRxyZxyAnalyzer.exe'
+          $extension=Join-Path $PWD 'extensions/vig-image'
+          function Check([string[]]$CheckArgs,[string]$Report) {
+            $p=Start-Process $exe -ArgumentList $CheckArgs -WindowStyle Hidden -PassThru
+            if (!$p.WaitForExit(210000)) { & taskkill /PID $p.Id /T /F; throw 'Frozen check timeout' }
+            $p.Refresh()
+            if ($p.ExitCode -ne 0) { if (Test-Path $Report) { Get-Content $Report }; throw "Frozen check failed: $($p.ExitCode)" }
+            $r=Get-Content $Report -Raw | ConvertFrom-Json
+            if (!$r.ok) { throw 'Frozen check returned failure' }
+          }
+          Check @('--check-module-extension',$extension,'--output-json',"$PWD/.qa/frozen-module.json") "$PWD/.qa/frozen-module.json"
+          Check @('--check-v508','--vig-extension',$extension,'--output-json',"$PWD/.qa/frozen-v508.json") "$PWD/.qa/frozen-v508.json"
+          Check @('--check-v508','--output-json',"$PWD/.qa/frozen-without-vig.json") "$PWD/.qa/frozen-without-vig.json"
+          $r=Get-Content .qa/frozen-v508.json -Raw | ConvertFrom-Json
+          if ($r.version -ne 'V5.0.8' -or $r.source_commit -ne '${{ env.RELEASE_SOURCE_COMMIT }}') { throw 'Frozen provenance mismatch' }
+      - name: Isolated install and overwrite upgrade
+        timeout-minutes: 12
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force .qa/previous | Out-Null
+          gh release download v5.0.5 --pattern 'SurfaceRxyZxyAnalyzer_Setup_V5.0.5.exe' --dir .qa/previous
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Only the QA harness comes from the corrected orchestration commit.
+          # Application, tests, build inputs and installers remain at v5.0.8.
+          git show '${{ github.sha }}:scripts/verify_v508_extension_install.ps1' | Set-Content scripts/verify_v508_extension_install_release_qa.ps1 -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read corrected upgrade QA harness' }
+          ./scripts/verify_v508_extension_install_release_qa.ps1 -WorkRoot "$PWD/.qa/extension-install"
+          ./scripts/verify_release_installation.ps1 -Setup "$PWD/release/SurfaceRxyZxyAnalyzer_Setup_V5.0.8.exe" -PreviousSetup "$PWD/.qa/previous/SurfaceRxyZxyAnalyzer_Setup_V5.0.5.exe" -WorkRoot "$PWD/.qa/installer" -ExpectedVersion V5.0.8 -ExpectedCommit '${{ env.RELEASE_SOURCE_COMMIT }}'
+      - name: Verify and freeze complete review package
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $env:GITHUB_SHA=$env:RELEASE_SOURCE_COMMIT
+          python scripts/prepare_v508_artifacts.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: V5.0.8-installers-and-validation
+          path: review_package/
+          include-hidden-files: true
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: V5.0.8-failure-diagnostics
+          path: |
+            .qa/**/*.json
+            .qa/**/*.log
+            .qa/**/*.xml
+          include-hidden-files: true
+          if-no-files-found: warn
+      - name: Publish verified installers and validation bundle
+        timeout-minutes: 8
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tagCommit=(git rev-parse 'v5.0.8^{commit}').Trim()
+          if ($tagCommit -ne '${{ env.RELEASE_SOURCE_COMMIT }}') { throw 'Release tag/source mismatch' }
+          gh release view v5.0.8 *> $null
+          if ($LASTEXITCODE -eq 0) { throw 'Release already exists; refusing to overwrite it' }
+          $archive='SurfaceRxyZxyAnalyzer_V5.0.8_Validation.zip'
+          Compress-Archive -Path review_package/* -DestinationPath $archive
+          $hash=(Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content "$archive.sha256" -Encoding ascii
+          $assets=@(
+            'release/SurfaceRxyZxyAnalyzer_Setup_V5.0.8.exe',
+            'release/SurfaceRxyZxyAnalyzer_Setup_V5.0.8.exe.sha256',
+            'release/SurfaceAnalyzer_VigImageExtension_Setup_V1.2.0.exe',
+            'release/SurfaceAnalyzer_VigImageExtension_Setup_V1.2.0.exe.sha256',
+            'release/update_manifest.json',
+            'review_package/SHA256SUMS.txt',
+            'review_package/validation-summary.json',
+            $archive,"$archive.sha256"
+          )
+          foreach ($path in $assets) { if (!(Test-Path $path)) { throw "Missing release asset: $path" } }
+          gh release create v5.0.8 @assets --verify-tag --draft --title 'V5.0.8 — 批量分析、VIG 追溯与报告布局改进' --notes-file docs/RELEASE_NOTES_V5.0.8.md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gh release edit v5.0.8 --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gh release view v5.0.8 --json url,tagName,isDraft,assets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

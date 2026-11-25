@@ -19,7 +19,9 @@ function Install-QA([string]$Setup,[string]$Log) {
 # assumed to have been published as a GitHub Release.
 $Previous=Join-Path $WorkRoot 'previous-source'
 New-Item -ItemType Directory -Force $Previous | Out-Null
-git -C $Root archive origin/main -o "$WorkRoot/previous.zip"
+# Keep the baseline immutable after the release branch is merged into main.
+$PreviousCommit='e4a715963cb63fa54946a157d6c98f4227898cd0'
+git -C $Root archive $PreviousCommit -o "$WorkRoot/previous.zip"
 if ($LASTEXITCODE -ne 0) { throw 'Cannot read previous extension source' }
 Expand-Archive "$WorkRoot/previous.zip" $Previous
 $Manifest=Get-Content "$Previous/extensions/vig-image/extension.json" -Raw | ConvertFrom-Json
