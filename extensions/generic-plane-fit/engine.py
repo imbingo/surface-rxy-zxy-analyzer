@@ -37,7 +37,9 @@ class PlaneFit:
 
 
 def _wrap_deg(angle):
-    return float((angle + 90.0) % 180.0 - 90.0)
+    wrapped = float((angle + 90.0) % 180.0 - 90.0)
+    # Floating-point remainder can round up to the excluded endpoint.
+    return -90.0 if wrapped == 90.0 else wrapped
 
 
 def angle_difference(measure, base):

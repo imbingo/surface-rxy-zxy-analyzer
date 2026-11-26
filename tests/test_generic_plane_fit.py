@@ -96,6 +96,7 @@ def test_steep_and_vertical_sign_projection_and_delta():
     assert angle_difference(-89, 89) == 2
     assert angle_difference(89, -89) == -2
     assert angle_difference(-90, 0) == -90
+    assert angle_difference(np.nextafter(-90., -np.inf), 0) == -90
     assert 'Rx 不可定义' in b.warnings[0]
     other_vertical = fit_plane(vertical[:, [1, 0, 2]])
     assert other_vertical.rx_deg == -90
