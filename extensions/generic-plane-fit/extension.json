@@ -1,7 +1,7 @@
 {
   "id": "generic-plane-fit",
   "name": "通用三维拟合",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "api_version": 1,
   "minimum_app_version": "5.0.9",
   "required_capabilities": ["xyz_selection_v1"],

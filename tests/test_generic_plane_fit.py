@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
+from matplotlib.backend_bases import MouseEvent
 import numpy as np
 import pytest
 from PyQt6.QtCore import QSettings
@@ -452,6 +453,8 @@ def test_reference_workflows_and_default_import_camera(workspace, tmp_path):
     assert comparison['ready']
     assert comparison['perpendicularity_error_deg'] == pytest.approx(np.degrees(np.arctan(.01)))
     assert comparison['frame_rotation_deg'] > 0
+    assert float(module.dihedral_value.text()) == pytest.approx(comparison['total_tilt_deg'], abs=.0005)
+    assert float(module.ab_angle_value.text()) == pytest.approx(comparison['ab_plane_angle_deg'], abs=.0005)
     assert all(angle is not None for angle in comparison['delta_rx_ry_deg'])
     path = tmp_path / 'reference.json'
     with patch('PyQt6.QtWidgets.QFileDialog.getSaveFileName', return_value=(str(path), 'JSON')):
@@ -466,11 +469,31 @@ def test_reference_workflows_and_default_import_camera(workspace, tmp_path):
 
     module.coordinate_frame.setCurrentIndex(2)
     module.write_slot(0)  # The main ROI still contains only the supports.
+    assert module.point_order.currentData() is None
+    assert module.scene.currentWidget() is module.canvas
+    point_labels = [f'#{index}' for index in module.slots[0]['point_indices']]
+    assert [text.get_text() for text in module.axes.texts] == point_labels
+    axes = module.axes
+    module.canvas.draw()
+    event = MouseEvent('scroll_event', module.canvas, axes.bbox.x0 + 10,
+                       axes.bbox.y0 + 10, step=1)
+    module.canvas.callbacks.process('scroll_event', event)
+    assert module._zoom_3d > .85
+    module.view_choice.setCurrentIndex(2)
+    assert module.projections[1].get_visible()
+    assert not axes.get_visible()
+    assert [text.get_text() for text in module.projections[1].texts] == point_labels
+    module.view_choice.setCurrentIndex(0)
+    assert module._zoom_3d > .85
+    module._reset_view()
+    assert module._zoom_3d == .85
     module.point_order.setCurrentIndex(next(
         i for i in range(module.point_order.count()) if module.point_order.itemData(i) == order))
     assert module.result is None
     comparison = module._comparison(None)
     np.testing.assert_allclose(comparison['ordered_points_mm'], supports)
+    annotations = {text.get_text() for text in module.axes.texts}
+    assert {f'{point_labels[i]} · {role}' for i, role in zip(order, 'ABC')} <= annotations
     assert module.scene.currentWidget() is module.canvas
     module.coordinate_frame.setCurrentIndex(0)
     module.coordinate_frame.setCurrentIndex(2)

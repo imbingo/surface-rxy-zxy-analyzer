@@ -12,7 +12,7 @@ import numpy as np
 from PyQt6.QtCore import QPointF, Qt
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QGridLayout, QGroupBox, QLabel, QPlainTextEdit,
+    QComboBox, QDialog, QDialogButtonBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPlainTextEdit,
     QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -97,8 +97,7 @@ class GenericPlaneFitModule:
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.addWidget(_label(
-            '在主控选择原始 Z、关闭滤波。用 XY／XZ／YZ 矩形 ROI 选择有效点，'
-            '再回到本页写入。各槽须来自同一次 XYZ 点表映射。', 'mutedNote'))
+            '在主控选点后，写入对应槽位。', 'mutedNote'))
         controls = []
         self.slot_labels = []
         self.slot_groups = []
@@ -175,34 +174,62 @@ class GenericPlaneFitModule:
         metrics.addWidget(self.frame_policy, 1, 1)
         self.feature_note = _label('', 'mutedNote')
         self.basis_note = _label('', 'mutedNote')
-        self.delta_values = []
-        self.delta_titles = []
-        for col, title in enumerate(('ΔRx (°)', 'ΔRy (°)')):
+        indicators = QHBoxLayout()
+        values = []
+        titles = []
+        for title in ('ΔRx (°)', 'ΔRy (°)', '二面角 (°)', 'AB 面夹角 (°)'):
+            cell = QWidget()
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(2, 0, 2, 0)
+            cell_layout.setSpacing(2)
             label = _label(title)
             value = _label('—', 'metricValueAccent')
             for widget in (label, value):
                 widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            metrics.addWidget(label, 3, col)
-            metrics.addWidget(value, 4, col)
-            metrics.setColumnStretch(col, 1)
-            self.delta_values.append(value)
-            self.delta_titles.append(label)
+            cell_layout.addWidget(label)
+            cell_layout.addWidget(value)
+            indicators.addWidget(cell, 1)
+            values.append(value)
+            titles.append(label)
+        self.delta_values = values[:2]
+        self.delta_titles = titles[:2]
+        self.dihedral_value, self.ab_angle_value = values[2:]
+        metrics.addLayout(indicators, 3, 0, 1, 2)
         layout.addWidget(summary)
         self.comparison_note = _label('写入测面后执行拟合。Δ 表示测量面 B 相对基准面 A。', 'mutedNote')
         layout.addWidget(self.comparison_note)
-        layout.addWidget(self.feature_note)
-        layout.addWidget(self.basis_note)
+
+        views = QHBoxLayout()
+        self.view_choice = QComboBox()
+        self.view_choice.setAccessibleName('绘图区视图')
+        self.view_choice.addItems(('3D 点云', 'XY 投影', 'XZ 投影', 'YZ 投影'))
+        self.view_choice.setToolTip('滚轮缩放。3D 视图可拖动旋转。')
+        reset_view = QPushButton('复位视图')
+        reset_view.clicked.connect(self._reset_view)
+        details_button = QPushButton('结果与说明')
+        views.addWidget(self.view_choice)
+        views.addWidget(reset_view)
+        views.addStretch()
+        views.addWidget(details_button)
+        layout.addLayout(views)
 
         self.figure = Figure(figsize=(6, 2.85))
         self.axes = self.figure.add_subplot(projection='3d', proj_type='ortho', computed_zorder=False)
+        self.projections = [self.figure.add_subplot(111, label=view)
+                            for view in ('XY', 'XZ', 'YZ')]
+        for axes in self.projections:
+            axes.set_visible(False)
+        self._home_limits = {}
+        self._zoom_3d = .85
         self.canvas = self.host.make_canvas(self.figure)
+        self.canvas.mpl_connect('scroll_event', self._scroll_plot)
+        self.view_choice.currentIndexChanged.connect(self._show_view)
         self.canvas.setMinimumSize(270, 285)
         self.scene = QStackedWidget()
         self.scene.addWidget(self.canvas)
         self.scene_note = _label('', 'mutedNote')
         self.scene_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scene.addWidget(self.scene_note)
-        layout.addWidget(_label('三维图与下方单面指标 · 原坐标系', 'mutedNote'))
         layout.addWidget(self.scene, 1)
 
         results = QWidget()
@@ -225,8 +252,27 @@ class GenericPlaneFitModule:
                 self.values[col].append(value)
         self.quality = _label('', 'mutedNote')
         grid.addWidget(self.quality, len(METRICS) + 1, 0, 1, 4)
-        layout.addWidget(results)
-        layout.addWidget(_label(f'{ANGLE_DEFINITION}\n{NORMAL_DEFINITION}\n{QUALITY_DEFINITION}', 'mutedNote'))
+        self.details = QDialog(content)
+        self.details.setWindowTitle('通用三维拟合 · 结果与说明')
+        self.details.resize(660, 520)
+        details_layout = QVBoxLayout(self.details)
+        details_content = QWidget()
+        detail_items = QVBoxLayout(details_content)
+        self.comparison_detail = _label('', 'mutedNote')
+        for widget in (results, self.comparison_detail, self.feature_note, self.basis_note):
+            detail_items.addWidget(widget)
+        detail_items.addWidget(_label(
+            '各槽须来自同一次 XYZ 点表映射。在主控选择原始 Z、关闭滤波，使用矩形 ROI 选点后写入。\n'
+            '绘图区、法向量和单面结果采用原坐标系。滚轮缩放，3D 视图可拖动旋转。'
+            '二面角为无向平面的最小夹角（0°–90°）。两面定基准时，二面角为 C 与基准 X′Y′ 的夹角，'
+            '另显示两个参考面的 AB 夹角。\n'
+            f'{ANGLE_DEFINITION}\n{NORMAL_DEFINITION}\n{QUALITY_DEFINITION}', 'mutedNote'))
+        detail_items.addStretch()
+        details_layout.addWidget(_scroll(details_content))
+        close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close.rejected.connect(self.details.reject)
+        details_layout.addWidget(close)
+        details_button.clicked.connect(self.details.show)
         self.coordinate_frame.currentIndexChanged.connect(self._select_frame)
         self.reference_axis.currentIndexChanged.connect(self._render_comparison)
         self.point_order.currentIndexChanged.connect(self._change_point_order)
@@ -410,7 +456,7 @@ class GenericPlaneFitModule:
             slot, measure = self.slots[:2]
             order = self.point_order.currentData()
             if slot is None or len(slot['xyz']) != 3 or order is None:
-                comparison['error'] = '将恰好三个定位点写入 A，再按左底点、右底点、顶点选择顺序。'
+                comparison['error'] = '将恰好三个定位点写入 A，再按图中点号依次选择左底点、右底点、顶点。'
                 return comparison
             indices = list(order)
             xyz = slot['xyz'][indices]
@@ -523,7 +569,20 @@ class GenericPlaneFitModule:
             note = '原坐标系 · 测量面 B 相对基准面 A · 最短有符号差（180° 周期）'
         if comparison['warnings']:
             note += ' ' + ' '.join(comparison['warnings'])
-        self.comparison_note.setText(note)
+        self.comparison_detail.setText(note)
+        status = (comparison['error'] or
+                  ('部分角度不可定义或对测点噪声敏感，详见结果与说明。' if comparison['warnings'] else '') or
+                  ('选择点号时可切换 XY／XZ／YZ 投影。' if mode == 'points' and not comparison['ready'] else ''))
+        if not status and result and all(result['snapshots'][:2]) and not result['common_frame']:
+            status = 'A、B 来自不同的列映射。'
+        self.comparison_note.setText(status)
+        self.comparison_note.setVisible(bool(status))
+        dihedral = comparison.get('total_tilt_deg') if mode in ('points', 'two_planes') else angle
+        self.dihedral_value.setText('—' if dihedral is None else f'{dihedral:.3f}')
+        self.dihedral_value.setToolTip('C 与基准 X′Y′ 的夹角' if mode == 'two_planes' else
+                                        'B 与三点基准 X′Y′ 的夹角' if mode == 'points' else 'A 与 B 的夹角')
+        self.ab_angle_value.setText('—' if angle is None else f'{angle:.3f}')
+        self.ab_angle_value.parentWidget().setVisible(mode == 'two_planes')
         for label, delta, sensitive in zip(self.delta_values, comparison['delta_rx_ry_deg'],
                                            comparison['sensitive_angles']):
             label.setToolTip('')
@@ -538,37 +597,55 @@ class GenericPlaneFitModule:
         comparison = self._comparison(self.result)
         point_frame = comparison.get('target_point_frame', comparison)
         points = point_frame.get('ordered_points_mm') if 'basis_rows_in_source' in point_frame else None
-        if (self.result is None or not any(self.result['fits'])) and points is None:
+        mode = comparison['frame']
+        point_slot = self.slots[0] if mode == 'points' else self.slots[2] if mode == 'two_planes' else None
+        candidates = point_slot is not None and len(point_slot['xyz']) == 3
+        if (self.result is None or not any(self.result['fits'])) and not candidates:
             self.scene_note.setText('拟合后的点集、平面及法向量将在此显示')
             self.scene.setCurrentWidget(self.scene_note)
             return
-        if self.result and all(self.result['fits'][:2]) and not self.result['common_frame'] and points is None:
+        if self.result and all(self.result['fits'][:2]) and not self.result['common_frame'] and not candidates:
             self.scene_note.setText('共同坐标图需要同一次映射的两份快照')
             self.scene.setCurrentWidget(self.scene_note)
             return
         ax = self.axes
         ax.clear()
+        self._home_limits.clear()
+        for projection in self.projections:
+            projection.clear()
         self.scene.setCurrentWidget(self.canvas)
         ax.set_proj_type('ortho')
         ax.set_xlabel('X (mm)')
         ax.set_ylabel('Y (mm)')
         ax.set_zlabel('Z (mm)')
         ax.tick_params(labelsize=8)
-        self.figure.subplots_adjust(left=0.06, right=0.94, bottom=0.06, top=0.96)
         count = 3 if comparison['frame'] == 'two_planes' else 2
         result_fits = self.result['fits'] if self.result else ()
-        if self.result and not self.result['common_frame'] and points is not None:
-            result_fits = result_fits[:1]
+        if candidates:
+            result_fits = tuple(
+                fit if slot is not None and slot['frame_id'] == point_slot['frame_id'] else None
+                for slot, fit in zip(self.slots, result_fits))
         rows = [(title, color, slot, fit) for title, color, slot, fit in
                 zip(SLOTS[:count], COLORS, self.slots, result_fits) if fit is not None
                 and (title != SLOTS[2] or comparison['error'] is None)]
         extents = []
+        samples = []
+        point_annotations = []
+        if candidates:
+            xyz = point_slot['xyz']
+            ax.scatter(*xyz.T, s=26, color='#287abd', depthshade=False, zorder=6)
+            order = self.point_order.currentData()
+            roles = dict(zip(order, 'ABC')) if order is not None else {}
+            for i, (index, point) in enumerate(zip(point_slot['point_indices'], xyz)):
+                label = f'#{index}'
+                if i in roles:
+                    label += f' · {roles[i]}'
+                ax.text(*point, label, fontsize=10, fontweight='bold', zorder=7)
+                point_annotations.append((point, label))
+            extents.extend(xyz)
         if points is not None:
             triangle = points[[0, 1, 2, 0]]
             ax.plot(*triangle.T, color='#64748b')
-            if comparison['frame'] == 'points':
-                for name, point in zip(('A', 'B', 'C'), points):
-                    ax.text(*point, name)
             origin = point_frame['origin_mm_in_source']
             size = np.linalg.norm(points[1] - points[0]) * .45
             for name, color, direction in zip(('X′', 'Y′', 'Z′'),
@@ -579,7 +656,6 @@ class GenericPlaneFitModule:
                 if comparison['frame'] == 'points':
                     ax.text(*(origin + arrow), name, color=color)
                 extents.append(origin + arrow)
-            extents.extend(points)
         if not rows and not extents:
             self.scene_note.setText('拟合后的点集、平面及法向量将在此显示')
             self.scene.setCurrentWidget(self.scene_note)
@@ -587,6 +663,7 @@ class GenericPlaneFitModule:
         for title, color, slot, fit in rows:
             xyz = slot['xyz']
             sample = xyz[np.linspace(0, len(xyz) - 1, min(len(xyz), 3500), dtype=int)]
+            samples.append((sample, color, title[-1]))
             ax.scatter(*sample.T, s=4, color=color, depthshade=False, label=title[-1], zorder=3)
             lo, hi = fit.tangent_bounds_mm
             uv = np.array([[lo[0], lo[1]], [lo[0], hi[1]], [hi[0], lo[1]], [hi[0], hi[1]]])
@@ -599,13 +676,65 @@ class GenericPlaneFitModule:
             extents.extend((*fit.xyz_bounds_mm, *patch, fit.centroid_mm + arrow))
         lo, hi = np.min(extents, axis=0), np.max(extents, axis=0)
         center = (lo + hi) / 2
-        radius = max(hi - lo) * .58
+        radius = max(float(np.max(hi - lo)) * .58, 1e-6)
         ax.set(xlim=(center[0] - radius, center[0] + radius),
                ylim=(center[1] - radius, center[1] + radius),
                zlim=(center[2] - radius, center[2] + radius))
-        ax.set_box_aspect((1, 1, 1), zoom=.85)
+        ax.set_box_aspect((1, 1, 1), zoom=self._zoom_3d)
         if rows:
             ax.legend(loc='upper left')
+        for projection, (i, j) in zip(self.projections, ((0, 1), (0, 2), (1, 2))):
+            for sample, color, label in samples:
+                projection.scatter(sample[:, i], sample[:, j], s=6, color=color, label=label)
+            if candidates:
+                projection.scatter(xyz[:, i], xyz[:, j], s=26, color='#287abd', zorder=6)
+                for point, label in point_annotations:
+                    projection.annotate(label, (point[i], point[j]), xytext=(5, 5),
+                                        textcoords='offset points')
+            projection.set(xlabel=f'{"XYZ"[i]} (mm)', ylabel=f'{"XYZ"[j]} (mm)', aspect='equal')
+            projection.grid(True, alpha=.22)
+            projection.margins(.14)
+            if rows:
+                projection.legend(loc='upper left')
+            self._home_limits[projection] = (projection.get_xlim(), projection.get_ylim())
+        self._home_limits[ax] = (ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d())
+        self._show_view()
+
+    def _show_view(self):
+        selected = self.view_choice.currentIndex()
+        self.figure.subplots_adjust(left=.10 if selected else .06, right=.94,
+                                    bottom=.13 if selected else .06, top=.96)
+        for index, axes in enumerate((self.axes, *self.projections)):
+            axes.set_visible(index == selected)
+        self.canvas.draw_idle()
+
+    def _reset_view(self):
+        axes = (self.axes, *self.projections)[self.view_choice.currentIndex()]
+        limits = self._home_limits.get(axes)
+        if limits is None:
+            return
+        axes.set_xlim(limits[0])
+        axes.set_ylim(limits[1])
+        if axes is self.axes:
+            axes.set_zlim3d(limits[2])
+            axes.view_init(elev=30, azim=-60, roll=0)
+            self._zoom_3d = .85
+            axes.set_box_aspect((1, 1, 1), zoom=self._zoom_3d)
+        self.canvas.draw_idle()
+
+    def _scroll_plot(self, event):
+        axes = (self.axes, *self.projections)[self.view_choice.currentIndex()]
+        if axes not in self._home_limits or not event.step:
+            return
+        step = float(np.clip(event.step, -8, 8))
+        if axes is self.axes:
+            self._zoom_3d = float(np.clip(self._zoom_3d * 1.18 ** step, .2, 8))
+            axes.set_box_aspect((1, 1, 1), zoom=self._zoom_3d)
+        elif event.inaxes is axes and event.xdata is not None and event.ydata is not None:
+            scale = 1.18 ** -step
+            for value, limits, setter in ((event.xdata, axes.get_xlim(), axes.set_xlim),
+                                          (event.ydata, axes.get_ylim(), axes.set_ylim)):
+                setter(*(value + (bound - value) * scale for bound in limits))
         self.canvas.draw_idle()
 
     def show_trace(self, index):

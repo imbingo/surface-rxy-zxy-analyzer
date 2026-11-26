@@ -1,5 +1,5 @@
 #ifndef ExtensionVersion
-  #define ExtensionVersion "1.2.0"
+  #define ExtensionVersion "1.2.1"
 #endif
 
 [Setup]
