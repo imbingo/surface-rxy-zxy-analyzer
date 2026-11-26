@@ -15,7 +15,11 @@ from sources you trust.
 `minimum_app_version`, and `entrypoint` (`__init__.py`). An optional
 `maximum_app_version` can cap compatibility. The directory name must equal the
 manifest ID, and the entry point must remain inside that directory. A `disabled`
-marker file disables the extension.
+marker file disables the extension. An optional `required_capabilities`
+array lists additive host capabilities. Registries that implement capabilities
+reject unknown requirements during discovery. Extension factories must also
+verify their required capabilities when running on an older API v1 host,
+which may ignore that manifest field.
 
 The main app imports the entry point as a package, so relative imports are
 supported. Export `create_module(host)` returning an object with:
@@ -37,6 +41,18 @@ The extension may use only the host facade for application interaction; do not
 access private main-window attributes. API v1 provides:
 
 - `api_version`, `app_version`
+- `capabilities` — optional immutable set of implemented capability IDs.
+  Use `getattr(host, 'capabilities', ())` when checking older API v1 hosts.
+- `current_xyz_selection_snapshot()` — requires `xyz_selection_v1`.
+  Returns a detached `xyz` array in mm from the active mapped physical XYZ
+  point table, with `frame_id` (one mapping session), source, applied column
+  mapping and units, ROI, filter, deletion, and import metadata. It includes
+  `point_indices` in the mapped point set and `reader_index_labels` from the
+  reader table. These fields are independent of physical file line numbers.
+  The snapshot supports untransformed, unsampled points selected by raw
+  projection ROIs and manual deletions. A height-plane fit is optional.
+  Unsupported processing, an in-flight task, or too few points raises
+  `ValueError`. Check the capability even when `app_version` is V5.0.8.
 - `current_layer_snapshot()` — active single-layer X/Y/Z values in mm, source
   name/path, point count, import metadata, sample status, and metric quality.
   It raises `ValueError` when analysis is unavailable.
@@ -70,8 +86,9 @@ Matplotlib with QtAgg, PyQt6, and the public `surface_analyzer.workers` module.
 Extensions must not assume Numba or any other optional package is installed.
 Keep report figures white; screen figures should use the theme-aware canvas.
 
-API v1 coordinates and analyzer snapshots use millimetres. API changes require
-an API version increment and must not silently change existing meanings.
+API v1 coordinates and analyzer snapshots use millimetres. Changes to the
+existing contract require an API version increment. Additive optional host
+interfaces use capability IDs and preserve existing calls and meanings.
 
 Validate a package with
 `python -m surface_analyzer --check-module-extension <extension-directory>`.

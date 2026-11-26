@@ -1,5 +1,7 @@
 """AnalysisMixin extracted from the V3.9.3 application."""
 
+from copy import deepcopy
+
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from scipy.spatial import cKDTree
@@ -10,6 +12,60 @@ from ..workers import TaskCancelled
 
 
 class AnalysisMixin:
+    def _current_xyz_selection_record(self):
+        if self._task_thread is not None or self._pending_sigma_reanalysis:
+            raise ValueError('请等待主控后台处理结束后再写入。')
+        info = self.import_info
+        frame = self.df_raw
+        if frame is None or not info.get('mapped_point_frame'):
+            raise ValueError('请先在主控导入 XYZ 点表并应用列映射。')
+        if info.get('input_semantics') != 'xyz_physical' or info.get('mapped_xyz_derived'):
+            raise ValueError('请使用各轴为实际长度的原始 XYZ 点表及原始坐标列。')
+        if info.get('sampled'):
+            raise ValueError('当前导入已抽样，可能遗漏侧壁点。请使用完整 XYZ 点表。')
+        if self.transform_pipeline:
+            raise ValueError('请在主控撤销姿态变换后重新检查 ROI，使用共同的原始坐标系。')
+        if self.display_surface_mode != 'raw' or self.cb_filter.currentIndex() != 0:
+            raise ValueError('请在主控选择原始 Z 并关闭高度滤波，再检查选区后写入。')
+        shapes = [roi for roi in self.roi_shapes if roi.get('enabled', True)] if self.roi_enabled else []
+        if any(roi.get('type') == 'smart_face' or (
+                roi.get('view', 'XY') != 'XY' and (
+                    roi.get('display_polynomial_model') is not None or
+                    roi.get('display_mode') == 'detrended_um'))
+               for roi in shapes):
+            raise ValueError('请使用原始投影中的矩形 ROI，关闭智能抓面或残差选区。')
+        indices = self.active_idx
+        if indices is None or len(indices) < 3:
+            raise ValueError('当前有效点少于 3 个，请调整 ROI 或恢复删点。')
+        if not getattr(self, '_point_selection_ready', False):
+            raise ValueError('当前点集选择尚未完成，请检查主控分析状态。')
+
+        selected = frame.iloc[indices]
+        xyz = selected[['X', 'Y', 'Z']].to_numpy(dtype=float, copy=True)
+        if not np.isfinite(xyz).all():
+            raise ValueError('有效点集中包含非有限坐标，请检查导入数据。')
+        deleted = np.flatnonzero(~self.manual_mask)
+        return {
+            'xyz': xyz,
+            'unit': 'mm',
+            'source_name': self.current_source_name,
+            'source_path': info.get('source_path', ''),
+            'frame_id': info['mapped_point_frame'],
+            'import_info': deepcopy(info),
+            'column_mapping': {axis: info.get(f'mapping_{axis}_col', '') for axis in 'xyz'},
+            'input_units': dict(info['mapped_xyz_units']),
+            'transform_pipeline': (),
+            'surface_mode': 'raw',
+            'filter': {'mode_index': 0, 'removed_count': 0},
+            'roi': {'enabled': bool(self.roi_enabled), 'shapes': deepcopy(shapes)},
+            'manual_deletion': {
+                'operations': deepcopy(self.manual_delete_operations),
+                'deleted_point_indices': deleted,
+            },
+            'point_indices': indices.copy(),
+            'reader_index_labels': selected.index.to_numpy(copy=True),
+        }
+
     @staticmethod
     def spatial_gaussian_filter(x, y, z, sigma_mm=0.05, matrix_rc=None,
                                 truncate=3.0, max_neighbors=128,

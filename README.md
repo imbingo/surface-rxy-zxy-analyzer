@@ -1,8 +1,15 @@
-# Surface Rxy ZXY Analyzer V5.0.8
+# Surface Rxy ZXY Analyzer V5.0.9
 
 **V5.0.8 已正式发布：[下载安装包](https://github.com/imbingo/surface-rxy-zxy-analyzer/releases/tag/v5.0.8) · [Windows 验证与校验值](docs/V5.0.8_RELEASE_VERIFICATION.md)。** 最新布局修订见 [报告全图与整体界面复核](docs/V5.0.8_LAYOUT_REVIEW.md)，包含默认隐藏主控 3σ、Recipe 显式恢复显示及搜索框配色检查。
 
 面型及 Rxy 分析工具 **V5.0 — 统一分析工作台**。独立模块导航、单层/膜厚/平行度参数页、四视图共享色标及导入策略页签。V5.0.5 新增单层导出按有效点左下角归零选项；V5.0.4 新增组合 Recipe、按文件夹批量运行，并修复 VR 高度矩阵长前缀导入，详见 [发布说明](docs/RELEASE_NOTES_V5.0.5.md)。
+
+## V5.0.9（源码）
+
+- 可选「通用三维拟合」扩展支持三点建基准、两面定基准测第三面及坐标系旋转比较。
+- 主控导入后的默认 3D 视角为 45° 仰角及 −135° 方位角，并按画布和轴标签自动适配大小。
+
+操作与截图见 [通用三维拟合](docs/GENERIC_PLANE_FIT.md)。
 
 ## V5.0.8（已发布）
 

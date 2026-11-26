@@ -62,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _run_check_module_extension(extension_dir: str, output_json: str | None) -> int:
     from .module_extensions import (
-        API_VERSION, ModuleExtensionRegistry, validate_module_object,
+        API_VERSION, CAPABILITIES, ModuleExtensionRegistry, validate_module_object,
     )
 
     extension_path = Path(extension_dir).expanduser().resolve()
@@ -85,6 +85,7 @@ def _run_check_module_extension(extension_dir: str, output_json: str | None) -> 
             raise ValueError(entry.get('status', '扩展清单无效'))
         host = type('HeadlessModuleHost', (), {
             'api_version': API_VERSION,
+            'capabilities': CAPABILITIES,
             'app_version': APP_VERSION,
         })()
         module = registry.load(entry, host)

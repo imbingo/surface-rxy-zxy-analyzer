@@ -1,7 +1,7 @@
 {
   "id": "vig-image",
   "name": "VIG 像面",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "api_version": 1,
   "minimum_app_version": "5.0.8",
   "entrypoint": "__init__.py"

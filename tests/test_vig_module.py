@@ -10,8 +10,9 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import numpy as np
 import pandas as pd
-from PyQt6.QtCore import QSettings
-from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PyQt6.QtCore import QSettings, Qt, QTimer
+from PyQt6.QtGui import QPalette
+from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QMessageBox
 from matplotlib.figure import Figure
 
 from surface_analyzer.app import SurfaceAnalyzerPro
@@ -87,6 +88,43 @@ class VigExtensionModuleTests(unittest.TestCase):
         return package.engine.compute_vig_image(
             self.two_record, self.three_record,
             {'up': self.t_up, 'mid': self.t_mid, 'low': self.t_low})
+
+    def test_calculation_confirmation_is_readable_in_both_themes(self):
+        def luminance(color):
+            channels = (color.redF(), color.greenF(), color.blueF())
+            linear = [channel / 12.92 if channel <= .04045
+                      else ((channel + .055) / 1.055) ** 2.4 for channel in channels]
+            return sum(weight * channel for weight, channel in zip((.2126, .7152, .0722), linear))
+
+        for theme in ('light', 'dark'):
+            self.window.set_theme_preference(theme, persist=False)
+            observed = []
+
+            def inspect_and_decline():
+                dialog = self.qt.activeModalWidget()
+                if isinstance(dialog, QMessageBox):
+                    body = next((label for label in dialog.findChildren(QLabel)
+                                if '开始计算？' in label.text()), None)
+                    if body is None:
+                        dialog.reject()
+                        return
+                    foreground = body.palette().color(QPalette.ColorRole.WindowText)
+                    background = dialog.palette().color(QPalette.ColorRole.Window)
+                    observed.extend((dialog.parentWidget(), body.font().pixelSize(),
+                                     sorted((luminance(foreground), luminance(background))),
+                                     dialog.textFormat()))
+                    dialog.button(QMessageBox.StandardButton.No).click()
+                elif dialog is not None:
+                    dialog.reject()
+
+            QTimer.singleShot(0, inspect_and_decline)
+            self.assertFalse(self.module.calculate_vig())
+            parent, size, (low, high), text_format = observed
+            self.assertIs(parent, self.module.btn_calculate)
+            self.assertGreaterEqual(size, 14)
+            self.assertGreaterEqual((high + .05) / (low + .05), 4.5)
+            self.assertEqual(text_format, Qt.TextFormat.PlainText)
+            self.assertFalse(self.module._task_running)
 
     def test_navigation_snapshot_defaults_and_result_cards(self):
         self.assertEqual(len(self.window.module_buttons), 4)

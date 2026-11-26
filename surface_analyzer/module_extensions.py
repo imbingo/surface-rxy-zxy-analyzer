@@ -13,6 +13,7 @@ from .format_extensions import _version
 from .version import APP_VERSION
 
 API_VERSION = 1
+CAPABILITIES = frozenset({'xyz_selection_v1'})
 
 
 def validate_module_object(module, entry):
@@ -76,6 +77,13 @@ class ModuleExtensionRegistry:
                     raise ValueError('无效扩展名称')
                 if type(manifest['api_version']) is not int or manifest['api_version'] != API_VERSION:
                     raise ValueError('扩展 API 版本不兼容')
+                capabilities = manifest.get('required_capabilities', [])
+                if not isinstance(capabilities, list) or not all(
+                        isinstance(value, str) for value in capabilities):
+                    raise ValueError('无效扩展能力声明')
+                missing = set(capabilities) - CAPABILITIES
+                if missing:
+                    raise ValueError('主程序缺少扩展能力：' + ', '.join(sorted(missing)))
                 _version(manifest['version'])
                 if _version(self.app_version) < _version(manifest['minimum_app_version']):
                     raise ValueError('请升级主程序后使用此扩展')
@@ -167,6 +175,14 @@ class ModuleHost:
     @property
     def app_version(self):
         return APP_VERSION
+
+    @property
+    def capabilities(self):
+        return CAPABILITIES
+
+    def current_xyz_selection_snapshot(self):
+        """Detach the current XYZ selection in its mapped coordinate frame."""
+        return self.__window._current_xyz_selection_record()
 
     def current_layer_snapshot(self):
         record = self.__window._current_gap_record()

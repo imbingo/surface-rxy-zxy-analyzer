@@ -14,6 +14,7 @@ import time
 from collections import deque
 from pathlib import Path
 from datetime import datetime
+from uuid import uuid4
 
 import pandas as pd
 import numpy as np
@@ -42,6 +43,7 @@ from ..delimited_text import detect_delimiter, tokenize_delimited_line
 from ..data_scale import scale_summary
 from ..dialog_paths import dialog_initial_path, remember_dialog_path
 from ..format_extensions import FormatRegistry, ReadContext
+from ..plotting import DEFAULT_3D_AZIMUTH, DEFAULT_3D_ELEVATION
 from ..import_preflight import IMPORT_GUARD_POLICY, validate_selected_layout
 from ..text_scan import prefix_lines, blank_record, PrefixSearchLimitError
 from ..matrix_sampling import (MatrixSampler, numeric_matrix_row, pixel_pitch_summary,
@@ -4741,6 +4743,7 @@ class DataIOMixin:
                 'manual_delete_operations', '_manual_delete_mask_history',
                 'pending_delete_operation', 'active_idx', 'transform_pipeline',
                 'current_coeffs', 'current_source_name', 'n_filtered', 'last_metrics',
+                '_point_selection_ready',
                 'last_sigma_summary', 'last_spatial_filter_summary',
                 '_analysis_z_full', '_spatial_async_result',
                 'high_order_models', '_high_order_inputs',
@@ -5186,6 +5189,10 @@ class DataIOMixin:
                     f"映射后分析输入 {len(temp_df):,} 超过统一导入上限 "
                     f"{self._large_text_import_limit():,}；reader hard-cap 未生效。")
             self.df_raw = temp_df[out_cols]
+            self.import_info['mapped_point_frame'] = uuid4().hex
+            self.import_info['mapped_xyz_units'] = dict(zip('xyz', (x_unit, y_unit, z_unit)))
+            derived_names = {item['name'] for item in getattr(self, 'derived_columns', [])}
+            self.import_info['mapped_xyz_derived'] = bool(derived_names.intersection((xc, yc, zc)))
             self._update_smart_tolerance_recommendation(self.df_raw['Z'].to_numpy(dtype=float),
                                                         apply_value=not preserve_analysis_settings)
             self.import_info['valid_rows'] = len(self.df_raw)
@@ -5203,6 +5210,7 @@ class DataIOMixin:
             self._invalidate_smart_roi_runtime_cache(
                 topology=True, masks=True, reason='数据或列映射已更新')
             if preserve_analysis_settings:
+                self.canvas.ax3d.view_init(elev=DEFAULT_3D_ELEVATION, azim=DEFAULT_3D_AZIMUTH)
                 self.manual_mask = np.ones(len(self.df_raw), dtype=bool)
                 self.temp_selected_mask = np.zeros(len(self.df_raw), dtype=bool)
                 self.manual_delete_operations = []
@@ -5215,7 +5223,7 @@ class DataIOMixin:
             else:
                 self.reset_all(confirm=False)
             if getattr(self, '_import_dialog', None) is not None:
-                self._import_mapping_ready = (self.last_metrics is not None or
+                self._import_mapping_ready = (self._point_selection_ready or
                                               self._pending_sigma_reanalysis)
             return True
         except Exception as e:

@@ -10,7 +10,7 @@ from mpl_toolkits.mplot3d import proj3d
 # Search ceiling for the main view, not a fixed display multiplier. The fitter
 # measures the actual card and labels to choose the largest safe scene size.
 MAIN_3D_SCENE_ZOOM = 3.0
-DEFAULT_3D_ELEVATION = 30.0
+DEFAULT_3D_ELEVATION = 45.0
 DEFAULT_3D_AZIMUTH = -135.0
 
 
@@ -132,6 +132,7 @@ def fit_surface_box_to_canvas(
     min_z_ratio: float = 0.28,
     horizontal_padding_px: float = 36.0,
     vertical_padding_px: float = 26.0,
+    box_aspect: tuple[float, float, float] | None = None,
 ):
     """Maximize a 3D scene while keeping its projected box inside the canvas.
 
@@ -141,7 +142,7 @@ def fit_surface_box_to_canvas(
     corners, then maximize their scale within the actual canvas. Rendered
     labels reserve additional space only where needed.
     """
-    aspect = surface_box_aspect(x, y, z, min_z_ratio=min_z_ratio)
+    aspect = box_aspect if box_aspect is not None else surface_box_aspect(x, y, z, min_z_ratio=min_z_ratio)
     xlim, ylim, zlim = ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()
     corners = np.array([
         (xx, yy, zz)

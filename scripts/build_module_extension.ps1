@@ -1,6 +1,8 @@
 param([string]$Id = 'vig-image')
 $ErrorActionPreference = 'Stop'
-if ($Id -ne 'vig-image') { throw 'No installer definition registered for this module extension.' }
+$Definitions = @{ 'vig-image' = 'VigImageExtension'; 'generic-plane-fit' = 'GenericPlaneFitExtension' }
+$Definition = $Definitions[$Id]
+if (!$Definition) { throw 'No installer definition registered for this module extension.' }
 $Root = Split-Path -Parent $PSScriptRoot
 $ManifestPath = Join-Path $Root "extensions/$Id/extension.json"
 $Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
@@ -15,9 +17,9 @@ $Candidates = @(
 )
 $Compiler = $Candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 if (-not $Compiler) { throw 'Inno Setup 6 is required.' }
-& $Compiler (Join-Path $Root 'installer/VigImageExtension.iss')
+& $Compiler "/DExtensionVersion=$($Manifest.version)" (Join-Path $Root "installer/$Definition.iss")
 if ($LASTEXITCODE -ne 0) { throw 'Module extension installer compilation failed.' }
-$Artifact = Join-Path $Root "release/SurfaceAnalyzer_VigImageExtension_Setup_V$($Manifest.version).exe"
+$Artifact = Join-Path $Root "release/SurfaceAnalyzer_${Definition}_Setup_V$($Manifest.version).exe"
 $Hash = (Get-FileHash -LiteralPath $Artifact -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath "$Artifact.sha256" `
     -Value "$Hash  $([IO.Path]::GetFileName($Artifact))" -Encoding ascii

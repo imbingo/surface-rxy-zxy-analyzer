@@ -83,7 +83,7 @@ class V475RegressionTests(unittest.TestCase):
     def test_default_and_home_camera_use_confirmed_c_view(self):
         window = SurfaceAnalyzerPro()
         self.addCleanup(window.close)
-        self.assertEqual(DEFAULT_3D_ELEVATION, 30.0)
+        self.assertEqual(DEFAULT_3D_ELEVATION, 45.0)
         self.assertEqual(DEFAULT_3D_AZIMUTH, -135.0)
         self.assertEqual(window.canvas.ax3d.elev, DEFAULT_3D_ELEVATION)
         self.assertEqual(window.canvas.ax3d.azim, DEFAULT_3D_AZIMUTH)

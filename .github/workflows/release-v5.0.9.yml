@@ -1,0 +1,99 @@
+name: Build and release V5.0.9
+on:
+  push:
+    tags: ['v5.0.9']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: v509-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  windows-validation:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install -r requirements-dev.txt
+      - name: V5.0.9 regression
+        timeout-minutes: 12
+        run: python -m pytest -q --timeout=60 --timeout-method=thread tests/test_generic_plane_fit.py tests/test_v475.py tests/test_v479.py tests/test_vig_module.py tests/test_module_host.py tests/test_module_extensions.py
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (!(Get-Command ISCC.exe -ErrorAction SilentlyContinue) -and !(Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Build installers
+        timeout-minutes: 18
+        shell: pwsh
+        run: |
+          ./scripts/build_release.ps1 -Python python -SkipTests
+          ./scripts/build_module_extension.ps1 -Id vig-image
+          ./scripts/build_module_extension.ps1 -Id generic-plane-fit
+      - name: Verify installers and frozen modules
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD 'dist/SurfaceRxyZxyAnalyzer/SurfaceRxyZxyAnalyzer.exe'
+          function Invoke-Checked([string]$File, [string[]]$Arguments) {
+            $process = Start-Process $File -ArgumentList $Arguments -WindowStyle Hidden -PassThru
+            if (!$process.WaitForExit(180000)) { & taskkill /PID $process.Id /T /F; throw "Timeout: $File" }
+            $process.Refresh()
+            if ($process.ExitCode -ne 0) { throw "Exit $($process.ExitCode): $File" }
+          }
+          New-Item -ItemType Directory -Force .qa | Out-Null
+          foreach ($id in @('vig-image', 'generic-plane-fit')) {
+            $asset = if ($id -eq 'vig-image') { 'VigImageExtension_Setup_V1.2.1' } else { 'GenericPlaneFitExtension_Setup_V1.2.0' }
+            $destination = "$PWD/.qa/$id"
+            $result = "$PWD/.qa/$id.json"
+            Invoke-Checked "$PWD/release/SurfaceAnalyzer_$asset.exe" @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOICONS',"/DIR=`"$destination`"")
+            Invoke-Checked $exe @('--check-module-extension',"`"$destination`"",'--output-json',"`"$result`"")
+            if (!(Get-Content $result -Raw | ConvertFrom-Json).ok) { throw "Frozen module check failed: $id" }
+          }
+          Invoke-Checked $exe @('--check-v508','--vig-extension',"`"$PWD/.qa/vig-image`"",'--output-json',"`"$PWD/.qa/windows.json`"")
+          $report = Get-Content .qa/windows.json -Raw | ConvertFrom-Json
+          if (!$report.ok -or $report.version -ne 'V5.0.9' -or $report.source_commit -ne $env:GITHUB_SHA) { throw 'Frozen provenance or smoke check failed' }
+      - name: Verify main installer upgrade
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force .qa/previous | Out-Null
+          gh release download v5.0.8 --pattern 'SurfaceRxyZxyAnalyzer_Setup_V5.0.8.exe' --dir .qa/previous
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/verify_release_installation.ps1 -Setup "$PWD/release/SurfaceRxyZxyAnalyzer_Setup_V5.0.9.exe" -PreviousSetup "$PWD/.qa/previous/SurfaceRxyZxyAnalyzer_Setup_V5.0.8.exe" -WorkRoot "$PWD/.qa/installer" -ExpectedVersion V5.0.9 -ExpectedCommit $env:GITHUB_SHA
+      - uses: actions/upload-artifact@v4
+        with:
+          name: V5.0.9-installers-and-checks
+          path: |
+            release/*.exe
+            release/*.sha256
+            release/update_manifest.json
+            .qa/*.json
+            .qa/installer/*.json
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Publish verified release
+        if: github.ref == 'refs/tags/v5.0.9'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = @(Get-ChildItem release/*.exe, release/*.sha256, release/update_manifest.json | ForEach-Object FullName)
+          if ($assets.Count -ne 7) { throw 'Expected three installers, three checksums and the update manifest' }
+          gh release create v5.0.9 @assets --verify-tag --draft --title 'V5.0.9 — 三维基准与主控 3D 改进' --notes-file docs/RELEASE_NOTES_V5.0.9.md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gh release edit v5.0.9 --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

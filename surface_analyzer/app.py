@@ -16,6 +16,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.patches import FancyBboxPatch, Rectangle as MplRectangle, Circle as MplCircle
+from matplotlib.ticker import MaxNLocator
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.widgets import RectangleSelector
@@ -43,7 +44,8 @@ from .widgets import (
     MultiViewCanvas, ParallelismCanvas, GapMatchCanvas, EmptyStateOverlay,
 )
 from .plotting import (
-    MAIN_3D_SCENE_ZOOM, fit_surface_box_to_canvas, pad_surface_limits, display_color_limits,
+    DEFAULT_3D_AZIMUTH, DEFAULT_3D_ELEVATION, MAIN_3D_SCENE_ZOOM,
+    fit_surface_box_to_canvas, pad_surface_limits, display_color_limits,
     set_surface_box_aspect, set_xy_equal_aspect,
 )
 from .polynomial import fit_polynomial_surface, evaluate_polynomial_surface
@@ -1266,11 +1268,14 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
     def _clear_result_labels(self):
         self._single_display_metrics = None
         self.lbl_std3.setText("--")
+        self.lbl_std3.setToolTip("")
         if not hasattr(self, 'lbl_eqn'):
             return
         self.lbl_eqn.setText("--")
+        self.lbl_eqn.setToolTip("")
         for lab in (self.lbl_z, self.lbl_pv, self.lbl_ttv, self.lbl_rx, self.lbl_ry):
             lab.setText("--")
+            lab.setToolTip("")
         self._refresh_judgment('single', values={})
         if hasattr(self, 'lbl_surface_residual_metrics'):
             self.lbl_surface_residual_metrics.setText("暂无可用结果")
@@ -2548,6 +2553,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self.display_detrended = False
         self._update_surface_display_metrics()
         self.clear_rois(update=False)
+        self.canvas.ax3d.view_init(elev=DEFAULT_3D_ELEVATION, azim=DEFAULT_3D_AZIMUTH)
         self.update_analysis()
         self._show_status("系统已完全重置（滤波已关闭，显示已恢复原始Z）", 3000)
 
@@ -2756,6 +2762,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         return tz, "Z (mm)", "Z"
 
     def update_analysis(self):
+        self._point_selection_ready = False
         if self.df_raw is None: return
         if hasattr(self, 'adjustment_panel'):
             self._parallel_revision = int(getattr(self, '_parallel_revision', 0) or 0) + 1
@@ -2966,7 +2973,28 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
 
             # 2. 最终拟合与指标（与批量处理共用 compute_plane_metrics）
             self._import_ui_stage(96, '正在计算平面、PV、Rx/Ry 和高阶残差')
-            m = self.compute_plane_metrics(fx, fy, fz)
+            try:
+                m = self.compute_plane_metrics(fx, fy, fz)
+            except ValueError as exc:
+                # The XYZ selection is still usable when Z(X,Y) has no fit.
+                self.last_metrics = None
+                self.current_coeffs = None
+                self.high_order_models = {}
+                self._high_order_inputs = None
+                self._analysis_revision += 1
+                self._clear_result_labels()
+                self.lbl_eqn.setText("高度面拟合不可用")
+                self.lbl_eqn.setToolTip(str(exc))
+                for label in (self.lbl_z, self.lbl_pv, self.lbl_ttv, self.lbl_rx, self.lbl_ry, self.lbl_std3):
+                    label.setText("不可用")
+                    label.setToolTip(str(exc))
+                self._update_surface_display_metrics()
+                self.draw_plots(tx, ty, analysis_tz, roi_mask_all=roi_mask_all)
+                self.setup_selectors()
+                self._refresh_roi_ui(update=False, effective_roi_mask=roi_mask_all)
+                self._point_selection_ready = True
+                self._show_status(f"高度面拟合不可用：{exc}", 10000)
+                return
             c = m['coeffs']
             self.current_coeffs = c
             mean_z, ttv, pv, rx, ry = m['mean_z'], m['ttv'], m['pv'], m['rx'], m['ry']
@@ -3024,6 +3052,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             plot_seconds = time.perf_counter() - plot_started
             self.setup_selectors()
             self._refresh_roi_ui(update=False, effective_roi_mask=roi_mask_all)
+            self._point_selection_ready = True
             self.smart_roi_performance.update({
                 'mask_combine_seconds': float(mask_seconds),
                 'analysis_seconds': float(analysis_seconds),
@@ -3179,14 +3208,15 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
                 canvas.draw_idle()
 
     def _configure_projection_hover(self, tx, ty, raw_z, display_z,
-                                    xy_indices, detail_indices, z_label):
+                                    xy_indices, detail_indices, z_label, side_indices=None):
         """Bind visible projection points to their source rows for hover."""
         self._projection_hover = {}
         self._projection_hover_trees = {}
+        side_indices = side_indices or {}
         definitions = {
             'XY': (self.canvas.ax_xy, np.asarray(xy_indices, dtype=int), tx, ty),
-            'XZ': (self.canvas.ax_xz, np.asarray(detail_indices, dtype=int), tx, display_z),
-            'YZ': (self.canvas.ax_yz, np.asarray(detail_indices, dtype=int), ty, display_z),
+            'XZ': (self.canvas.ax_xz, np.asarray(side_indices.get('XZ', detail_indices), dtype=int), tx, display_z),
+            'YZ': (self.canvas.ax_yz, np.asarray(side_indices.get('YZ', detail_indices), dtype=int), ty, display_z),
         }
         for view, (axis, indices, horizontal, vertical) in definitions.items():
             if len(indices):
@@ -3334,6 +3364,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             return source_idx, False
 
         xy_plot_idx, xy_sampled = (xy_source_idx, False) if raster_enabled else sample_for_display(xy_plot_idx)
+        detail_source_idx = detail_plot_idx
         detail_sampled = len(detail_plot_idx) > display_limit
         lod_key = (
             int(self._df_version), int(self._analysis_revision), 'detail',
@@ -3345,7 +3376,16 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             required, detail_plot_idx = cached
         else:
             required = critical_indices(tx,ty,tz,detail_plot_idx,self.current_coeffs)
-            detail_plot_idx = spatial_lod_indices(tx,ty,detail_plot_idx,display_limit,required)
+            if detail_sampled and self.current_coeffs is None:
+                budget = max(1, (display_limit - len(required)) // 3)
+                detail_plot_idx = np.unique(np.concatenate((
+                    required,
+                    spatial_lod_indices(tx, ty, detail_source_idx, budget),
+                    spatial_lod_indices(tx, tz, detail_source_idx, budget),
+                    spatial_lod_indices(ty, tz, detail_source_idx, budget),
+                )))
+            else:
+                detail_plot_idx = spatial_lod_indices(tx,ty,detail_plot_idx,display_limit,required)
             if PERFORMANCE_POLICY.lod_cache_enabled:
                 self._lod_cache.put(lod_key, (required, detail_plot_idx))
         self._last_critical_plot_indices = required
@@ -3442,12 +3482,21 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             self.canvas.ax_xy.set_xlim(xmin-padx, xmax+padx)
             self.canvas.ax_xy.set_ylim(ymin-pady, ymax+pady)
         set_xy_equal_aspect(self.canvas.ax_xy)
+        if self.current_coeffs is None:
+            self.canvas.ax_xy.xaxis.set_major_locator(MaxNLocator(nbins=2))
         self._draw_roi_overlays(self.canvas.ax_xy, view='XY')
         sc_params = dict(sc_params,vmin=self._detail_color_limits[0],vmax=self._detail_color_limits[1])
+        side_indices = {}
         if len(detail_x) > 0:
             self.canvas.ax3d.scatter(detail_x, detail_y, detail_z, c=detail_z, depthshade=False, **sc_params)
-            self.canvas.ax_xz.scatter(detail_x, detail_z, c=detail_z, **sc_params)
-            self.canvas.ax_yz.scatter(detail_y, detail_z, c=detail_z, **sc_params)
+            for view, ax, horizontal in (('XZ', self.canvas.ax_xz, tx),
+                                         ('YZ', self.canvas.ax_yz, ty)):
+                projection_idx = (spatial_lod_indices(
+                    horizontal, plot_z_all, detail_source_idx, display_limit, required)
+                    if detail_sampled else detail_plot_idx)
+                side_indices[view] = projection_idx
+                projection_z = plot_z_all[projection_idx]
+                ax.scatter(horizontal[projection_idx], projection_z, c=projection_z, **sc_params)
             # Marker-only Line3D stays visible above the fitted-plane collection.
             if len(required):
                 self.canvas.ax3d.plot(tx[required], ty[required], plot_z_all[required],
@@ -3475,23 +3524,33 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
                 zz = c[0] * xx + c[1] * yy + c[2]
             self.canvas.ax3d.plot_surface(xx, yy, zz, color='#3498db', alpha=0.3, edgecolor='none')
 
-        if len(detail_x) > 0:
-            pad_surface_limits(self.canvas.ax3d, detail_x, detail_y, detail_z)
-            _, fitted_zoom = fit_surface_box_to_canvas(
-                self.canvas.ax3d, detail_x, detail_y, detail_z,
-                max_zoom=MAIN_3D_SCENE_ZOOM, min_z_ratio=0.18,
-                horizontal_padding_px=28, vertical_padding_px=20)
-            self._last_3d_fit_data = (
-                np.asarray(detail_x), np.asarray(detail_y), np.asarray(detail_z))
-            self._last_3d_fitted_zoom = fitted_zoom
-            # The enlarged scene needs a tighter Z-label offset to keep the
-            # complete unit label inside the card at common 1366/1920 widths.
-            self.canvas.ax3d.zaxis.labelpad = 4
+        self._last_3d_fit_data = None
+        self._last_3d_box_aspect = None
+        self._last_3d_fitted_zoom = None
+        if len(detail_x) and self.current_coeffs is None:
+            # A height-view aspect would compress the Z range and collapse the
+            # transverse axis of a vertical wall. Use equal scales for raw XYZ.
+            plot_points = np.column_stack((detail_x, detail_y, detail_z))
+            lo, hi = plot_points.min(axis=0), plot_points.max(axis=0)
+            center = lo + (hi - lo) / 2
+            radius = max(float((hi - lo).max()) * .56, 1e-6)
+            for axis, midpoint, setter in zip(
+                    (a3.xaxis, a3.yaxis, a3.zaxis), center,
+                    (a3.set_xlim3d, a3.set_ylim3d, a3.set_zlim3d)):
+                setter(midpoint - radius, midpoint + radius)
+                axis.set_major_locator(MaxNLocator(nbins=3))
+                axis.labelpad = 2
+            self._last_3d_box_aspect = (1, 1, 1)
+        elif len(detail_x):
+            pad_surface_limits(a3, detail_x, detail_y, detail_z)
+        if len(detail_x):
+            self._last_3d_fit_data = (detail_x, detail_y, detail_z)
+            self._fit_main_3d_scene()
 
         self._draw_temp_selection_overlay(tx, ty, plot_z_all, display_limit)
         self._configure_projection_hover(
             tx, ty, raw_z, plot_z_all, xy_source_idx, detail_plot_idx,
-            z_axis_label)
+            z_axis_label, side_indices)
 
         if view_state is None:
             self._remember_plot_home_state()
@@ -3528,6 +3587,13 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
         self.canvas.ax3d.set_zlim3d(zlim)
         self.canvas.ax3d.view_init(elev=elev, azim=azim)
 
+    def _fit_main_3d_scene(self):
+        _, self._last_3d_fitted_zoom = fit_surface_box_to_canvas(
+            self.canvas.ax3d, *self._last_3d_fit_data,
+            max_zoom=MAIN_3D_SCENE_ZOOM, min_z_ratio=0.18,
+            horizontal_padding_px=14, vertical_padding_px=10,
+            box_aspect=self._last_3d_box_aspect)
+
     def on_3d_canvas_resize(self, event):
         """Refit the default 3D scene when its card or focus mode is resized."""
         data = getattr(self, '_last_3d_fit_data', None)
@@ -3535,10 +3601,7 @@ class SurfaceAnalyzerPro(CompositeMixin, AnalysisMixin, DataIOMixin, GapAnalysis
             return
         self._fitting_3d_canvas = True
         try:
-            _, fitted_zoom = fit_surface_box_to_canvas(
-                self.canvas.ax3d, *data, max_zoom=MAIN_3D_SCENE_ZOOM,
-                min_z_ratio=0.18, horizontal_padding_px=28, vertical_padding_px=20)
-            self._last_3d_fitted_zoom = fitted_zoom
+            self._fit_main_3d_scene()
             event.canvas.draw_idle()
         finally:
             self._fitting_3d_canvas = False

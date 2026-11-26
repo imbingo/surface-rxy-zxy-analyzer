@@ -302,10 +302,17 @@ class VigImageModule:
             value = thickness[key]
             summary.append(
                 f"{key}: {'逐点 ' + value['name'] if isinstance(value, dict) else f'固定 {value:g} µm'}")
-        if QMessageBox.question(
-                None, "计算 VIG 像面", "\n".join(summary) + "\n\n开始计算？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes) != QMessageBox.StandardButton.Yes:
+        confirmation = QMessageBox(QMessageBox.Icon.Question, "计算 VIG 像面", "",
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                   self.btn_calculate)
+        confirmation.setTextFormat(Qt.TextFormat.PlainText)
+        confirmation.setText("\n".join(summary) + "\n\n开始计算？")
+        confirmation.setDefaultButton(QMessageBox.StandardButton.Yes)
+        confirmation.setStyleSheet("""
+            QMessageBox { background-color: palette(window); }
+            QLabel { color: palette(window-text); font-size: 14px; }
+        """)
+        if confirmation.exec() != QMessageBox.StandardButton.Yes:
             return False
         self._task_running = True
         self.on_idle()

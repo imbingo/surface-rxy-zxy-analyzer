@@ -1,4 +1,6 @@
-#define ExtensionVersion "1.2.0"
+#ifndef ExtensionVersion
+  #define ExtensionVersion "1.2.1"
+#endif
 
 [Setup]
 AppId={{D28E59E8-5016-4D72-9A9C-77A76BE55A12}
@@ -23,4 +25,4 @@ Source: "..\extensions\vig-image\engine.py"; DestDir: "{app}"; Flags: ignorevers
 Source: "..\extensions\vig-image\module.py"; DestDir: "{app}"; Flags: ignoreversion
 
 [Messages]
-WelcomeLabel2=Installs VIG image-plane analysis for Surface Analyzer V5.0.7 or later.%n%nInstall the main application first. Close and restart Surface Analyzer after installing this extension.
+WelcomeLabel2=Installs VIG image-plane analysis for Surface Analyzer V5.0.8 or later.%n%nInstall the main application first. Close and restart Surface Analyzer after installing this extension.
