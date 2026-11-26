@@ -7,7 +7,7 @@ permissions:
   contents: write
 concurrency:
   group: v509-release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   windows-validation:
     runs-on: windows-latest

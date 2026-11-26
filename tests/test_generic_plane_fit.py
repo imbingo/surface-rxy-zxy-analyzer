@@ -261,7 +261,7 @@ def test_import_roi_slots_and_export(workspace, tmp_path):
     with patch('PyQt6.QtWidgets.QFileDialog.getSaveFileName', return_value=(str(target), 'JSON')):
         module.export_result()
         _wait_for_work(qt, window)
-    exported = json.loads(target.read_text())
+    exported = json.loads(target.read_text(encoding="utf-8"))
     assert exported['slots']['A']['snapshot']['source_name'] == source.name
     assert exported['slots']['B']['snapshot']['source_name'] == source.name
     assert exported['slots']['B']['fit']['rx_deg'] is None
@@ -457,7 +457,7 @@ def test_reference_workflows_and_default_import_camera(workspace, tmp_path):
     with patch('PyQt6.QtWidgets.QFileDialog.getSaveFileName', return_value=(str(path), 'JSON')):
         module.export_result()
         _wait_for_work(qt, window)
-    exported = json.loads(path.read_text())
+    exported = json.loads(path.read_text(encoding="utf-8"))
     assert exported['schema_version'] == 3
     assert exported['comparison']['frame'] == 'two_planes'
     np.testing.assert_allclose(exported['comparison']['target_point_frame']['ordered_points_mm'],
