@@ -206,7 +206,7 @@ class VigExtensionModuleTests(unittest.TestCase):
             [axis.get_title() for axis in report.axes]
             + [text.get_text() for axis in report.axes for text in axis.texts])
         for expected in (
-                'VIG 像面报告', 'V5.0.8', 'vig-image', '1.2.0',
+                'VIG 像面报告', 'V5.0.9', 'vig-image', '1.2.1',
                 'two.csv', 'three.csv', 'XY 匹配容差', '匹配摘要',
                 '导出坐标原点 有效点左下角归零', '结果判定',
                 '参与计算 12 点', 'Rx', 'P97/2', '合格'):
