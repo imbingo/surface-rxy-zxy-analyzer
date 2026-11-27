@@ -166,8 +166,14 @@ def plane_angle_deg(first, second):
                                        abs(first @ second))))
 
 
-def two_plane_frame(first, second, policy):
+def two_plane_frame(first, second, policy, *, flip_first=False, flip_second=False):
     """First reference defines nominal X, second defines nominal Y."""
+    first = np.asarray(first, dtype=float)
+    second = np.asarray(second, dtype=float)
+    if flip_first:
+        first = -first
+    if flip_second:
+        second = -second
     z = np.cross(first, second)
     length = np.linalg.norm(z)
     if length < 1e-3:
@@ -186,8 +192,14 @@ def two_plane_frame(first, second, policy):
         minus /= np.linalg.norm(minus)
         x, y = (plus + minus) / np.sqrt(2), (plus - minus) / np.sqrt(2)
     angle = plane_angle_deg(first, second)
+    perp_error = 90.0 - angle
+    warnings = []
+    if perp_error > 5.0:
+        warnings.append(f'两参考面偏离直角 {perp_error:.2f}°，请确认基准面接近正交。')
     return dict(basis_rows_in_source=np.stack((x, y, z)), reference_plane_angle_deg=angle,
-                perpendicularity_error_deg=90 - angle, warnings=[])
+                perpendicularity_error_deg=perp_error,
+                flip_first=bool(flip_first), flip_second=bool(flip_second),
+                warnings=warnings)
 
 
 def normal_angles_in_frame(normal, basis):

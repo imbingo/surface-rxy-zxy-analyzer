@@ -560,3 +560,166 @@ def test_outlier_rejection_workflow_preserves_snapshot(workspace, tmp_path):
     assert len(exported['snapshot']['xyz']) == 120
     module.reject_outliers.setChecked(False)
     assert module.result is None
+
+
+def test_two_plane_normal_flips_and_non_orthogonal_warning():
+    engine = importlib.import_module('extensions.generic-plane-fit.engine')
+    first = np.array([1.0, 0.0, 0.0])
+    second = np.array([0.0, 1.0, 0.0])
+
+    base = engine.two_plane_frame(first, second, 'equal')
+    assert base['warnings'] == []
+    assert base['flip_first'] is False and base['flip_second'] is False
+    np.testing.assert_allclose(base['basis_rows_in_source'], np.eye(3), atol=1e-12)
+
+    flipped_a = engine.two_plane_frame(first, second, 'equal', flip_first=True)
+    assert flipped_a['flip_first'] is True
+    basis_a = flipped_a['basis_rows_in_source']
+    np.testing.assert_allclose(basis_a @ basis_a.T, np.eye(3), atol=1e-12)
+    assert np.linalg.det(basis_a) == pytest.approx(1.0)
+    np.testing.assert_allclose(basis_a[0], [-1.0, 0.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(basis_a[2], [0.0, 0.0, -1.0], atol=1e-12)
+
+    flipped_both = engine.two_plane_frame(first, second, 'x', flip_first=True, flip_second=True)
+    basis_both = flipped_both['basis_rows_in_source']
+    np.testing.assert_allclose(basis_both[2], [0.0, 0.0, 1.0], atol=1e-12)
+    np.testing.assert_allclose(basis_both[0], [-1.0, 0.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(basis_both[1], [0.0, -1.0, 0.0], atol=1e-12)
+
+    oblique = np.array([np.cos(np.deg2rad(60.0)), np.sin(np.deg2rad(60.0)), 0.0])
+    warned = engine.two_plane_frame(first, oblique, 'equal')
+    assert warned['perpendicularity_error_deg'] == pytest.approx(30.0)
+    assert any('偏离直角' in text for text in warned['warnings'])
+
+
+def test_review_fixes_slots_alerts_camera_zoom_and_export_guards(workspace, tmp_path):
+    from surface_analyzer.plotting import DEFAULT_3D_AZIMUTH, DEFAULT_3D_ELEVATION
+    from surface_analyzer.widgets import NoWheelComboBox
+
+    qt, window, module, _ = workspace
+    for combo in (module.coordinate_frame, module.reference_axis, module.point_order,
+                  module.frame_policy, module.view_choice, module.inspect_slot):
+        assert isinstance(combo, NoWheelComboBox)
+    assert (module.axes.elev, module.axes.azim) == (DEFAULT_3D_ELEVATION, DEFAULT_3D_AZIMUTH)
+
+    # Dataset with two orthogonal mirrors, 3 support points, and a collinear line.
+    y, z = _grid(np.linspace(-2, 2, 7), np.linspace(-2, 2, 7))
+    mirror_x = np.column_stack([np.full(len(y), 10.0), y, z])
+    mirror_y = np.column_stack([y, np.full(len(y), 10.0), z])
+    supports = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.2], [0.8, 2.0, -0.3]])
+    collinear = np.column_stack([np.linspace(20, 24, 6), np.full(6, 20.0), np.full(6, 1.0)])
+    source = tmp_path / 'review.csv'
+    _load_points(source, np.vstack((mirror_x, mirror_y, supports, collinear)))
+    assert window.load_path(source)
+    _wait_for_work(qt, window)
+
+    # 1. Fit failure and warnings surface directly on the main page (not only in modal).
+    module.coordinate_frame.setCurrentIndex(0)  # source
+    _select(window, 'XY', (9.5, -2.5), (10.5, 2.5))
+    module.write_slot(0)
+    _select(window, 'XY', (19.5, 19.5), (24.5, 20.5))
+    module.write_slot(1)
+    module.compute()
+    _wait_for_work(qt, window)
+    assert '拟合失败' in module.message.text()
+    assert '拟合失败' in module.comparison_note.text()
+    assert '失败' in module.result_quality.text()
+    module.inspect_slot.setCurrentIndex(1)
+    assert '拟合失败' in module.feature_quality.text()
+
+    # 2. Single-slot clear & A/B swap.
+    module.clear_slot(1)
+    assert module.slots[0] is not None and module.slots[1] is None
+    assert module.result is None
+    module.swap_ab()
+    assert module.slots[0] is None and module.slots[1] is not None
+    module.swap_ab()
+    assert module.slots[0] is not None and module.slots[1] is None
+
+    # 3. Non-orthogonal "偏离直角" hidden in source mode, shown in two_planes mode;
+    #    hidden slot C does not leak into 2-slot mode UI, compute, or export.
+    module.coordinate_frame.setCurrentIndex(3)  # two_planes
+    assert module.inspect_slot.count() == 3
+    _select(window, 'XY', (-2.5, 9.5), (2.5, 10.5))
+    module.write_slot(1)
+    _select(window, 'XY', (-0.5, -0.5), (2.5, 2.5))
+    module.write_slot(2)
+    module.compute()
+    _wait_for_work(qt, window)
+    assert '偏离直角' in module.feature_note.text()
+    assert {'X′', 'Y′', 'Z′'} <= {t.get_text() for t in module.axes.texts}
+    assert '不可定义' not in module.comparison_note.text()
+    assert module.message.text() == '拟合已完成。'
+    rx_before = module._comparison(module.result)['delta_rx_ry_deg'][0]
+    module.flip_first.setChecked(True)
+    rx_after = module._comparison(module.result)['delta_rx_ry_deg'][0]
+    assert rx_after == pytest.approx(-rx_before, abs=1e-6)
+    module.flip_first.setChecked(False)
+    module.copy_summary()
+    assert '通用三维拟合摘要' in QApplication.clipboard().text()
+    assert module._arrow_stroke_color() == '#ecedf1'
+    window.set_theme_preference('dark', persist=False)
+    assert module._arrow_stroke_color() == '#19191b'
+    window.set_theme_preference('light', persist=False)
+    assert module._arrow_stroke_color() == '#ecedf1'
+
+    # Switch back to source mode: slot C is hidden from inspector, status, and JSON export;
+    # source-frame projection warnings now surface on the main banner.
+    module.coordinate_frame.setCurrentIndex(0)
+    assert module.inspect_slot.count() == 2
+    assert '测量面 C' not in module.status_text()
+    assert '偏离直角' not in module.feature_note.text()
+    assert '不可定义' in module.comparison_note.text()
+    out_source = tmp_path / 'source-no-c.json'
+    with patch('PyQt6.QtWidgets.QFileDialog.getSaveFileName', return_value=(str(out_source), 'JSON')):
+        module.export_result()
+        _wait_for_work(qt, window)
+    exported_source = json.loads(out_source.read_text(encoding='utf-8'))
+    assert exported_source['slots']['C']['snapshot'] is None
+    assert exported_source['slots']['C']['fit'] is None
+
+    # 4. In two_planes mode, mismatched frame_id in C sets top-level common_frame to False.
+    other = tmp_path / 'other.csv'
+    _load_points(other, supports)
+    assert window.load_path(other)
+    _wait_for_work(qt, window)
+    module.coordinate_frame.setCurrentIndex(3)
+    module.write_slot(2)
+    module.compute()
+    _wait_for_work(qt, window)
+    out_mismatch = tmp_path / 'mismatch-c.json'
+    with patch('PyQt6.QtWidgets.QFileDialog.getSaveFileName', return_value=(str(out_mismatch), 'JSON')):
+        module.export_result()
+        _wait_for_work(qt, window)
+    assert json.loads(out_mismatch.read_text(encoding='utf-8'))['common_frame'] is False
+
+    # 5. In points mode: export disabled while B is unfitted; projection pick preserves XZ;
+    #    changing point_order preserves user-zoomed projection limits; reset restores (45, -135).
+    module.clear()
+    assert window.load_path(source)
+    _wait_for_work(qt, window)
+    module.coordinate_frame.setCurrentIndex(2)  # points
+    _select(window, 'XY', (-0.5, -0.5), (2.5, 2.5))
+    module.write_slot(0)
+    module.point_order.setCurrentIndex(1)
+    assert module.export_actions()[0][2] is True  # Only A (3 points) -> frame export allowed
+    _select(window, 'XY', (9.5, -2.5), (10.5, 2.5))
+    module.write_slot(1)
+    assert module.result is None
+    assert module.export_actions()[0][2] is False  # B present but unfitted -> export disabled
+
+    module.view_choice.setCurrentIndex(2)  # XZ projection
+    module._start_point_pick()
+    assert module.view_choice.currentIndex() == 2  # Preserves XZ instead of forcing XY
+    module._start_point_pick()  # Cancel pick
+    module.projections[1].set_xlim(0.2, 1.8)
+    module.projections[1].set_ylim(-0.2, 0.2)
+    module.point_order.setCurrentIndex(2)
+    assert module.projections[1].get_xlim() == pytest.approx((0.2, 1.8))
+    assert module.projections[1].get_ylim() == pytest.approx((-0.2, 0.2))
+
+    module.view_choice.setCurrentIndex(0)
+    module.axes.view_init(elev=10, azim=20)
+    module._reset_view()
+    assert (module.axes.elev, module.axes.azim) == (DEFAULT_3D_ELEVATION, DEFAULT_3D_AZIMUTH)
+
