@@ -12,15 +12,15 @@ import numpy as np
 from PyQt6.QtCore import QPointF, Qt
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPlainTextEdit,
-    QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPlainTextEdit,
+    QPushButton, QScrollArea, QStackedWidget, QTabBar, QVBoxLayout, QWidget,
 )
 
 from surface_analyzer.workers import TaskCancelled
 
 from .engine import (
     ANGLE_DEFINITION, NORMAL_DEFINITION, QUALITY_DEFINITION, angle_difference,
-    compare_in_base_frame, fit_plane, frame_rotation, normal_angles_in_frame, plane_angle_deg,
+    compare_in_base_frame, fit_plane, fit_plane_with_outlier_rejection, frame_rotation, normal_angles_in_frame, plane_angle_deg,
     three_point_frame, two_plane_frame,
 )
 
@@ -120,6 +120,10 @@ class GenericPlaneFitModule:
             self.trace_buttons.append(trace)
             controls.extend((write, trace))
             layout.addWidget(group)
+        self.reject_outliers = QCheckBox('剔除平面异常点')
+        self.reject_outliers.setToolTip('按到拟合平面的正交距离筛查，适用于至少 8 个不同测点。')
+        self.reject_outliers.toggled.connect(self._filter_changed)
+        layout.addWidget(self.reject_outliers)
         self.fit_button = QPushButton('拟合并比较')
         self.fit_button.setObjectName('accentBtn')
         self.fit_button.clicked.connect(self.compute)
@@ -131,7 +135,7 @@ class GenericPlaneFitModule:
         for widget in (self.fit_button, self.clear_button, self.message):
             layout.addWidget(widget)
         layout.addStretch()
-        self.host.register_task_controls((*controls, self.fit_button, self.clear_button))
+        self.host.register_task_controls((*controls, self.fit_button, self.clear_button, self.reject_outliers))
         QVBoxLayout(parent).addWidget(_scroll(content))
         return parent
 
@@ -139,6 +143,12 @@ class GenericPlaneFitModule:
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setSpacing(10)
+        self.workflow = QTabBar()
+        self.workflow.setAccessibleName('三坐标分析步骤')
+        self.workflow.setExpanding(False)
+        for step in ('1  测量特征', '2  建立基准', '3  比较结果'):
+            self.workflow.addTab(step)
+        layout.addWidget(self.workflow)
         summary = QWidget()
         summary.setObjectName('metricSurface')
         metrics = QGridLayout(summary)
@@ -194,15 +204,18 @@ class GenericPlaneFitModule:
         self.delta_values = values[:2]
         self.delta_titles = titles[:2]
         self.dihedral_value, self.ab_angle_value = values[2:]
-        metrics.addLayout(indicators, 3, 0, 1, 2)
-        layout.addWidget(summary)
+        self.result_strip = QWidget()
+        self.result_strip.setObjectName('metricSurface')
+        result_layout = QVBoxLayout(self.result_strip)
+        result_layout.addLayout(indicators)
+        layout.addWidget(self.result_strip)
         self.comparison_note = _label('写入测面后执行拟合。Δ 表示测量面 B 相对基准面 A。', 'mutedNote')
         layout.addWidget(self.comparison_note)
 
         views = QHBoxLayout()
         self.view_choice = QComboBox()
         self.view_choice.setAccessibleName('绘图区视图')
-        self.view_choice.addItems(('3D 点云', 'XY 投影', 'XZ 投影', 'YZ 投影'))
+        self.view_choice.addItems(('3D 点云', 'XY 投影', 'XZ 投影', 'YZ 投影', '法向残差'))
         self.view_choice.setToolTip('滚轮缩放。3D 视图可拖动旋转。')
         reset_view = QPushButton('复位视图')
         reset_view.clicked.connect(self._reset_view)
@@ -217,12 +230,15 @@ class GenericPlaneFitModule:
         self.axes = self.figure.add_subplot(projection='3d', proj_type='ortho', computed_zorder=False)
         self.projections = [self.figure.add_subplot(111, label=view)
                             for view in ('XY', 'XZ', 'YZ')]
-        for axes in self.projections:
+        self.residual_axes = self.figure.add_subplot(111, label='residual')
+        self.plot_axes = (self.axes, *self.projections, self.residual_axes)
+        for axes in self.plot_axes[1:]:
             axes.set_visible(False)
         self._home_limits = {}
         self._zoom_3d = .85
         self.canvas = self.host.make_canvas(self.figure)
         self.canvas.mpl_connect('scroll_event', self._scroll_plot)
+        self.canvas.mpl_connect('button_press_event', self._pick_point)
         self.view_choice.currentIndexChanged.connect(self._show_view)
         self.canvas.setMinimumSize(270, 285)
         self.scene = QStackedWidget()
@@ -230,7 +246,53 @@ class GenericPlaneFitModule:
         self.scene_note = _label('', 'mutedNote')
         self.scene_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scene.addWidget(self.scene_note)
-        layout.addWidget(self.scene, 1)
+        workspace = QHBoxLayout()
+        workspace.setSpacing(10)
+        workspace.addWidget(self.scene, 1)
+        self.inspector = QStackedWidget()
+        self.inspector.setObjectName('metricSurface')
+        self.inspector.setMinimumWidth(218)
+        self.inspector.setMaximumWidth(310)
+        workspace.addWidget(self.inspector)
+        layout.addLayout(workspace, 1)
+
+        feature_page = QWidget()
+        feature_layout = QVBoxLayout(feature_page)
+        feature_layout.addWidget(_label('测点与残差', 'stepTitle'))
+        self.inspect_slot = QComboBox()
+        self.inspect_slot.setAccessibleName('要检查的测面')
+        for name in ('A 面', 'B 面', 'C 面'):
+            self.inspect_slot.addItem(name)
+        feature_layout.addWidget(self.inspect_slot)
+        self.feature_quality = _label('', 'mutedNote')
+        feature_layout.addWidget(self.feature_quality)
+        self.residual_button = QPushButton('查看法向残差')
+        self.residual_button.clicked.connect(lambda: self.view_choice.setCurrentIndex(4))
+        feature_layout.addWidget(self.residual_button)
+        feature_layout.addStretch()
+        self.inspector.addWidget(feature_page)
+
+        basis_page = QWidget()
+        basis_layout = QVBoxLayout(basis_page)
+        basis_layout.addWidget(_label('坐标系定义', 'stepTitle'))
+        basis_layout.addWidget(summary)
+        self.pick_points_button = QPushButton('在投影中指定三个点')
+        self.pick_points_button.clicked.connect(self._start_point_pick)
+        self._picked_points = []
+        self._picking_points = False
+        basis_layout.addWidget(self.pick_points_button)
+        self.basis_preview = _label('', 'mutedNote')
+        basis_layout.addWidget(self.basis_preview)
+        basis_layout.addStretch()
+        self.inspector.addWidget(basis_page)
+
+        result_page = QWidget()
+        comparison_layout = QVBoxLayout(result_page)
+        comparison_layout.addWidget(_label('基准与质量', 'stepTitle'))
+        self.result_quality = _label('', 'mutedNote')
+        comparison_layout.addWidget(self.result_quality)
+        comparison_layout.addStretch()
+        self.inspector.addWidget(result_page)
 
         results = QWidget()
         results.setObjectName('metricSurface')
@@ -279,8 +341,11 @@ class GenericPlaneFitModule:
         self.frame_policy.currentIndexChanged.connect(self._change_frame)
         self.host.register_task_controls((self.coordinate_frame, self.reference_axis,
                                           self.point_order, self.frame_policy))
+        self.workflow.currentChanged.connect(self._select_step)
+        self.inspect_slot.currentIndexChanged.connect(self._update_inspector)
         self._refresh_point_orders()
         self._change_frame()
+        self._select_step(0)
         return _scroll(content)
 
     def _refresh_slots(self):
@@ -324,23 +389,40 @@ class GenericPlaneFitModule:
         self._refresh_slots()
         self.render()
 
+    def _filter_changed(self):
+        if self.result is not None:
+            self.result = None
+            self.message.setText('滤波选项已改变，请重新拟合。')
+            self.render()
+            self.host.refresh_module_chrome()
+
     def compute(self):
         snapshots = self.slots
+        use_filter = self.reject_outliers.isChecked()
 
         def work(progress, cancelled):
-            fits, errors = [], []
+            fits, errors, filters = [], [], []
+
+            def check_cancel():
+                if cancelled.is_set():
+                    raise TaskCancelled()
             for index, slot in enumerate(snapshots):
                 if cancelled.is_set():
                     raise TaskCancelled()
                 progress(15 + index * 25, f'处理{SLOTS[index]}')
-                fit = error = None
+                fit = error = trace = None
                 if slot is not None:
                     try:
-                        fit = fit_plane(slot['xyz'])
+                        if use_filter:
+                            fit, trace = fit_plane_with_outlier_rejection(slot['xyz'], check_cancel)
+                            trace['rejected_point_indices'] = slot['point_indices'][trace['rejected_positions']]
+                        else:
+                            fit = fit_plane(slot['xyz'])
                     except (ValueError, np.linalg.LinAlgError) as exc:
                         error = str(exc)
                 fits.append(fit)
                 errors.append(error)
+                filters.append(trace)
             if cancelled.is_set():
                 raise TaskCancelled()
             common_frame = all(slot is not None for slot in snapshots[:2]) and (
@@ -351,7 +433,7 @@ class GenericPlaneFitModule:
                 deltas = (angle_difference(b.rx_deg, a.rx_deg),
                           angle_difference(b.ry_deg, a.ry_deg))
             return dict(snapshots=snapshots, fits=tuple(fits), errors=tuple(errors),
-                        deltas=deltas, common_frame=common_frame)
+                        deltas=deltas, common_frame=common_frame, filters=tuple(filters))
 
         def accept(result):
             if self.slots is snapshots:
@@ -383,19 +465,150 @@ class GenericPlaneFitModule:
 
         notes = []
         if result:
-            for title, fit, error in zip(SLOTS, fits, result['errors']):
+            for title, fit, error, trace in zip(SLOTS, fits, result['errors'], result['filters']):
                 if title == SLOTS[2] and self.coordinate_frame.currentData() != 'two_planes':
                     continue
                 if error:
                     notes.append(f'{title}拟合失败 · {error}')
                 elif fit and fit.warnings:
                     notes.append(f'{title} · ' + ' '.join(fit.warnings))
+                if trace:
+                    rejected = trace['rejected_point_indices']
+                    if trace['note']:
+                        notes.append(f"{title} · {trace['note']}")
+                    else:
+                        before_rx, before_ry = trace['original_rx_ry_deg']
+                        notes.append(
+                            f"{title} · 保留 {len(fit.signed_distances_mm):,} 点，剔除 {len(rejected):,} 点。"
+                            f"原 Rx／Ry {_angle(before_rx)}°／{_angle(before_ry)}°，"
+                            f"原 RMS {trace['original_rms_mm'] * 1000:.3f} µm。")
+                        if len(rejected):
+                            shown = '、'.join(f'#{index}' for index in rejected[:20])
+                            notes.append(f"剔除点号 {shown}" + ('… 完整列表见 JSON' if len(rejected) > 20 else ''))
         self.quality.setText('\n'.join(notes))
         self.quality.setVisible(bool(notes))
         self._render_comparison()
         self._plot()
+        self._update_inspector()
+
+    def _select_step(self, step):
+        self.inspector.setCurrentIndex(step)
+        self.result_strip.setVisible(step == 2)
+        if step != 1:
+            self._picking_points = False
+            self.pick_points_button.setText('在投影中指定三个点')
+        if step == 1 and self.coordinate_frame.currentData() in ('points', 'two_planes'):
+            self.view_choice.setCurrentIndex(1)
+        elif step == 2:
+            self.view_choice.setCurrentIndex(0)
+
+    def _update_inspector(self):
+        index = self.inspect_slot.currentIndex()
+        slot = self.slots[index]
+        fit = self.result['fits'][index] if self.result else None
+        note = '在左侧写入测点，再执行拟合。'
+        if fit is not None:
+            count = len(fit.signed_distances_mm)
+            trace = self.result['filters'][index]
+            note = (f'输入 {len(slot["xyz"]):,} 点 · 保留 {count:,} 点\n'
+                    f'RMS {fit.rms_mm * 1000:.3f} µm\n最大偏差 {fit.max_abs_mm * 1000:.3f} µm')
+            if trace and trace['note']:
+                note += '\n' + trace['note']
+            elif trace:
+                note += f"\n剔除前 RMS {trace['original_rms_mm'] * 1000:.3f} µm"
+        elif slot is not None:
+            note = f'已写入 {len(slot["xyz"]):,} 点，请执行拟合。'
+        self.feature_quality.setText(note)
+        self.residual_button.setEnabled(fit is not None)
+        self.basis_preview.setText(self.comparison_detail.text())
+        point_slot = self._basis_point_slot()
+        self.pick_points_button.setVisible(point_slot is not None and len(point_slot['xyz']) == 3)
+        quality = []
+        if self.result:
+            count = 3 if self.coordinate_frame.currentData() == 'two_planes' else 2
+            for name, face in zip(SLOTS[:count], self.result['fits']):
+                if face:
+                    quality.append(f'{name} · RMS {face.rms_mm * 1000:.3f} µm')
+        self.result_quality.setText('\n'.join(quality) or '拟合后查看各测面的残差质量。')
+        if self.view_choice.currentIndex() == 4:
+            self._draw_residual()
+            self.canvas.draw_idle()
+
+    def _basis_point_slot(self):
+        mode = self.coordinate_frame.currentData()
+        if mode == 'points':
+            return self.slots[0]
+        if mode == 'two_planes':
+            return self.slots[2]
+        return None
+
+    def _start_point_pick(self):
+        self._picking_points = not self._picking_points
+        self._picked_points = []
+        self.pick_points_button.setText('点选底边起点（再按此处取消）' if self._picking_points
+                                        else '在投影中指定三个点')
+        if self._picking_points:
+            self.view_choice.setCurrentIndex(1)
+
+    def _pick_point(self, event):
+        view = self.view_choice.currentIndex()
+        if not self._picking_points or not 1 <= view <= 3 or event.button != 1:
+            return
+        slot = self._basis_point_slot()
+        if slot is None or len(slot['xyz']) != 3 or event.inaxes is not self.projections[view - 1]:
+            return
+        columns = ((0, 1), (0, 2), (1, 2))[view - 1]
+        positions = event.inaxes.transData.transform(slot['xyz'][:, columns])
+        distances = np.linalg.norm(positions - (event.x, event.y), axis=1)
+        eligible = [i for i, distance in enumerate(distances) if distance <= 14]
+        if len(eligible) != 1 or eligible[0] in self._picked_points:
+            self.basis_preview.setText('请选择一个尚未分配、可辨认的点。点重叠时可切换投影。')
+            return
+        self._picked_points.append(eligible[0])
+        if len(self._picked_points) == 3:
+            order = tuple(self._picked_points)
+            self._picking_points = False
+            self.pick_points_button.setText('在投影中指定三个点')
+            for i in range(self.point_order.count()):
+                if self.point_order.itemData(i) == order:
+                    self.point_order.setCurrentIndex(i)
+                    break
+        else:
+            role = ('', '底边终点', '顶点')[len(self._picked_points)]
+            self.pick_points_button.setText(f'点选{role}（再按此处取消）')
+            ids = slot['point_indices'][self._picked_points]
+            self.basis_preview.setText('已选 ' + ' → '.join(f'#{point}' for point in ids))
+
+    def _draw_residual(self):
+        axes = self.residual_axes
+        axes.clear()
+        index = self.inspect_slot.currentIndex()
+        fit = self.result['fits'][index] if self.result else None
+        if fit is None:
+            self._home_limits.pop(axes, None)
+            axes.text(.5, .5, '选择已拟合的测面', transform=axes.transAxes,
+                      ha='center', va='center')
+            return
+        xyz = self.slots[index]['xyz']
+        trace = self.result['filters'][index]
+        retained = trace['retained_positions'] if trace else np.arange(len(xyz))
+        rejected = trace['rejected_positions'] if trace else ()
+        centered = xyz - fit.centroid_mm
+        plane = centered @ fit.tangent_basis.T
+        dist = centered @ fit.normal * 1000
+        shown = retained[np.linspace(0, len(retained) - 1, min(len(retained), 3500), dtype=int)]
+        size = 10 + 25 * np.minimum(np.abs(dist[shown]) / max(fit.rms_mm * 1000, 1e-6), 4) / 4
+        axes.scatter(*plane[shown].T, s=size, c=np.where(dist[shown] < 0, '#287abd', '#279260'))
+        if len(rejected):
+            axes.scatter(*plane[rejected[:3500]].T, s=28, marker='x', color='#aa3928')
+        axes.set(xlabel='面内 U (mm)', ylabel='面内 V (mm)', aspect='equal')
+        axes.set_title('蓝 −    绿 +    × 剔除点', loc='left', fontsize=10)
+        axes.grid(True, alpha=.2)
+        self._home_limits[axes] = (axes.get_xlim(), axes.get_ylim())
 
     def _refresh_point_orders(self):
+        self._picking_points = False
+        self.pick_points_button.setText('在投影中指定三个点')
         self.point_order.blockSignals(True)
         self.point_order.clear()
         self.point_order.addItem('请选择三个点的顺序', None)
@@ -575,6 +788,10 @@ class GenericPlaneFitModule:
                   ('选择点号时可切换 XY／XZ／YZ 投影。' if mode == 'points' and not comparison['ready'] else ''))
         if not status and result and all(result['snapshots'][:2]) and not result['common_frame']:
             status = 'A、B 来自不同的列映射。'
+        if not status and result and any(trace is not None for trace in result['filters']):
+            count = 3 if mode == 'two_planes' else 2
+            removed = sum(len(trace['rejected_positions']) for trace in result['filters'][:count] if trace)
+            status = f'异常点剔除 {removed:,} 点 · × 标示剔除点，详见结果与说明。'
         self.comparison_note.setText(status)
         self.comparison_note.setVisible(bool(status))
         dihedral = comparison.get('total_tilt_deg') if mode in ('points', 'two_planes') else angle
@@ -632,17 +849,17 @@ class GenericPlaneFitModule:
         samples = []
         point_annotations = []
         if candidates:
-            xyz = point_slot['xyz']
-            ax.scatter(*xyz.T, s=26, color='#287abd', depthshade=False, zorder=6)
+            candidate_xyz = point_slot['xyz']
+            ax.scatter(*candidate_xyz.T, s=26, color='#287abd', depthshade=False, zorder=6)
             order = self.point_order.currentData()
             roles = dict(zip(order, 'ABC')) if order is not None else {}
-            for i, (index, point) in enumerate(zip(point_slot['point_indices'], xyz)):
+            for i, (index, point) in enumerate(zip(point_slot['point_indices'], candidate_xyz)):
                 label = f'#{index}'
                 if i in roles:
                     label += f' · {roles[i]}'
                 ax.text(*point, label, fontsize=10, fontweight='bold', zorder=7)
                 point_annotations.append((point, label))
-            extents.extend(xyz)
+            extents.extend(candidate_xyz)
         if points is not None:
             triangle = points[[0, 1, 2, 0]]
             ax.plot(*triangle.T, color='#64748b')
@@ -660,9 +877,19 @@ class GenericPlaneFitModule:
             self.scene_note.setText('拟合后的点集、平面及法向量将在此显示')
             self.scene.setCurrentWidget(self.scene_note)
             return
+        rejected_samples = []
         for title, color, slot, fit in rows:
             xyz = slot['xyz']
-            sample = xyz[np.linspace(0, len(xyz) - 1, min(len(xyz), 3500), dtype=int)]
+            trace = self.result['filters']['ABC'.index(title[-1])]
+            retained = xyz
+            if trace and len(trace['rejected_positions']):
+                rejected = xyz[trace['rejected_positions']]
+                outliers = rejected[np.linspace(0, len(rejected) - 1, min(len(rejected), 3500), dtype=int)]
+                rejected_samples.append((outliers, color))
+                ax.scatter(*outliers.T, s=20, marker='x', color=color, depthshade=False, zorder=5)
+                extents.extend((rejected.min(axis=0), rejected.max(axis=0)))
+                retained = xyz[trace['retained_positions']]
+            sample = retained[np.linspace(0, len(retained) - 1, min(len(retained), 3500), dtype=int)]
             samples.append((sample, color, title[-1]))
             ax.scatter(*sample.T, s=4, color=color, depthshade=False, label=title[-1], zorder=3)
             lo, hi = fit.tangent_bounds_mm
@@ -686,8 +913,10 @@ class GenericPlaneFitModule:
         for projection, (i, j) in zip(self.projections, ((0, 1), (0, 2), (1, 2))):
             for sample, color, label in samples:
                 projection.scatter(sample[:, i], sample[:, j], s=6, color=color, label=label)
+            for outliers, color in rejected_samples:
+                projection.scatter(outliers[:, i], outliers[:, j], s=20, marker='x', color=color)
             if candidates:
-                projection.scatter(xyz[:, i], xyz[:, j], s=26, color='#287abd', zorder=6)
+                projection.scatter(candidate_xyz[:, i], candidate_xyz[:, j], s=26, color='#287abd', zorder=6)
                 for point, label in point_annotations:
                     projection.annotate(label, (point[i], point[j]), xytext=(5, 5),
                                         textcoords='offset points')
@@ -702,14 +931,16 @@ class GenericPlaneFitModule:
 
     def _show_view(self):
         selected = self.view_choice.currentIndex()
+        if selected == 4:
+            self._draw_residual()
         self.figure.subplots_adjust(left=.10 if selected else .06, right=.94,
                                     bottom=.13 if selected else .06, top=.96)
-        for index, axes in enumerate((self.axes, *self.projections)):
+        for index, axes in enumerate(self.plot_axes):
             axes.set_visible(index == selected)
         self.canvas.draw_idle()
 
     def _reset_view(self):
-        axes = (self.axes, *self.projections)[self.view_choice.currentIndex()]
+        axes = self.plot_axes[self.view_choice.currentIndex()]
         limits = self._home_limits.get(axes)
         if limits is None:
             return
@@ -723,7 +954,7 @@ class GenericPlaneFitModule:
         self.canvas.draw_idle()
 
     def _scroll_plot(self, event):
-        axes = (self.axes, *self.projections)[self.view_choice.currentIndex()]
+        axes = self.plot_axes[self.view_choice.currentIndex()]
         if axes not in self._home_limits or not event.step:
             return
         step = float(np.clip(event.step, -8, 8))
@@ -772,7 +1003,7 @@ class GenericPlaneFitModule:
             if 'basis_rows_in_source' not in comparison:
                 return
             result = dict(snapshots=self.slots, fits=(None,) * 3, errors=(None,) * 3,
-                          common_frame=False)
+                          common_frame=False, filters=(None,) * 3)
         chosen = self.host.save_path('导出拟合结果与点集快照', 'xyz-plane-fit.json', 'JSON (*.json)')
         if not chosen:
             return
@@ -793,9 +1024,9 @@ class GenericPlaneFitModule:
                 'slots': {
                     key: {'snapshot': record, 'fit': (
                         {field.name: getattr(fit, field.name) for field in fields(fit)} if fit else None),
-                          'error': error}
-                    for key, record, fit, error in
-                    zip(('A', 'B', 'C'), result['snapshots'], result['fits'], result['errors'])
+                          'error': error, 'outlier_filter': trace}
+                    for key, record, fit, error, trace in zip(
+                        ('A', 'B', 'C'), result['snapshots'], result['fits'], result['errors'], result['filters'])
                 },
             }
             temporary = None

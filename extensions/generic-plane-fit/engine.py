@@ -207,3 +207,50 @@ def frame_rotation(reference_basis, target_basis):
                      matrix[1, 0] - matrix[0, 1]))
     angle = np.degrees(np.arctan2(np.linalg.norm(skew), np.trace(matrix) - 1))
     return matrix, float(angle)
+
+
+def fit_plane_with_outlier_rejection(xyz, check_cancel=lambda: None):
+    """Refit after conservative clipping of orthogonal residuals."""
+    points = np.asarray(xyz, dtype=float)
+    original = fit_plane(points)
+    retained = np.arange(len(points))
+    fit = original
+    note = ''
+    if len(points) < 8 or original.unique_points < 8:
+        note = '少于 8 个不同测点，跳过异常点剔除。'
+    else:
+        max_rejected = len(points) // 5
+        # A numerical floor avoids clipping round-off on an ideal plane.
+        floor = max(1e-10, np.max(np.abs(points)) * np.finfo(float).eps * 64)
+        for _ in range(5):
+            check_cancel()
+            residual = fit.signed_distances_mm
+            median = np.median(residual)
+            deviation = np.abs(residual - median)
+            cutoff = max(3.5 * 1.4826 * np.median(deviation), floor)
+            keep = retained[deviation <= cutoff]
+            if len(keep) == len(retained):
+                break
+            if len(keep) < 8 or len(points) - len(keep) > max_rejected:
+                note = '候选剔除过多，保留原始拟合。请检查选区。'
+                break
+            try:
+                candidate = fit_plane(points[keep])
+            except (ValueError, np.linalg.LinAlgError):
+                note = '候选保留点无法稳定拟合，保留原始拟合。请检查选区。'
+                break
+            if candidate.unique_points < 8:
+                note = '候选保留点不足 8 个不同测点，保留原始拟合。'
+                break
+            fit, retained = candidate, keep
+    if note:
+        fit, retained = original, np.arange(len(points))
+    check_cancel()
+    return fit, {
+        'method': 'orthogonal_mad',
+        'retained_positions': retained,
+        'rejected_positions': np.setdiff1d(np.arange(len(points)), retained, assume_unique=True),
+        'original_rx_ry_deg': (original.rx_deg, original.ry_deg),
+        'original_rms_mm': original.rms_mm,
+        'note': note,
+    }

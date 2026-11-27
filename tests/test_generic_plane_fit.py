@@ -496,6 +496,67 @@ def test_reference_workflows_and_default_import_camera(workspace, tmp_path):
     annotations = {text.get_text() for text in module.axes.texts}
     assert {f'{point_labels[i]} · {role}' for i, role in zip(order, 'ABC')} <= annotations
     assert module.scene.currentWidget() is module.canvas
+    module.workflow.setCurrentIndex(1)
+    module.point_order.setCurrentIndex(0)
+    module.pick_points_button.click()
+    module.canvas.draw()
+    projection = module.projections[0]
+    for point in supports:
+        x, y = projection.transData.transform(point[:2])
+        event = MouseEvent('button_press_event', module.canvas, x, y, button=1)
+        module.canvas.callbacks.process('button_press_event', event)
+    assert module.point_order.currentData() == order
     module.coordinate_frame.setCurrentIndex(0)
     module.coordinate_frame.setCurrentIndex(2)
     assert module.point_order.currentData() == order
+
+
+def test_outlier_rejection_is_orthogonal_and_skips_three_points():
+    engine = importlib.import_module('extensions.generic-plane-fit.engine')
+    x, y = _grid(np.linspace(-3, 3, 12), np.linspace(-2, 2, 10))
+    z = .001 * np.sin(np.arange(len(x)))
+    z[[2, 16, 73]] += [.18, -.2, .25]
+    xyz = np.column_stack((x, y, z))
+    for points in (xyz, xyz[:, [2, 0, 1]]):
+        fit, trace = engine.fit_plane_with_outlier_rejection(points)
+        np.testing.assert_array_equal(trace['rejected_positions'], [2, 16, 73])
+        assert fit.rms_mm < .001
+        assert trace['original_rms_mm'] > .02
+    points = [[0, 0, 0], [3, 0, 0], [1, 2, 0]]
+    fit, trace = engine.fit_plane_with_outlier_rejection(points)
+    assert len(fit.signed_distances_mm) == 3
+    assert len(trace['rejected_positions']) == 0
+    assert '跳过' in trace['note']
+    crowded = np.column_stack((x, y, np.where(np.arange(len(x)) % 4 == 0, .3, 0)))
+    fit, trace = engine.fit_plane_with_outlier_rejection(crowded)
+    assert '候选剔除过多' in trace['note']
+    assert len(fit.signed_distances_mm) == len(crowded)
+
+
+def test_outlier_rejection_workflow_preserves_snapshot(workspace, tmp_path):
+    qt, window, module, notices = workspace
+    y, z = _grid(np.linspace(-3, 3, 12), np.linspace(-2, 2, 10))
+    x = .001 * np.sin(np.arange(len(y)))
+    x[[2, 16, 73]] += [.18, -.2, .25]
+    source = tmp_path / 'noisy-wall.csv'
+    _load_points(source, np.column_stack((x, y, z)))
+    assert window.load_path(source)
+    assert not module.reject_outliers.isChecked()
+    module.write_slot(0)
+    module.reject_outliers.setChecked(True)
+    module.compute()
+    _wait_for_work(qt, window)
+    trace = module.result['filters'][0]
+    np.testing.assert_array_equal(trace['rejected_point_indices'], [2, 16, 73])
+    assert len(module.slots[0]['xyz']) == 120
+    assert len(module.result['fits'][0].signed_distances_mm) == 117
+    assert '剔除 3 点' in module.quality.text()
+    path = tmp_path / 'clean-fit.json'
+    with patch('PyQt6.QtWidgets.QFileDialog.getSaveFileName', return_value=(str(path), 'JSON')):
+        module.export_result()
+        _wait_for_work(qt, window)
+    exported = json.loads(path.read_text(encoding='utf-8'))['slots']['A']
+    assert exported['outlier_filter']['rejected_point_indices'] == [2, 16, 73]
+    assert len(exported['snapshot']['xyz']) == 120
+    module.reject_outliers.setChecked(False)
+    assert module.result is None
